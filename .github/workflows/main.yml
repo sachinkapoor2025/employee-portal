@@ -1,0 +1,97 @@
+name: Deploy Employee Portal (Backend + Frontend)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend (SAM)
+    runs-on: ubuntu-latest
+
+    outputs:
+      api_url: ${{ steps.outputs.outputs.ApiUrl }}
+      s3_bucket: ${{ steps.outputs.outputs.FrontendBucketName }}
+      cognito_client_id: ${{ steps.outputs.outputs.UserPoolClientId }}
+      cognito_domain: ${{ steps.outputs.outputs.CognitoDomain }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup AWS SAM
+        uses: aws-actions/setup-sam@v2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: SAM Build
+        run: |
+          cd backend
+          sam build
+
+      - name: SAM Deploy
+        run: |
+          cd backend
+          sam deploy \
+            --stack-name employee-portal \
+            --region ap-south-1 \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset
+
+      - name: Fetch CloudFormation Outputs
+        id: outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name employee-portal \
+            --query "Stacks[0].Outputs" \
+            --output json > outputs.json
+
+          echo "ApiUrl=$(jq -r '.[] | select(.OutputKey=="ApiUrl") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+          echo "FrontendBucketName=$(jq -r '.[] | select(.OutputKey=="FrontendBucketName") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+          echo "UserPoolClientId=$(jq -r '.[] | select(.OutputKey=="UserPoolClientId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+          echo "CognitoDomain=$(jq -r '.[] | select(.OutputKey=="CognitoDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+
+  deploy-frontend:
+    name: Deploy Frontend (S3)
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Create Frontend Env File
+        run: |
+          cat <<EOF > frontend/.env
+          REACT_APP_API_URL=${{ needs.deploy-backend.outputs.api_url }}
+          REACT_APP_COGNITO_CLIENT_ID=${{ needs.deploy-backend.outputs.cognito_client_id }}
+          REACT_APP_COGNITO_DOMAIN=${{ needs.deploy-backend.outputs.cognito_domain }}
+          EOF
+
+      - name: Install & Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Upload Frontend to S3
+        uses: jakejarvis/s3-sync-action@v0.5.1
+        with:
+          args: --delete
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-south-1
+          AWS_S3_BUCKET: ${{ needs.deploy-backend.outputs.s3_bucket }}
+          SOURCE_DIR: frontend/build
