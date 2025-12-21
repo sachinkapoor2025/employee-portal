@@ -55,10 +55,8 @@ Resources:
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
         - http://localhost:3000/callback
-        - !Sub "${FrontendBucket.WebsiteURL}/callback"
       LogoutURLs:
         - http://localhost:3000
-        - !Sub "${FrontendBucket.WebsiteURL}"
 
   CognitoDomain:
     Type: AWS::Cognito::UserPoolDomain
@@ -278,18 +276,6 @@ Resources:
         BlockPublicPolicy: false
         IgnorePublicAcls: false
         RestrictPublicBuckets: false
-
-  FrontendBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref FrontendBucket
-      PolicyDocument:
-        Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
-            Principal: "*"
-            Action: s3:GetObject
-            Resource: !Sub "${FrontendBucket}/*"
 
 # =====================================================
 # OUTPUTS
