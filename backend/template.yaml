@@ -13,8 +13,6 @@ Globals:
         ATTENDANCE_TABLE: Attendance
         WORK_TABLE: WorkTasks
         PERFORMANCE_TABLE: Performance
-    Policies:
-      - AWSLambdaBasicExecutionRole
 
 # =====================================================
 # RESOURCES
@@ -173,6 +171,7 @@ Resources:
     Properties:
       Handler: src/attendance/handler.handler
       Policies:
+        - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: Attendance
       Events:
@@ -187,6 +186,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/training/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
       Events:
         TrainingApi:
           Type: Api
@@ -200,6 +201,7 @@ Resources:
     Properties:
       Handler: src/work/handler.handler
       Policies:
+        - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: WorkTasks
       Events:
@@ -215,6 +217,7 @@ Resources:
     Properties:
       Handler: src/performance/handler.handler
       Policies:
+        - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: Performance
       Events:
@@ -230,6 +233,7 @@ Resources:
     Properties:
       Handler: src/admin/handler.handler
       Policies:
+        - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: Users
         - DynamoDBCrudPolicy:
@@ -246,6 +250,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/llm/mockTest.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
       Events:
         MockTestApi:
           Type: Api
@@ -272,8 +278,9 @@ Resources:
         RestrictPublicBuckets: false
 
 # =====================================================
-# OUTPUTS (VERY IMPORTANT)
+# OUTPUTS
 # =====================================================
+
 Outputs:
 
   ApiUrl:
