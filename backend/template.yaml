@@ -1,0 +1,301 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Employee Portal – Full Serverless Stack (Backend + Auth + Frontend Infra)
+
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        USERS_TABLE: Users
+        ATTENDANCE_TABLE: Attendance
+        WORK_TABLE: WorkTasks
+        PERFORMANCE_TABLE: Performance
+    Policies:
+      - AWSLambdaBasicExecutionRole
+
+# =====================================================
+# RESOURCES
+# =====================================================
+Resources:
+
+# -----------------------------------------------------
+# 1️⃣ COGNITO (AUTH)
+# -----------------------------------------------------
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: employee-portal-user-pool
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: employee-portal-client
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthScopes:
+        - email
+        - openid
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3000/callback
+      LogoutURLs:
+        - http://localhost:3000
+
+  CognitoDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: employee-portal-auth
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoAdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admin
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoEmployeeGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Employee
+      UserPoolId: !Ref CognitoUserPool
+
+# -----------------------------------------------------
+# 2️⃣ API GATEWAY (WITH COGNITO AUTH)
+# -----------------------------------------------------
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
+
+# -----------------------------------------------------
+# 3️⃣ DYNAMODB TABLES
+# -----------------------------------------------------
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  AttendanceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Attendance
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  WorkTasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: WorkTasks
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  PerformanceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Performance
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+# -----------------------------------------------------
+# 4️⃣ LAMBDA FUNCTIONS
+# -----------------------------------------------------
+
+  AttendanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/attendance/handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: Attendance
+      Events:
+        AttendanceApi:
+          Type: Api
+          Properties:
+            Path: /attendance
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  TrainingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/training/handler.handler
+      Events:
+        TrainingApi:
+          Type: Api
+          Properties:
+            Path: /training
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  WorkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/work/handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: WorkTasks
+      Events:
+        WorkApi:
+          Type: Api
+          Properties:
+            Path: /work
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  PerformanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/performance/handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: Performance
+      Events:
+        PerformanceApi:
+          Type: Api
+          Properties:
+            Path: /performance
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  AdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/admin/handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: Users
+        - DynamoDBCrudPolicy:
+            TableName: WorkTasks
+      Events:
+        AdminApi:
+          Type: Api
+          Properties:
+            Path: /admin/users
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  MockTestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/llm/mockTest.handler
+      Events:
+        MockTestApi:
+          Type: Api
+          Properties:
+            Path: /training/mock-test
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+# -----------------------------------------------------
+# 5️⃣ S3 BUCKET (FRONTEND HOSTING)
+# -----------------------------------------------------
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "employee-portal-ui-${AWS::AccountId}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+# =====================================================
+# OUTPUTS (VERY IMPORTANT)
+# =====================================================
+Outputs:
+
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
+
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+
+  UserPoolClientId:
+    Description: Cognito App Client ID
+    Value: !Ref CognitoUserPoolClient
+
+  CognitoDomain:
+    Description: Cognito Hosted UI Domain
+    Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+  FrontendBucketName:
+    Description: S3 bucket for frontend hosting
+    Value: !Ref FrontendBucket
+
+  FrontendWebsiteURL:
+    Description: S3 Static Website URL
+    Value: !GetAtt FrontendBucket.WebsiteURL
