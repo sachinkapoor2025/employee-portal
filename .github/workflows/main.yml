@@ -2,7 +2,9 @@ name: Deploy Employee Portal (Backend + Frontend)
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - feature/*
 
 jobs:
   deploy-backend:
