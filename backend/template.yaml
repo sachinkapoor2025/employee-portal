@@ -55,10 +55,12 @@ Resources:
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
         - http://localhost:3000/callback
-        - https://mydgv.com/callback
+        - !Sub "http://employee-portal-ui-${AWS::AccountId}.s3-website.${AWS::Region}.amazonaws.com/callback"
+        - https://login.mydgv.com/callback
       LogoutURLs:
         - http://localhost:3000
-        - https://mydgv.com
+        - !Sub "http://employee-portal-ui-${AWS::AccountId}.s3-website.${AWS::Region}.amazonaws.com"
+        - https://login.mydgv.com
 
   CognitoDomain:
     Type: AWS::Cognito::UserPoolDomain
