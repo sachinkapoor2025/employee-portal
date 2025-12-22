@@ -22,21 +22,34 @@ exports.handler = async (event) => {
       if (result.Item) {
         const status = result.Item.status.S;
         const role = result.Item.role.S;
-        return {
-          statusCode: 200,
-          body: JSON.stringify({ exists: true, status, role })
-        };
+        if (status === 'ACTIVE') {
+          return {
+            statusCode: 200,
+            body: JSON.stringify({ access: role })
+          };
+        } else if (status === 'BLOCKED') {
+          return {
+            statusCode: 200,
+            body: JSON.stringify({ access: "DENIED" })
+          };
+        } else {
+          // PENDING
+          return {
+            statusCode: 200,
+            body: JSON.stringify({ access: "DENIED" })
+          };
+        }
       } else {
         return {
           statusCode: 200,
-          body: JSON.stringify({ exists: false })
+          body: JSON.stringify({ access: "DENIED" })
         };
       }
     } catch (error) {
       console.error("Error checking access:", error);
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: "Internal server error" })
+        body: JSON.stringify({ access: "DENIED" })
       };
     }
   } else if (event.httpMethod === 'POST') {

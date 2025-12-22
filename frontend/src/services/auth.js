@@ -32,15 +32,14 @@ export const handleCallback = async () => {
       });
       const data = await res.json();
 
-      if (!data.exists) {
-        window.location.href = "/request-access";
-      } else if (data.status === 'BLOCKED') {
-        window.location.href = "/blocked";
-      } else if (data.status === 'ACTIVE') {
-        localStorage.setItem("role", data.role);
+      if (data.access === 'ADMIN') {
+        localStorage.setItem("role", "ADMIN");
+        window.location.href = "/admin/users";
+      } else if (data.access === 'USER') {
+        localStorage.setItem("role", "USER");
         window.location.href = "/";
       } else {
-        // PENDING
+        // DENIED
         window.location.href = "/request-access";
       }
     } catch (error) {
