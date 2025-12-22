@@ -2,6 +2,15 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Employee Portal – Full Serverless Stack (Backend + Auth + Frontend Infra)
 
+Parameters:
+  FrontendDomainName:
+    Type: String
+    Default: login.mydgv.com
+
+  CloudFrontCertificateArn:
+    Type: String
+    Description: ACM certificate ARN (must be in us-east-1)
+
 Globals:
   Function:
     Runtime: nodejs18.x
@@ -14,14 +23,11 @@ Globals:
         WORK_TABLE: WorkTasks
         PERFORMANCE_TABLE: Performance
 
-# =====================================================
-# RESOURCES
-# =====================================================
 Resources:
 
-# -----------------------------------------------------
-# 1️⃣ COGNITO (AUTH)
-# -----------------------------------------------------
+# =====================================================
+# 1️⃣ COGNITO
+# =====================================================
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
@@ -44,23 +50,18 @@ Resources:
       ClientName: employee-portal-client
       UserPoolId: !Ref CognitoUserPool
       GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [ implicit ]
+      AllowedOAuthScopes: [ email, openid ]
       ExplicitAuthFlows:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
-      AllowedOAuthFlows:
-        - implicit
-      AllowedOAuthScopes:
-        - email
-        - openid
-      AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
         - http://localhost:3000/callback
-        - !Sub "https://employee-portal-ui-${AWS::AccountId}.s3-website.${AWS::Region}.amazonaws.com/callback"
-        - https://login.mydgv.com/callback
+        - !Sub "https://${FrontendDomainName}/callback"
       LogoutURLs:
         - http://localhost:3000
-        - !Sub "https://employee-portal-ui-${AWS::AccountId}.s3-website.${AWS::Region}.amazonaws.com"
-        - https://login.mydgv.com
+        - !Sub "https://${FrontendDomainName}"
 
   CognitoDomain:
     Type: AWS::Cognito::UserPoolDomain
@@ -80,9 +81,9 @@ Resources:
       GroupName: Employee
       UserPoolId: !Ref CognitoUserPool
 
-# -----------------------------------------------------
-# 2️⃣ API GATEWAY (WITH COGNITO AUTH)
-# -----------------------------------------------------
+# =====================================================
+# 2️⃣ API GATEWAY
+# =====================================================
 
   ApiGateway:
     Type: AWS::Serverless::Api
@@ -98,9 +99,9 @@ Resources:
           CognitoAuthorizer:
             UserPoolArn: !GetAtt CognitoUserPool.Arn
 
-# -----------------------------------------------------
-# 3️⃣ DYNAMODB TABLES
-# -----------------------------------------------------
+# =====================================================
+# 3️⃣ DYNAMODB
+# =====================================================
 
   UsersTable:
     Type: AWS::DynamoDB::Table
@@ -166,9 +167,9 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
-# -----------------------------------------------------
-# 4️⃣ LAMBDA FUNCTIONS
-# -----------------------------------------------------
+# =====================================================
+# 4️⃣ LAMBDAS (ALL INCLUDED)
+# =====================================================
 
   AttendanceFunction:
     Type: AWS::Serverless::Function
@@ -190,8 +191,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/training/handler.handler
-      Policies:
-        - AWSLambdaBasicExecutionRole
+      Policies: [ AWSLambdaBasicExecutionRole ]
       Events:
         TrainingApi:
           Type: Api
@@ -254,8 +254,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/llm/mockTest.handler
-      Policies:
-        - AWSLambdaBasicExecutionRole
+      Policies: [ AWSLambdaBasicExecutionRole ]
       Events:
         MockTestApi:
           Type: Api
@@ -264,22 +263,51 @@ Resources:
             Method: POST
             RestApiId: !Ref ApiGateway
 
-# -----------------------------------------------------
-# 5️⃣ S3 BUCKET (FRONTEND HOSTING)
-# -----------------------------------------------------
+# =====================================================
+# 5️⃣ FRONTEND (S3 + CLOUDFRONT HTTPS)
+# =====================================================
 
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "employee-portal-ui-${AWS::AccountId}"
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: employee-portal-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Aliases: [ !Ref FrontendDomainName ]
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CloudFrontCertificateArn
+          SslSupportMethod: sni-only
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref FrontendOAC
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [ GET, HEAD, OPTIONS ]
+          CachedMethods: [ GET, HEAD ]
+          ForwardedValues:
+            QueryString: true
 
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -287,38 +315,28 @@ Resources:
       Bucket: !Ref FrontendBucket
       PolicyDocument:
         Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
-            Principal: "*"
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
 
 # =====================================================
 # OUTPUTS
 # =====================================================
 
 Outputs:
-
   ApiUrl:
-    Description: API Gateway URL
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
 
-  UserPoolId:
-    Description: Cognito User Pool ID
-    Value: !Ref CognitoUserPool
-
-  UserPoolClientId:
-    Description: Cognito App Client ID
-    Value: !Ref CognitoUserPoolClient
-
-  CognitoDomain:
-    Description: Cognito Hosted UI Domain
+  CognitoHostedUI:
     Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
 
-  FrontendBucketName:
-    Description: S3 bucket for frontend hosting
-    Value: !Ref FrontendBucket
+  UserPoolClientId:
+    Value: !Ref CognitoUserPoolClient
 
-  FrontendWebsiteURL:
-    Description: S3 Static Website URL
-    Value: !GetAtt FrontendBucket.WebsiteURL
+  FrontendURL:
+    Value: !Sub "https://${FrontendDomainName}"
