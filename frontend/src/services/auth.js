@@ -15,7 +15,7 @@ export const login = () => {
     `&redirect_uri=${encodeURIComponent(redirectUri)}`;
 };
 
-export const handleCallback = () => {
+export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
 
@@ -24,7 +24,29 @@ export const handleCallback = () => {
 
   if (token) {
     localStorage.setItem("token", token);
-    window.location.href = "/";
+
+    // Check access
+    try {
+      const res = await fetch(`${process.env.REACT_APP_API_URL}/access`, {
+        headers: { Authorization: token }
+      });
+      const data = await res.json();
+
+      if (!data.exists) {
+        window.location.href = "/request-access";
+      } else if (data.status === 'BLOCKED') {
+        window.location.href = "/blocked";
+      } else if (data.status === 'ACTIVE') {
+        localStorage.setItem("role", data.role);
+        window.location.href = "/";
+      } else {
+        // PENDING
+        window.location.href = "/request-access";
+      }
+    } catch (error) {
+      console.error("Error checking access:", error);
+      window.location.href = "/request-access";
+    }
   }
 };
 

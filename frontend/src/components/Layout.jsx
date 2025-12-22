@@ -3,6 +3,7 @@ import { logout } from "../services/auth";
 
 export default function Layout({ children }) {
   const navigate = useNavigate();
+  const role = localStorage.getItem("role") || "USER";
 
   const styles = {
     page: {
@@ -49,6 +50,11 @@ export default function Layout({ children }) {
         <button style={styles.navButton} onClick={() => navigate("/profile")}>Profile</button>
         <button style={styles.navButton} onClick={() => navigate("/payroll")}>Payroll</button>
         <button style={styles.navButton} onClick={() => navigate("/exit")}>Exit the Firm</button>
+        {role === 'ADMIN' && (
+          <>
+            <button style={styles.navButton} onClick={() => navigate("/admin/users")}>Manage Users</button>
+          </>
+        )}
         <button style={styles.navButton} onClick={logout}>Logout</button>
       </nav>
       {children}

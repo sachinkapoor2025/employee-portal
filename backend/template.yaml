@@ -19,6 +19,7 @@ Globals:
         WORK_TABLE: WorkTasks
         PERFORMANCE_TABLE: Performance
         TRAINING_PROGRESS_TABLE: TrainingProgress
+        USER_ACCESS_TABLE: UserAccess
 
 Resources:
 
@@ -180,6 +181,22 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
+  UserAccessTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UserAccess
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
 # =====================================================
 # 4️⃣ LAMBDAS (ALL INCLUDED)
 # =====================================================
@@ -270,11 +287,41 @@ Resources:
             TableName: Users
         - DynamoDBCrudPolicy:
             TableName: WorkTasks
+        - DynamoDBCrudPolicy:
+            TableName: UserAccess
       Events:
-        AdminApi:
+        AdminUsersGetApi:
           Type: Api
           Properties:
             Path: /admin/users
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminUsersPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/users
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  AccessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/access/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: UserAccess
+      Events:
+        AccessApi:
+          Type: Api
+          Properties:
+            Path: /access
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        RequestAccessApi:
+          Type: Api
+          Properties:
+            Path: /request-access
             Method: POST
             RestApiId: !Ref ApiGateway
 

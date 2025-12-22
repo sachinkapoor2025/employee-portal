@@ -13,12 +13,23 @@ import Exit from "./pages/Exit";
 import ManageUsers from "./pages/Admin/ManageUsers";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import Resignations from "./pages/Admin/Resignations";
+import RequestAccess from "./pages/RequestAccess";
+import Blocked from "./pages/Blocked";
 
 export default function App() {
   const token = localStorage.getItem("token");
+  const role = localStorage.getItem("role");
 
   if (window.location.pathname === "/callback") {
     return <Callback />;
+  }
+
+  if (window.location.pathname === "/request-access") {
+    return <RequestAccess />;
+  }
+
+  if (window.location.pathname === "/blocked") {
+    return <Blocked />;
   }
 
   return (
@@ -34,9 +45,13 @@ export default function App() {
           <Route path="/profile" element={<Profile />} />
           <Route path="/payroll" element={<Payroll />} />
           <Route path="/exit" element={<Exit />} />
-          <Route path="/admin/users" element={<ManageUsers />} />
-          <Route path="/admin/tasks" element={<ManageTasks />} />
-          <Route path="/admin/resignations" element={<Resignations />} />
+          {role === 'ADMIN' && (
+            <>
+              <Route path="/admin/users" element={<ManageUsers />} />
+              <Route path="/admin/tasks" element={<ManageTasks />} />
+              <Route path="/admin/resignations" element={<Resignations />} />
+            </>
+          )}
         </Routes>
       ) : (
         <Login />
