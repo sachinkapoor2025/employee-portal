@@ -7,10 +7,6 @@ Parameters:
     Type: String
     Default: login.mydgv.com
 
-  CloudFrontCertificateArn:
-    Type: String
-    Description: ACM certificate ARN (must be in us-east-1)
-
 Globals:
   Function:
     Runtime: nodejs18.x
