@@ -13,9 +13,10 @@ export default function Performance() {
     <Layout>
       <div style={{ backgroundColor: "rgba(255,255,255,0.9)", padding: "24px", borderRadius: "12px" }}>
         <h2>Performance</h2>
-        <p>Charged: {data.chargedHours}</p>
-        <p>Completed: {data.completedHours}</p>
+        <p>Charged Hours: {data.chargedHours}</p>
+        <p>Completed Hours: {data.completedHours}</p>
         <p>Rating: {data.rating}</p>
+        <p>Training Points: {data.trainingPoints}</p>
       </div>
     </Layout>
   );

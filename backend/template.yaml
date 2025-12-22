@@ -18,6 +18,7 @@ Globals:
         ATTENDANCE_TABLE: Attendance
         WORK_TABLE: WorkTasks
         PERFORMANCE_TABLE: Performance
+        TRAINING_PROGRESS_TABLE: TrainingProgress
 
 Resources:
 
@@ -163,6 +164,22 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
+  TrainingProgressTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TrainingProgress
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
 # =====================================================
 # 4️⃣ LAMBDAS (ALL INCLUDED)
 # =====================================================
@@ -193,13 +210,22 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/training/handler.handler
-      Policies: [ AWSLambdaBasicExecutionRole ]
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: TrainingProgress
       Events:
-        TrainingApi:
+        TrainingGetApi:
           Type: Api
           Properties:
             Path: /training
             Method: GET
+            RestApiId: !Ref ApiGateway
+        TrainingPostApi:
+          Type: Api
+          Properties:
+            Path: /training
+            Method: POST
             RestApiId: !Ref ApiGateway
 
   WorkFunction:
