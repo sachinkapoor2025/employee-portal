@@ -85,6 +85,20 @@ jobs:
           cd frontend
           npm install
           npm run build
+          echo "Build output contents:"
+          ls -la build/
+          echo "Checking for static folder:"
+          find build/ -name "static" -type d
+          echo "Checking for src folder:"
+          find build/ -name "src" -type d
+
+      - name: Copy Source Files to Build
+        run: |
+          cd frontend
+          # Copy src folder to build directory if needed for any reason
+          cp -r src build/src
+          echo "Copied src folder to build directory"
+          ls -la build/
 
       - name: Upload Frontend to S3
         uses: jakejarvis/s3-sync-action@v0.5.1
