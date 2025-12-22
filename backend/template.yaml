@@ -176,11 +176,17 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: Attendance
       Events:
-        AttendanceApi:
+        AttendancePostApi:
           Type: Api
           Properties:
             Path: /attendance
             Method: POST
+            RestApiId: !Ref ApiGateway
+        AttendanceGetApi:
+          Type: Api
+          Properties:
+            Path: /attendance
+            Method: GET
             RestApiId: !Ref ApiGateway
 
   TrainingFunction:
