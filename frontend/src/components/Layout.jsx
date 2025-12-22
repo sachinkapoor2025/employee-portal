@@ -1,6 +1,9 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import { logout } from "../services/auth";
 
 export default function Layout({ children }) {
+  const navigate = useNavigate();
+
   const styles = {
     page: {
       minHeight: "100vh",
@@ -19,25 +22,34 @@ export default function Layout({ children }) {
       marginBottom: "20px",
       textAlign: "center"
     },
-    navLink: {
-      margin: "0 10px",
-      color: "#1976d2",
-      textDecoration: "none"
+    navButton: {
+      display: "inline-block",
+      margin: "0 5px",
+      backgroundColor: "#1976d2",
+      color: "white",
+      border: "none",
+      padding: "10px 15px",
+      borderRadius: "8px",
+      fontSize: "14px",
+      cursor: "pointer",
+      textDecoration: "none",
+      textAlign: "center"
     }
   };
 
   return (
     <div style={styles.page}>
       <nav style={styles.nav}>
-        <Link to="/" style={styles.navLink}>Dashboard</Link>
-        <Link to="/attendance" style={styles.navLink}>Attendance</Link>
-        <Link to="/training" style={styles.navLink}>Training</Link>
-        <Link to="/work" style={styles.navLink}>Work</Link>
-        <Link to="/performance" style={styles.navLink}>Performance</Link>
-        <Link to="/expertise" style={styles.navLink}>Expertise</Link>
-        <Link to="/profile" style={styles.navLink}>Profile</Link>
-        <Link to="/payroll" style={styles.navLink}>Payroll</Link>
-        <Link to="/exit" style={styles.navLink}>Exit</Link>
+        <button style={styles.navButton} onClick={() => navigate("/")}>Dashboard</button>
+        <button style={styles.navButton} onClick={() => navigate("/attendance")}>Attendance</button>
+        <button style={styles.navButton} onClick={() => navigate("/training")}>Training</button>
+        <button style={styles.navButton} onClick={() => navigate("/work")}>Work</button>
+        <button style={styles.navButton} onClick={() => navigate("/performance")}>Performance</button>
+        <button style={styles.navButton} onClick={() => navigate("/expertise")}>Expertise</button>
+        <button style={styles.navButton} onClick={() => navigate("/profile")}>Profile</button>
+        <button style={styles.navButton} onClick={() => navigate("/payroll")}>Payroll</button>
+        <button style={styles.navButton} onClick={() => navigate("/exit")}>Exit the Firm</button>
+        <button style={styles.navButton} onClick={logout}>Logout</button>
       </nav>
       {children}
     </div>
