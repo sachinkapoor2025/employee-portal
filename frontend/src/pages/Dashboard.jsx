@@ -1,37 +1,34 @@
+import { Link } from "react-router-dom";
 import { getRole, logout } from "../services/auth";
+import Layout from "../components/Layout";
 
 export default function Dashboard() {
   const role = getRole();
 
-  const go = (path) => {
-    window.location.href = path;
-  };
-
   const styles = {
-    page: {
-      minHeight: "100vh",
-      padding: "20px",
-      fontFamily: "Arial, sans-serif",
-      backgroundImage: "url('/images/company.jpg')",
-      backgroundSize: "cover",
-      backgroundPosition: "center",
-      backgroundRepeat: "no-repeat"
-    },
-
     overlay: {
       backgroundColor: "rgba(255,255,255,0.9)",
       padding: "24px",
       borderRadius: "12px",
       display: "flex",
-      justifyContent: "space-between"
+      justifyContent: "space-between",
+      alignItems: "flex-start"
     },
 
     left: {
-      width: "55%"
+      width: "25%"
+    },
+
+    center: {
+      width: "20%",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center"
     },
 
     right: {
-      width: "35%",
+      width: "25%",
       textAlign: "right"
     },
 
@@ -51,7 +48,9 @@ export default function Dashboard() {
       padding: "14px",
       borderRadius: "8px",
       fontSize: "16px",
-      cursor: "pointer"
+      cursor: "pointer",
+      textDecoration: "none",
+      textAlign: "center"
     },
 
     lightGreen: { backgroundColor: "#81c784" },
@@ -59,11 +58,11 @@ export default function Dashboard() {
     darkGreen: { backgroundColor: "#1b5e20" },
 
     searchBox: {
-      margin: "30px 0"
+      marginTop: "20px"
     },
 
     searchInput: {
-      width: "100%",
+      width: "200px",
       padding: "14px",
       fontSize: "16px",
       borderRadius: "8px",
@@ -84,46 +83,48 @@ export default function Dashboard() {
   };
 
   return (
-    <div style={styles.page}>
+    <Layout>
       <div style={styles.overlay}>
-
         {/* LEFT SIDE */}
         <div style={styles.left}>
           <div style={styles.title}>Dashboard</div>
 
-          <button style={styles.button} onClick={() => go("/attendance")}>Attendance</button>
-          <button style={styles.button} onClick={() => go("/training")}>Training</button>
-          <button style={styles.button} onClick={() => go("/work")}>Work</button>
-          <button style={styles.button} onClick={() => go("/performance")}>Performance</button>
-          <button style={styles.button} onClick={() => go("/expertise")}>Expertise</button>
-
-          <div style={styles.searchBox}>
-            <input style={styles.searchInput} placeholder="Search..." />
-          </div>
+          <Link to="/attendance" style={styles.button}>Attendance</Link>
+          <Link to="/training" style={styles.button}>Training</Link>
+          <Link to="/work" style={styles.button}>Work</Link>
+          <Link to="/performance" style={styles.button}>Performance</Link>
+          <Link to="/expertise" style={styles.button}>Expertise</Link>
 
           {role === "Admin" && (
             <>
               <h3>Admin Panel</h3>
-              <button style={styles.button} onClick={() => go("/admin/users")}>Manage Users</button>
-              <button style={styles.button} onClick={() => go("/admin/tasks")}>Manage Tasks</button>
-              <button style={styles.button} onClick={() => go("/admin/resignations")}>Resignations</button>
+              <Link to="/admin/users" style={styles.button}>Manage Users</Link>
+              <Link to="/admin/tasks" style={styles.button}>Manage Tasks</Link>
+              <Link to="/admin/resignations" style={styles.button}>Resignations</Link>
             </>
           )}
         </div>
 
+        {/* CENTER */}
+        <div style={styles.center}>
+          <div style={styles.searchBox}>
+            <input style={styles.searchInput} placeholder="Search..." />
+          </div>
+        </div>
+
         {/* RIGHT SIDE */}
         <div style={styles.right}>
-          <button style={{ ...styles.button, ...styles.lightGreen }} onClick={() => go("/profile")}>
+          <Link to="/profile" style={{ ...styles.button, ...styles.lightGreen }}>
             Profile
-          </button>
+          </Link>
 
-          <button style={{ ...styles.button, ...styles.lightGreen }} onClick={() => go("/payroll")}>
+          <Link to="/payroll" style={{ ...styles.button, ...styles.lightGreen }}>
             Payroll
-          </button>
+          </Link>
 
-          <button style={{ ...styles.button, ...styles.bloodRed }} onClick={() => go("/exit")}>
+          <Link to="/exit" style={{ ...styles.button, ...styles.bloodRed }}>
             Exit the Firm
-          </button>
+          </Link>
 
           <button
             style={{ ...styles.button, ...styles.darkGreen, marginTop: "30px" }}
@@ -132,7 +133,6 @@ export default function Dashboard() {
             Logout
           </button>
         </div>
-
       </div>
 
       {/* CHATBOX */}
@@ -144,7 +144,6 @@ export default function Dashboard() {
         />
         <button style={{ ...styles.button, width: "100%" }}>Ask</button>
       </div>
-
-    </div>
+    </Layout>
   );
 }
