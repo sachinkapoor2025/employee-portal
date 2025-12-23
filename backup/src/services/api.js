@@ -6,7 +6,7 @@ export const api = async (path, method = "GET", body) => {
     method,
     headers: {
       "Content-Type": "application/json",
-      Authorization: token
+      Authorization: `Bearer ${token}` // ✅ FIX
     },
     body: body ? JSON.stringify(body) : null
   });

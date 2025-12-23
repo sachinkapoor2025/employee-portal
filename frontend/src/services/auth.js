@@ -27,11 +27,14 @@ export const handleCallback = async () => {
 
     // Check access
     try {
-    const res = await fetch(`${process.env.REACT_APP_API_URL}/access`, {
-      headers: {
-        Authorization: token
-      }
-    });
+      const res = await fetch(
+        `${process.env.REACT_APP_API_URL}/access`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}` // ✅ FIX
+          }
+        }
+      );
       const data = await res.json();
 
       if (data.access === 'ADMIN') {

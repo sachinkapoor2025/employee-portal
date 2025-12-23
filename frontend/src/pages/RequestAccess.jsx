@@ -8,8 +8,10 @@ export default function RequestAccess() {
     try {
       const res = await fetch(`${process.env.REACT_APP_API_URL}/request-access`, {
         method: "POST",
-        headers: { Authorization: token }
-      });
+        headers: {
+            Authorization: `Bearer ${token}`
+        }
+        });
       const data = await res.json();
       setMessage(data.message || "Request submitted");
     } catch (error) {

@@ -31,9 +31,14 @@ export default function Attendance() {
   const fetchAttendance = async (start, end) => {
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`, {
-        headers: { Authorization: token }
-      });
+      const res = await fetch(
+        `${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      );
       const data = await res.json();
       const dataObj = {};
       data.forEach(item => {
@@ -66,7 +71,7 @@ export default function Attendance() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: token
+          Authorization: `Bearer ${token}` // ✅ FIX
         },
         body: JSON.stringify(attendanceArray)
       });
