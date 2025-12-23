@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import Login from "./pages/Login";
 import Callback from "./pages/Callback";
 import Dashboard from "./pages/Dashboard";
@@ -23,20 +23,21 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        {/* Cognito callback must always be reachable */}
+        {/* Public */}
+        <Route path="/login" element={<Login />} />
         <Route path="/callback" element={<Callback />} />
+        <Route path="/request-access" element={<RequestAccess />} />
+        <Route path="/blocked" element={<Blocked />} />
 
-        {/* NOT logged in */}
-        {!token && <Route path="*" element={<Login />} />}
+        {/* Not logged in */}
+        {!token && <Route path="*" element={<Navigate to="/login" />} />}
 
-        {/* LOGGED IN */}
-        {token && (
+        {/* Logged in but role not resolved yet */}
+        {token && !role && <Route path="*" element={<div>Loading...</div>} />}
+
+        {/* USER */}
+        {token && role === "USER" && (
           <>
-            {/* Special states decided ONLY by backend */}
-            <Route path="/request-access" element={<RequestAccess />} />
-            <Route path="/blocked" element={<Blocked />} />
-
-            {/* User routes */}
             <Route path="/" element={<Dashboard />} />
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/training" element={<Training />} />
@@ -46,17 +47,21 @@ export default function App() {
             <Route path="/profile" element={<Profile />} />
             <Route path="/payroll" element={<Payroll />} />
             <Route path="/exit" element={<Exit />} />
-
-            {/* Admin routes */}
-            {role === "ADMIN" && (
-              <>
-                <Route path="/admin/users" element={<ManageUsers />} />
-                <Route path="/admin/tasks" element={<ManageTasks />} />
-                <Route path="/admin/resignations" element={<Resignations />} />
-              </>
-            )}
           </>
         )}
+
+        {/* ADMIN */}
+        {token && role === "ADMIN" && (
+          <>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/admin/users" element={<ManageUsers />} />
+            <Route path="/admin/tasks" element={<ManageTasks />} />
+            <Route path="/admin/resignations" element={<Resignations />} />
+          </>
+        )}
+
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Router>
   );
