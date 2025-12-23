@@ -23,14 +23,20 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        {/* Public */}
+        {/* Cognito callback must always be reachable */}
         <Route path="/callback" element={<Callback />} />
-        <Route path="/request-access" element={<RequestAccess />} />
-        <Route path="/blocked" element={<Blocked />} />
 
-        {/* Authenticated */}
-        {token ? (
+        {/* NOT logged in */}
+        {!token && <Route path="*" element={<Login />} />}
+
+        {/* LOGGED IN */}
+        {token && (
           <>
+            {/* Special states decided ONLY by backend */}
+            <Route path="/request-access" element={<RequestAccess />} />
+            <Route path="/blocked" element={<Blocked />} />
+
+            {/* User routes */}
             <Route path="/" element={<Dashboard />} />
             <Route path="/attendance" element={<Attendance />} />
             <Route path="/training" element={<Training />} />
@@ -41,6 +47,7 @@ export default function App() {
             <Route path="/payroll" element={<Payroll />} />
             <Route path="/exit" element={<Exit />} />
 
+            {/* Admin routes */}
             {role === "ADMIN" && (
               <>
                 <Route path="/admin/users" element={<ManageUsers />} />
@@ -49,8 +56,6 @@ export default function App() {
               </>
             )}
           </>
-        ) : (
-          <Route path="*" element={<Login />} />
         )}
       </Routes>
     </Router>
