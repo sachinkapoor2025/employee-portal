@@ -29,7 +29,7 @@ export const handleCallback = async () => {
     try {
     const res = await fetch(`${process.env.REACT_APP_API_URL}/access`, {
       headers: {
-        Authorization: `Bearer ${token}`
+        Authorization: token
       }
     });
       const data = await res.json();
