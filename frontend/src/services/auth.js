@@ -26,16 +26,18 @@ export const login = () => {
 export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
-  const token = params.get("access_token");
 
-  if (!token) {
-    console.error("No access token found in callback");
+  // 🔥 FIX: USE id_token (NOT access_token)
+  const idToken = params.get("id_token");
+
+  if (!idToken) {
+    console.error("No id_token found in callback");
     window.location.replace("/login");
     return;
   }
 
-  // Store token immediately
-  localStorage.setItem("token", token);
+  // 🔥 Store ID TOKEN (this is what API Gateway accepts)
+  localStorage.setItem("token", idToken);
 
   try {
     console.log("Checking access via backend...");
@@ -45,7 +47,7 @@ export const handleCallback = async () => {
       {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${token}`
+          Authorization: `Bearer ${idToken}`
         }
       }
     );
