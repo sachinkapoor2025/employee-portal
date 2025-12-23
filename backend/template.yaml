@@ -137,7 +137,20 @@ Resources:
 
       AccessLogSetting:
         DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
-        Format: ""
+        Format: |
+          {
+            "requestId":"$context.requestId",
+            "ip":"$context.identity.sourceIp",
+            "userAgent":"$context.identity.userAgent",
+            "requestTime":"$context.requestTime",
+            "httpMethod":"$context.httpMethod",
+            "resourcePath":"$context.resourcePath",
+            "status":"$context.status",
+            "protocol":"$context.protocol",
+            "responseLength":"$context.responseLength",
+            "authorizerError":"$context.authorizer.error",
+            "authorizerLatency":"$context.authorizer.latency"
+          }
 
 # =====================================================
 # 3️⃣ DYNAMODB
