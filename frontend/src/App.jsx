@@ -20,42 +20,39 @@ export default function App() {
   const token = localStorage.getItem("token");
   const role = localStorage.getItem("role");
 
-  if (window.location.pathname === "/callback") {
-    return <Callback />;
-  }
-
-  if (window.location.pathname === "/request-access") {
-    return <RequestAccess />;
-  }
-
-  if (window.location.pathname === "/blocked") {
-    return <Blocked />;
-  }
-
   return (
     <Router>
-      {token ? (
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/attendance" element={<Attendance />} />
-          <Route path="/training" element={<Training />} />
-          <Route path="/work" element={<Work />} />
-          <Route path="/performance" element={<Performance />} />
-          <Route path="/expertise" element={<Expertise />} />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/payroll" element={<Payroll />} />
-          <Route path="/exit" element={<Exit />} />
-          {role === 'ADMIN' && (
-            <>
-              <Route path="/admin/users" element={<ManageUsers />} />
-              <Route path="/admin/tasks" element={<ManageTasks />} />
-              <Route path="/admin/resignations" element={<Resignations />} />
-            </>
-          )}
-        </Routes>
-      ) : (
-        <Login />
-      )}
+      <Routes>
+        {/* Public */}
+        <Route path="/callback" element={<Callback />} />
+        <Route path="/request-access" element={<RequestAccess />} />
+        <Route path="/blocked" element={<Blocked />} />
+
+        {/* Authenticated */}
+        {token ? (
+          <>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/attendance" element={<Attendance />} />
+            <Route path="/training" element={<Training />} />
+            <Route path="/work" element={<Work />} />
+            <Route path="/performance" element={<Performance />} />
+            <Route path="/expertise" element={<Expertise />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/payroll" element={<Payroll />} />
+            <Route path="/exit" element={<Exit />} />
+
+            {role === "ADMIN" && (
+              <>
+                <Route path="/admin/users" element={<ManageUsers />} />
+                <Route path="/admin/tasks" element={<ManageTasks />} />
+                <Route path="/admin/resignations" element={<Resignations />} />
+              </>
+            )}
+          </>
+        ) : (
+          <Route path="*" element={<Login />} />
+        )}
+      </Routes>
     </Router>
   );
 }

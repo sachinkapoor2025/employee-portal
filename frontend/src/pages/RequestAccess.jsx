@@ -6,11 +6,6 @@ export default function RequestAccess() {
 
   const requestAccess = async () => {
     const token = localStorage.getItem("token");
-
-    console.log("Request Access clicked");
-    console.log("Token present:", !!token);
-    console.log("API URL:", process.env.REACT_APP_API_URL);
-
     if (!token) {
       setMessage("You are not logged in");
       return;
@@ -30,14 +25,9 @@ export default function RequestAccess() {
         }
       );
 
-      console.log("Response status:", res.status);
-
       const data = await res.json();
-      console.log("Response body:", data);
-
       setMessage(data.message || "Request submitted");
-    } catch (error) {
-      console.error("Request access failed:", error);
+    } catch (err) {
       setMessage("Error requesting access");
     } finally {
       setLoading(false);
@@ -45,31 +35,11 @@ export default function RequestAccess() {
   };
 
   return (
-    <div
-      style={{
-        backgroundColor: "rgba(255,255,255,0.9)",
-        padding: "24px",
-        borderRadius: "12px",
-        textAlign: "center"
-      }}
-    >
+    <div style={{ padding: 24, textAlign: "center" }}>
       <h2>Please request MYDGV Portal access</h2>
-
-      <button
-        onClick={requestAccess}
-        disabled={loading}
-        style={{
-          padding: "10px 20px",
-          backgroundColor: "#1976d2",
-          color: "white",
-          border: "none",
-          borderRadius: "4px",
-          cursor: "pointer"
-        }}
-      >
+      <button onClick={requestAccess} disabled={loading}>
         {loading ? "Submitting..." : "Request Access"}
       </button>
-
       {message && <p>{message}</p>}
     </div>
   );
