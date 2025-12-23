@@ -19,8 +19,8 @@ export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
 
-  // Cognito returns id_token for Hosted UI implicit flow
-  const token = params.get("id_token");
+  // Cognito returns access_token for Hosted UI implicit flow with response_type=token
+  const token = params.get("access_token");
 
   if (token) {
     localStorage.setItem("token", token);
