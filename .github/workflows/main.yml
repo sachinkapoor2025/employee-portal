@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - feature/a*
+      - feature/ab*
 
 jobs:
   deploy-backend:
