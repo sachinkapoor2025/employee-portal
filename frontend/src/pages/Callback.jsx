@@ -6,5 +6,9 @@ export default function Callback() {
     handleCallback();
   }, []);
 
-  return <p>Logging you in...</p>;
+  return (
+    <div style={{ textAlign: "center", marginTop: 80 }}>
+      <h3>Signing you in...</h3>
+    </div>
+  );
 }

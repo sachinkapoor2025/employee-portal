@@ -1,16 +1,7 @@
-// ===============================
-// Cognito Hosted UI Configuration
-// ===============================
-const domain =
-  "https://employee-portal-auth.auth.ap-south-1.amazoncognito.com";
-
+const domain = "https://employee-portal-auth.auth.ap-south-1.amazoncognito.com";
 const clientId = "2o013hc1m4tqrflvt257tmkmhf";
-
 const redirectUri = `${window.location.origin}/callback`;
 
-// ===============================
-// Login
-// ===============================
 export const login = () => {
   window.location.href =
     `${domain}/login` +
@@ -20,94 +11,57 @@ export const login = () => {
     `&redirect_uri=${encodeURIComponent(redirectUri)}`;
 };
 
-// ===============================
-// Cognito Callback Handler
-// ===============================
 export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
-
-  // 🔥 FIX: USE id_token (NOT access_token)
   const idToken = params.get("id_token");
 
   if (!idToken) {
-    console.error("No id_token found in callback");
     window.location.replace("/login");
     return;
   }
 
-  // 🔥 Store ID TOKEN (this is what API Gateway accepts)
   localStorage.setItem("token", idToken);
 
-  try {
-    console.log("Checking access via backend...");
+  const res = await fetch(`${process.env.REACT_APP_API_URL}/access`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
 
-    const res = await fetch(
-      `${process.env.REACT_APP_API_URL}/access`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${idToken}`
-        }
-      }
-    );
+  const data = await res.json();
 
-    if (!res.ok) {
-      throw new Error(`Access API failed: ${res.status}`);
-    }
+  // 🔥 BACKEND IS THE TRUTH
+  if (data.access === "ADMIN") {
+    localStorage.setItem("role", "ADMIN");
+    window.location.replace("/admin/users");
+    return;
+  }
 
-    const data = await res.json();
-    console.log("Access response:", data);
+  if (data.access === "USER") {
+    localStorage.setItem("role", "USER");
+    window.location.replace("/");
+    return;
+  }
 
-    /**
-     * BACKEND IS THE SINGLE SOURCE OF TRUTH
-     *
-     * Expected responses:
-     *  - { access: "ADMIN" }
-     *  - { access: "USER" }
-     *  - { access: "DENIED" }  -> email NOT in DynamoDB
-     *  - { access: "BLOCKED" }
-     */
+  // DENIED or BLOCKED
+  localStorage.removeItem("role");
+  window.location.replace("/request-access");
+};
 
-    if (data.access === "ADMIN") {
-      localStorage.setItem("role", "ADMIN");
-      window.location.replace("/admin/users");
-      return;
-    }
+export const requestAccess = async () => {
+  const token = localStorage.getItem("token");
 
-    if (data.access === "USER") {
-      localStorage.setItem("role", "USER");
-      window.location.replace("/");
-      return;
-    }
+  const res = await fetch(`${process.env.REACT_APP_API_URL}/request-access`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
 
-    if (data.access === "DENIED") {
-      // 🚨 ONLY when email DOES NOT EXIST
-      window.location.replace("/request-access");
-      return;
-    }
-
-    if (data.access === "BLOCKED") {
-      window.location.replace("/blocked");
-      return;
-    }
-
-    // Fallback (should never happen)
-    console.warn("Unknown access state:", data);
-    window.location.replace("/blocked");
-
-  } catch (error) {
-    console.error("Access check failed:", error);
-    window.location.replace("/blocked");
+  if (!res.ok) {
+    throw new Error("Request failed");
   }
 };
 
-// ===============================
-// Logout
-// ===============================
 export const logout = () => {
   localStorage.clear();
-
   window.location.href =
     `${domain}/logout` +
     `?client_id=${clientId}` +

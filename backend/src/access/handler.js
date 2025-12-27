@@ -2,11 +2,11 @@ const { getUser } = require("../common/auth");
 const {
   DynamoDBClient,
   GetItemCommand,
-  PutItemCommand
+  PutItemCommand,
 } = require("@aws-sdk/client-dynamodb");
 
 const client = new DynamoDBClient({
-  region: process.env.AWS_REGION
+  region: process.env.AWS_REGION,
 });
 
 /**
@@ -42,8 +42,8 @@ exports.handler = async (event) => {
           TableName: tableName,
           Key: {
             PK: { S: email },
-            SK: { S: email }
-          }
+            SK: { S: email },
+          },
         })
       );
 
@@ -72,7 +72,6 @@ exports.handler = async (event) => {
       // ❌ Any unexpected role value
       console.warn("Invalid role detected:", role);
       return ok({ access: "DENIED" });
-
     } catch (error) {
       console.error("Access check failed:", error);
       return serverError();
@@ -93,16 +92,15 @@ exports.handler = async (event) => {
             PK: { S: email },
             SK: { S: email },
             email: { S: email },
-            role: { S: "USER" },      // default
+            role: { S: "USER" }, // default
             status: { S: "PENDING" }, // pending approval
-            createdAt: { S: new Date().toISOString() }
+            createdAt: { S: new Date().toISOString() },
           },
-          ConditionExpression: "attribute_not_exists(PK)"
+          ConditionExpression: "attribute_not_exists(PK)",
         })
       );
 
       return ok({ message: "Access request submitted" });
-
     } catch (error) {
       if (error.name === "ConditionalCheckFailedException") {
         return ok({ message: "Access request already exists" });
@@ -115,7 +113,7 @@ exports.handler = async (event) => {
 
   return {
     statusCode: 405,
-    body: JSON.stringify({ error: "Method not allowed" })
+    body: JSON.stringify({ error: "Method not allowed" }),
   };
 };
 
@@ -126,10 +124,10 @@ exports.handler = async (event) => {
  */
 const ok = (body) => ({
   statusCode: 200,
-  body: JSON.stringify(body)
+  body: JSON.stringify(body),
 });
 
 const serverError = () => ({
   statusCode: 500,
-  body: JSON.stringify({ error: "Internal server error" })
+  body: JSON.stringify({ error: "Internal server error" }),
 });
