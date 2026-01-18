@@ -91,6 +91,7 @@ Resources:
   ApiGatewayCloudWatchRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AWS::StackName}-ApiGatewayCloudWatchRole"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -114,6 +115,7 @@ Resources:
     Type: AWS::Serverless::Api
     DependsOn: ApiGatewayAccount
     Properties:
+      Name: !Sub "${AWS::StackName}-api"
       StageName: prod
 
       Cors:
@@ -306,6 +308,7 @@ Resources:
   AttendanceFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-AttendanceFunction"
       Handler: src/attendance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -328,6 +331,7 @@ Resources:
   TrainingFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-TrainingFunction"
       Handler: src/training/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -350,6 +354,7 @@ Resources:
   WorkFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-WorkFunction"
       Handler: src/work/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -366,6 +371,7 @@ Resources:
   PerformanceFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-PerformanceFunction"
       Handler: src/performance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -382,6 +388,7 @@ Resources:
   AdminFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-AdminFunction"
       Handler: src/admin/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -408,6 +415,7 @@ Resources:
   AccessFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-AccessFunction"
       Handler: src/access/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -430,6 +438,7 @@ Resources:
   MockTestFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-MockTestFunction"
       Handler: src/llm/mockTest.handler
       Policies: [AWSLambdaBasicExecutionRole]
       Events:
@@ -468,6 +477,7 @@ Resources:
   ImageUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-ImageUploadFunction"
       Handler: backend/lambda/ImageUpload/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -487,6 +497,7 @@ Resources:
   UserProfileFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserProfileFunction"
       Handler: backend/lambda/UserProfileFunction/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -510,6 +521,7 @@ Resources:
   UserProfile:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserProfile"
       Handler: backend/lambda/UserProfile/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -539,19 +551,21 @@ Resources:
   TrainingVideoUrl:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-TrainingVideoUrl"
       Handler: backend/lambda/TrainingVideoUrl/app.handler
       Policies: [AWSLambdaBasicExecutionRole]
       Events:
         TrainingVideoUrlApi:
           Type: Api
           Properties:
-            Path: /training/video-url
-            Method: GET
+            Path: /getTrainingVideoUrl
+            Method: POST
             RestApiId: !Ref ApiGateway
 
   trainingUrl:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-trainingUrl"
       Handler: backend/lambda/trainingUrl/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -571,6 +585,7 @@ Resources:
   UserTrainingList:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserTrainingList"
       Handler: backend/lambda/UserTrainingList/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -593,6 +608,7 @@ Resources:
   getSkills:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-getSkills"
       Handler: backend/lambda/getSkills/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -612,6 +628,7 @@ Resources:
   resignation:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-resignation"
       Handler: backend/lambda/resignation/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -631,6 +648,7 @@ Resources:
   addTraining:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-addTraining"
       Handler: backend/lambda/addTraining/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -667,7 +685,7 @@ Resources:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: employee-portal-oac
+        Name: !Sub "${AWS::StackName}-oac"
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
