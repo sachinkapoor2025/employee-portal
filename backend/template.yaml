@@ -677,11 +677,11 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        DefaultRootObject: index.html
-        Aliases: [!Ref FrontendDomainName]
-        ViewerCertificate:
-          AcmCertificateArn: arn:aws:acm:us-east-1:985539754737:certificate/f7afd075-177d-41d4-a782-3abbab82df5b
-          SslSupportMethod: sni-only
+        # DefaultRootObject: index.html
+        # Aliases: [!Ref FrontendDomainName]
+        # ViewerCertificate:
+        #   AcmCertificateArn: arn:aws:acm:us-east-1:985539754737:certificate/f7afd075-177d-41d4-a782-3abbab82df5b
+        #   SslSupportMethod: sni-only
         Origins:
           - Id: frontend
             DomainName: !GetAtt FrontendBucket.RegionalDomainName
