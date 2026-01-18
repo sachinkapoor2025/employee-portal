@@ -5,7 +5,7 @@ Description: Employee Portal – Full Serverless Stack (Backend + Auth + Fronten
 Parameters:
   FrontendDomainName:
     Type: String
-    Default: login.mydgv.com
+    Default: demo.mydgv.com
 
 Globals:
   Function:
@@ -63,7 +63,7 @@ Resources:
   CognitoDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: employee-portal-auth
+      Domain: !Sub "${AWS::StackName}-auth"
       UserPoolId: !Ref CognitoUserPool
 
   CognitoAdminGroup:
