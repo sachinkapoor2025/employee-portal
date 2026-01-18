@@ -656,7 +656,7 @@ Resources:
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "employee-portal-ui-${AWS::AccountId}"
+      BucketName: !Sub "${AWS::StackName}-frontend-${AWS::AccountId}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -726,3 +726,6 @@ Outputs:
 
   FrontendURL:
     Value: !Sub "https://${FrontendDomainName}"
+
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
