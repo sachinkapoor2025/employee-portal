@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Employee Portal – Full Serverless Stack (Backend + Auth + Frontend Infra)
 
@@ -22,15 +22,14 @@ Globals:
         USER_ACCESS_TABLE: UserAccess
 
 Resources:
-
-# =====================================================
-# 1️⃣ COGNITO
-# =====================================================
+  # =====================================================
+  # 1️⃣ COGNITO
+  # =====================================================
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: employee-portal-user-pool
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:
@@ -45,12 +44,12 @@ Resources:
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: employee-portal-client
+      ClientName: !Sub "${AWS::StackName}-client"
       UserPoolId: !Ref CognitoUserPool
       GenerateSecret: false
       AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthFlows: [ implicit ]
-      AllowedOAuthScopes: [ email, openid ]
+      AllowedOAuthFlows: [implicit]
+      AllowedOAuthScopes: [email, openid]
       ExplicitAuthFlows:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
@@ -80,8 +79,8 @@ Resources:
       UserPoolId: !Ref CognitoUserPool
 
   # =====================================================
-# 2️⃣ API GATEWAY LOGGING (NEW)
-# =====================================================
+  # 2️⃣ API GATEWAY LOGGING (NEW)
+  # =====================================================
 
   ApiGatewayLogGroup:
     Type: AWS::Logs::LogGroup
@@ -107,9 +106,9 @@ Resources:
     Properties:
       CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
 
-# =====================================================
-# 3️⃣ API GATEWAY
-# =====================================================
+  # =====================================================
+  # 3️⃣ API GATEWAY
+  # =====================================================
 
   ApiGateway:
     Type: AWS::Serverless::Api
@@ -136,9 +135,9 @@ Resources:
           DataTraceEnabled: true
           MetricsEnabled: true
 
-# =====================================================
-# 3️⃣ DYNAMODB
-# =====================================================
+  # =====================================================
+  # 3️⃣ DYNAMODB
+  # =====================================================
 
   UsersTable:
     Type: AWS::DynamoDB::Table
@@ -236,9 +235,73 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
-# =====================================================
-# 4️⃣ LAMBDAS (ALL INCLUDED)
-# =====================================================
+  UserProfileTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-UserProfile"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  TrainingMaterialsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Training_Materials"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  SkillMasterTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-SkillMaster"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  ResignationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Resignations"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  # =====================================================
+  # 4️⃣ LAMBDAS (ALL INCLUDED)
+  # =====================================================
 
   AttendanceFunction:
     Type: AWS::Serverless::Function
@@ -368,7 +431,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: src/llm/mockTest.handler
-      Policies: [ AWSLambdaBasicExecutionRole ]
+      Policies: [AWSLambdaBasicExecutionRole]
       Events:
         MockTestApi:
           Type: Api
@@ -377,9 +440,218 @@ Resources:
             Method: POST
             RestApiId: !Ref ApiGateway
 
-# =====================================================
-# 5️⃣ FRONTEND (S3 + CLOUDFRONT HTTPS)
-# =====================================================
+  # =====================================================
+  # 5️⃣ S3 BUCKETS
+  # =====================================================
+
+  ProfileImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-profile-images"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET, POST]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  TrainingMaterialBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-training-material"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET, POST]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+  ImageUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/ImageUpload/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3WritePolicy:
+            BucketName: !Ref ProfileImagesBucket
+      Environment:
+        Variables:
+          PROFILE_IMAGE_BUCKET: !Ref ProfileImagesBucket
+      Events:
+        UploadImageApi:
+          Type: Api
+          Properties:
+            Path: /getProfileImageUploadUrl
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/UserProfileFunction/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserAccessTable
+      Environment:
+        Variables:
+          USER_ACCESS_TABLE: !Ref UserAccessTable
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserProfileFnApi:
+          Type: Api
+          Properties:
+            Path: /admin/save-user-profile
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserProfile:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/UserProfile/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+      Environment:
+        Variables:
+          ACCESS_TABLE: !Ref UserAccessTable
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserProfileApi:
+          Type: Api
+          Properties:
+            Path: /user/profile
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminGetUserProfileApi:
+          Type: Api
+          Properties:
+            Path: /admin/getUserProfile
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  TrainingVideoUrl:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/TrainingVideoUrl/app.handler
+      Policies: [AWSLambdaBasicExecutionRole]
+      Events:
+        TrainingVideoUrlApi:
+          Type: Api
+          Properties:
+            Path: /training/video-url
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  trainingUrl:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/trainingUrl/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
+      Events:
+        TrainingUrlApi:
+          Type: Api
+          Properties:
+            Path: /getTrainingUploadUrl
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserTrainingList:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/UserTrainingList/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref TrainingMaterialsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Environment:
+        Variables:
+          TRAINING_TABLE: !Ref TrainingMaterialsTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserTrainingListApi:
+          Type: Api
+          Properties:
+            Path: /getUserTrainingList
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  getSkills:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/getSkills/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref SkillMasterTable
+      Environment:
+        Variables:
+          SKILL_TABLE: !Ref SkillMasterTable
+      Events:
+        GetSkillsApi:
+          Type: Api
+          Properties:
+            Path: /skills
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  resignation:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/resignation/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResignationsTable
+      Environment:
+        Variables:
+          RESIGNATIONS_TABLE: !Ref ResignationsTable
+      Events:
+        ResignationApi:
+          Type: Api
+          Properties:
+            Path: /resignation
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  addTraining:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: backend/lambda/addTraining/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TrainingMaterialsTable
+        - S3WritePolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
+      Events:
+        AddTrainingApi:
+          Type: Api
+          Properties:
+            Path: /addTrainingMaterial
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  # =====================================================
+  # 5️⃣ FRONTEND (S3 + CLOUDFRONT HTTPS)
+  # =====================================================
 
   FrontendBucket:
     Type: AWS::S3::Bucket
@@ -406,7 +678,7 @@ Resources:
       DistributionConfig:
         Enabled: true
         DefaultRootObject: index.html
-        Aliases: [ !Ref FrontendDomainName ]
+        Aliases: [!Ref FrontendDomainName]
         ViewerCertificate:
           AcmCertificateArn: arn:aws:acm:us-east-1:985539754737:certificate/f7afd075-177d-41d4-a782-3abbab82df5b
           SslSupportMethod: sni-only
@@ -418,8 +690,8 @@ Resources:
         DefaultCacheBehavior:
           TargetOriginId: frontend
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: [ GET, HEAD, OPTIONS ]
-          CachedMethods: [ GET, HEAD ]
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
           ForwardedValues:
             QueryString: true
 

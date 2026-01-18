@@ -14,14 +14,14 @@ export default function Layout({ children }) {
       backgroundSize: "cover",
       backgroundPosition: "center",
       backgroundRepeat: "no-repeat",
-      backgroundAttachment: "fixed"
+      backgroundAttachment: "fixed",
     },
     nav: {
       backgroundColor: "rgba(255,255,255,0.9)",
       padding: "10px",
       borderRadius: "8px",
       marginBottom: "20px",
-      textAlign: "center"
+      textAlign: "center",
     },
     navButton: {
       display: "inline-block",
@@ -34,29 +34,99 @@ export default function Layout({ children }) {
       fontSize: "14px",
       cursor: "pointer",
       textDecoration: "none",
-      textAlign: "center"
-    }
+      textAlign: "center",
+    },
+    adminButton: {
+      backgroundColor: "#ff9800",
+    },
   };
 
   return (
     <div style={styles.page}>
       <nav style={styles.nav}>
-        <button style={styles.navButton} onClick={() => navigate("/")}>Dashboard</button>
-        <button style={styles.navButton} onClick={() => navigate("/attendance")}>Attendance</button>
-        <button style={styles.navButton} onClick={() => navigate("/training")}>Training</button>
-        <button style={styles.navButton} onClick={() => navigate("/work")}>Work</button>
-        <button style={styles.navButton} onClick={() => navigate("/performance")}>Performance</button>
-        <button style={styles.navButton} onClick={() => navigate("/expertise")}>Expertise</button>
-        <button style={styles.navButton} onClick={() => navigate("/profile")}>Profile</button>
-        <button style={styles.navButton} onClick={() => navigate("/payroll")}>Payroll</button>
-        <button style={styles.navButton} onClick={() => navigate("/exit")}>Exit the Firm</button>
-        {role === 'ADMIN' && (
+        {/* ===== COMMON (USER + ADMIN) ===== */}
+        <button style={styles.navButton} onClick={() => navigate("/")}>
+          Dashboard
+        </button>
+
+        <button
+          style={styles.navButton}
+          onClick={() => navigate("/attendance")}
+        >
+          Attendance
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/training")}>
+          Training
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/work")}>
+          Work
+        </button>
+
+        <button
+          style={styles.navButton}
+          onClick={() => navigate("/performance")}
+        >
+          Performance
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/expertise")}>
+          Expertise
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/profile")}>
+          Profile
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/payroll")}>
+          Payroll
+        </button>
+
+        <button style={styles.navButton} onClick={() => navigate("/exit")}>
+          Exit the Firm
+        </button>
+
+        {/* ===== ADMIN ONLY ===== */}
+        {role === "ADMIN" && (
           <>
-            <button style={styles.navButton} onClick={() => navigate("/admin/users")}>Manage Users</button>
+            <button
+              style={{ ...styles.navButton, ...styles.adminButton }}
+              onClick={() => navigate("/admin/users")}
+            >
+              Manage Users
+            </button>
+
+            <button
+              style={{ ...styles.navButton, ...styles.adminButton }}
+              onClick={() => navigate("/admin/tasks")}
+            >
+              Manage Tasks
+            </button>
+
+            <button
+              style={{ ...styles.navButton, ...styles.adminButton }}
+              onClick={() => navigate("/admin/resignations")}
+            >
+              Resignations
+            </button>
+
+            {/* ✅ ADD TRAINING (NEW) */}
+            <button
+              style={{ ...styles.navButton, ...styles.adminButton }}
+              onClick={() => navigate("/admin/add-training")}
+            >
+              Add Training
+            </button>
           </>
         )}
-        <button style={styles.navButton} onClick={logout}>Logout</button>
+
+        {/* ===== LOGOUT ===== */}
+        <button style={styles.navButton} onClick={logout}>
+          Logout
+        </button>
       </nav>
+
       {children}
     </div>
   );

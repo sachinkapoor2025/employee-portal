@@ -17,6 +17,13 @@ import Profile from "./pages/Profile";
 import Payroll from "./pages/Payroll";
 import Exit from "./pages/Exit";
 import RequestAccess from "./pages/RequestAccess";
+import Blocked from "./pages/Blocked";
+
+// ADMIN
+import ManageUsers from "./pages/Admin/ManageUsers";
+import ManageTasks from "./pages/Admin/ManageTasks";
+import Resignations from "./pages/Admin/Resignations";
+import AddTraining from "./pages/Admin/AddTraining";
 
 export default function App() {
   const token = localStorage.getItem("token");
@@ -25,16 +32,15 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        {/* Public */}
+        {/* PUBLIC */}
         <Route path="/login" element={<Login />} />
         <Route path="/callback" element={<Callback />} />
         <Route path="/request-access" element={<RequestAccess />} />
+        <Route path="/blocked" element={<Blocked />} />
 
-        {/* Not logged in */}
         {!token && <Route path="*" element={<Navigate to="/login" />} />}
 
-        {/* USER ROUTES */}
-        {token && role === "USER" && (
+        {token && (role === "USER" || role === "ADMIN") && (
           <>
             <Route path="/" element={<Dashboard />} />
             <Route path="/attendance" element={<Attendance />} />
@@ -48,7 +54,15 @@ export default function App() {
           </>
         )}
 
-        {/* Fallback */}
+        {token && role === "ADMIN" && (
+          <>
+            <Route path="/admin/users" element={<ManageUsers />} />
+            <Route path="/admin/tasks" element={<ManageTasks />} />
+            <Route path="/admin/resignations" element={<Resignations />} />
+            <Route path="/admin/add-training" element={<AddTraining />} />
+          </>
+        )}
+
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Router>

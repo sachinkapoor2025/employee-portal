@@ -1,11 +1,41 @@
 import { useState, useEffect } from "react";
 import Layout from "../components/Layout";
 
-export default function Attendance() {
-  const [currentWeekStart, setCurrentWeekStart] = useState(() => getStartOfWeek(new Date(2026, 0, 1)));
-  const [attendanceData, setAttendanceData] = useState({});
+/* ======================
+   BUTTON COLORS
+====================== */
 
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const STATUS_COLORS = {
+  Working: "#22c55e", // green
+  Leave: "#ef4444", // red
+  Holiday: "#f97316", // orange
+  WeeklyOff: "#9ca3af", // grey
+};
+
+const BLUE_BTN = "#2563eb";
+
+export default function Attendance() {
+  const [currentWeekStart, setCurrentWeekStart] = useState(() =>
+    getStartOfWeek(new Date())
+  );
+  const [attendanceData, setAttendanceData] = useState({});
+  const [lockedDates, setLockedDates] = useState({});
+
+  const token = localStorage.getItem("token");
+
+  const dayNames = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+
+  /* ======================
+     DATE HELPERS
+  ====================== */
 
   function getStartOfWeek(date) {
     const d = new Date(date);
@@ -15,177 +45,262 @@ export default function Attendance() {
   }
 
   function formatDate(date) {
-    return date.toISOString().split('T')[0];
+    return date.toISOString().split("T")[0];
   }
 
   function getWeekDates(start) {
-    const dates = [];
-    for (let i = 0; i < 7; i++) {
-      const date = new Date(start);
-      date.setDate(start.getDate() + i);
-      dates.push(date);
-    }
-    return dates;
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      return d;
+    });
   }
 
+  function startOfDay(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function isWithinEditableRange(date) {
+    const today = startOfDay(new Date());
+    const target = startOfDay(date);
+
+    const oneWeekAgo = new Date(today);
+    oneWeekAgo.setDate(today.getDate() - 7);
+
+    const threeDaysAhead = new Date(today);
+    threeDaysAhead.setDate(today.getDate() + 3);
+
+    return target >= oneWeekAgo && target <= threeDaysAhead;
+  }
+
+  /* ======================
+     FETCH ATTENDANCE
+  ====================== */
+
   const fetchAttendance = async (start, end) => {
-    const token = localStorage.getItem("token");
     try {
       const res = await fetch(
         `${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`,
         {
           headers: {
-            Authorization: `Bearer ${token}`
-          }
+            Authorization: token,
+          },
         }
       );
+
       const data = await res.json();
-      const dataObj = {};
-      data.forEach(item => {
-        dataObj[item.date] = { status: item.status, hours: item.hours };
+
+      if (!Array.isArray(data)) {
+        setAttendanceData({});
+        setLockedDates({});
+        return;
+      }
+
+      const obj = {};
+      const locked = {};
+
+      data.forEach((item) => {
+        obj[item.date] = {
+          status: item.status,
+          hours: item.hours || 0,
+        };
+        locked[item.date] = true;
       });
-      setAttendanceData(dataObj);
-    } catch (error) {
-      console.error("Error fetching attendance:", error);
+
+      setAttendanceData(obj);
+      setLockedDates(locked);
+    } catch (err) {
+      console.error("Fetch attendance error:", err);
     }
   };
 
+  /* ======================
+     SUBMIT ATTENDANCE
+  ====================== */
+
   const submitAttendance = async () => {
-    const token = localStorage.getItem("token");
-    const attendanceArray = [];
-    const dates = getWeekDates(currentWeekStart);
-    dates.forEach(date => {
-      const dateStr = formatDate(date);
-      const data = attendanceData[dateStr];
-      if (data && data.status) {
-        attendanceArray.push({
+    const attendance = getWeekDates(currentWeekStart)
+      .map((date) => {
+        const dateStr = formatDate(date);
+        const data = attendanceData[dateStr];
+
+        if (!data?.status) return null;
+        if (!isWithinEditableRange(date)) return null;
+        if (lockedDates[dateStr]) return null;
+
+        return {
           date: dateStr,
           status: data.status,
-          hours: data.hours
-        });
-      }
-    });
+          hours: data.hours || 0,
+        };
+      })
+      .filter(Boolean);
+
+    if (attendance.length === 0) {
+      alert("No valid attendance to submit");
+      return;
+    }
 
     try {
-      await fetch(`${process.env.REACT_APP_API_URL}/attendance`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL}/attendance`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}` // ✅ FIX
+          Authorization: token,
         },
-        body: JSON.stringify(attendanceArray)
+        body: JSON.stringify({
+          week: formatDate(currentWeekStart),
+          attendance,
+        }),
       });
-      alert("Attendance saved");
-    } catch (error) {
-      console.error("Error saving attendance:", error);
-      alert("Error saving attendance");
+
+      if (!res.ok) throw new Error("Submit failed");
+
+      alert("Attendance submitted successfully");
+
+      const dates = getWeekDates(currentWeekStart);
+      fetchAttendance(formatDate(dates[0]), formatDate(dates[6]));
+    } catch (err) {
+      console.error("Submit error:", err);
+      alert("Failed to submit attendance");
     }
   };
 
   const updateAttendance = (dateStr, updates) => {
-    setAttendanceData(prev => ({
+    setAttendanceData((prev) => ({
       ...prev,
-      [dateStr]: { ...prev[dateStr], ...updates }
+      [dateStr]: { ...prev[dateStr], ...updates },
     }));
   };
 
-  const goToPreviousWeek = () => {
-    setCurrentWeekStart(prev => {
-      const newStart = new Date(prev.getTime() - 7 * 24 * 60 * 60 * 1000);
-      if (newStart.getFullYear() < 2026) return prev;
-      return newStart;
-    });
-  };
+  const goToPreviousWeek = () =>
+    setCurrentWeekStart((prev) => new Date(prev.getTime() - 7 * 86400000));
 
-  const goToNextWeek = () => {
-    setCurrentWeekStart(prev => {
-      const newStart = new Date(prev.getTime() + 7 * 24 * 60 * 60 * 1000);
-      if (newStart.getFullYear() > 2026) return prev;
-      return newStart;
-    });
-  };
+  const goToNextWeek = () =>
+    setCurrentWeekStart((prev) => new Date(prev.getTime() + 7 * 86400000));
 
   useEffect(() => {
     const dates = getWeekDates(currentWeekStart);
-    const startDate = formatDate(dates[0]);
-    const endDate = formatDate(dates[6]);
-    fetchAttendance(startDate, endDate);
+    fetchAttendance(formatDate(dates[0]), formatDate(dates[6]));
   }, [currentWeekStart]);
 
   const dates = getWeekDates(currentWeekStart);
 
-  const styles = {
-    container: { backgroundColor: "rgba(255,255,255,0.9)", padding: "24px", borderRadius: "12px" },
-    table: { width: "100%", borderCollapse: "collapse" },
-    th: { border: "1px solid #ddd", padding: "8px", textAlign: "left", backgroundColor: "#f2f2f2" },
-    td: { border: "1px solid #ddd", padding: "8px" },
-    button: { padding: "6px 12px", margin: "2px", border: "none", borderRadius: "4px", cursor: "pointer" },
-    workingButton: { backgroundColor: "#4caf50", color: "white" },
-    holidayButton: { backgroundColor: "#ff9800", color: "white" },
-    leaveButton: { backgroundColor: "#f44336", color: "white" },
-    weeklyOffButton: { backgroundColor: "#9e9e9e", color: "white" },
-    input: { padding: "4px", width: "60px", marginLeft: "10px" },
-    navButton: { padding: "10px 20px", margin: "10px", backgroundColor: "#1976d2", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" },
-    submitButton: { padding: "10px 20px", backgroundColor: "#1976d2", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", marginTop: "20px" }
-  };
+  /* ======================
+     UI
+  ====================== */
 
   return (
     <Layout>
-      <div style={styles.container}>
+      <div style={{ background: "#fff", padding: 24, borderRadius: 12 }}>
         <h2>Attendance</h2>
-        <div>
-          <button style={styles.navButton} onClick={goToPreviousWeek}>Previous Week</button>
-          <button style={styles.navButton} onClick={goToNextWeek}>Next Week</button>
-        </div>
-        <table style={styles.table}>
+
+        {/* WEEK NAVIGATION */}
+        <button
+          onClick={goToPreviousWeek}
+          style={{
+            background: BLUE_BTN,
+            color: "#fff",
+            border: "none",
+            padding: "8px 14px",
+            borderRadius: 8,
+            cursor: "pointer",
+            fontWeight: 500,
+          }}
+        >
+          Previous Week
+        </button>
+
+        <button
+          onClick={goToNextWeek}
+          style={{
+            marginLeft: 10,
+            background: BLUE_BTN,
+            color: "#fff",
+            border: "none",
+            padding: "8px 14px",
+            borderRadius: 8,
+            cursor: "pointer",
+            fontWeight: 500,
+          }}
+        >
+          Next Week
+        </button>
+
+        {/* TABLE */}
+        <table style={{ width: "100%", marginTop: 20 }}>
           <thead>
             <tr>
-              <th style={styles.th}>Date</th>
-              <th style={styles.th}>Day</th>
-              <th style={styles.th}>Status</th>
+              <th>Date</th>
+              <th>Day</th>
+              <th>Status</th>
             </tr>
           </thead>
+
           <tbody>
-            {dates.map(date => {
+            {dates.map((date) => {
               const dateStr = formatDate(date);
               const data = attendanceData[dateStr] || {};
-              const dayName = dayNames[date.getDay()];
+              const editable =
+                isWithinEditableRange(date) && !lockedDates[dateStr];
+
               return (
                 <tr key={dateStr}>
-                  <td style={styles.td}>{dateStr}</td>
-                  <td style={styles.td}>{dayName}</td>
-                  <td style={styles.td}>
-                    <button
-                      style={{ ...styles.button, ...(data.status === 'Working' ? styles.workingButton : {}) }}
-                      onClick={() => updateAttendance(dateStr, { status: 'Working' })}
-                    >
-                      Working Day
-                    </button>
-                    <button
-                      style={{ ...styles.button, ...(data.status === 'Holiday' ? styles.holidayButton : {}) }}
-                      onClick={() => updateAttendance(dateStr, { status: 'Holiday' })}
-                    >
-                      Holiday
-                    </button>
-                    <button
-                      style={{ ...styles.button, ...(data.status === 'Leave' ? styles.leaveButton : {}) }}
-                      onClick={() => updateAttendance(dateStr, { status: 'Leave' })}
-                    >
-                      Leave
-                    </button>
-                    <button
-                      style={{ ...styles.button, ...(data.status === 'WeeklyOff' ? styles.weeklyOffButton : {}) }}
-                      onClick={() => updateAttendance(dateStr, { status: 'WeeklyOff' })}
-                    >
-                      Weekly Off
-                    </button>
-                    {data.status === 'Working' && (
+                  <td>{dateStr}</td>
+                  <td>{dayNames[date.getDay()]}</td>
+
+                  <td>
+                    {["Working", "Holiday", "Leave", "WeeklyOff"].map(
+                      (status) => {
+                        const isActive = data.status === status;
+
+                        return (
+                          <button
+                            key={status}
+                            disabled={!editable}
+                            onClick={() =>
+                              editable && updateAttendance(dateStr, { status })
+                            }
+                            style={{
+                              marginRight: 6,
+                              marginBottom: 6,
+                              padding: "6px 12px",
+                              borderRadius: 20,
+                              border: "none",
+                              cursor: editable ? "pointer" : "not-allowed",
+                              background: isActive
+                                ? STATUS_COLORS[status]
+                                : "#e5e7eb",
+                              color: isActive ? "#fff" : "#111",
+                              fontWeight: 500,
+                              opacity: editable ? 1 : 0.4,
+                              transition: "all 0.2s ease",
+                            }}
+                          >
+                            {status}
+                          </button>
+                        );
+                      }
+                    )}
+
+                    {data.status === "Working" && (
                       <input
                         type="number"
-                        placeholder="Hours"
-                        value={data.hours || ''}
-                        onChange={(e) => updateAttendance(dateStr, { hours: parseFloat(e.target.value) })}
-                        style={styles.input}
+                        disabled={!editable}
+                        value={data.hours || ""}
+                        onChange={(e) =>
+                          editable &&
+                          updateAttendance(dateStr, {
+                            hours: Number(e.target.value),
+                          })
+                        }
+                        style={{
+                          width: 60,
+                          marginLeft: 8,
+                          padding: 4,
+                        }}
                       />
                     )}
                   </td>
@@ -194,7 +309,24 @@ export default function Attendance() {
             })}
           </tbody>
         </table>
-        <button style={styles.submitButton} onClick={submitAttendance}>Submit Attendance</button>
+
+        {/* SUBMIT */}
+        <button
+          onClick={submitAttendance}
+          style={{
+            marginTop: 20,
+            background: BLUE_BTN,
+            color: "#fff",
+            border: "none",
+            padding: "10px 18px",
+            borderRadius: 10,
+            cursor: "pointer",
+            fontSize: 15,
+            fontWeight: 600,
+          }}
+        >
+          Submit Attendance
+        </button>
       </div>
     </Layout>
   );

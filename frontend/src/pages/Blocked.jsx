@@ -1,14 +1,9 @@
 export default function Blocked() {
   return (
-    <div
-      style={{
-        backgroundColor: "rgba(255,255,255,0.9)",
-        padding: "24px",
-        borderRadius: "12px",
-        textAlign: "center",
-      }}
-    >
-      <h2>Your access is blocked. Contact admin.</h2>
+    <div style={{ textAlign: "center", marginTop: "100px" }}>
+      <h1>🚫 Account Blocked</h1>
+      <p>Your account has been blocked by the administrator.</p>
+      <p>Please contact admin for further assistance.</p>
     </div>
   );
 }

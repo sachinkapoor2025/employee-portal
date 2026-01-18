@@ -1,0 +1,12 @@
+version = 0.1
+
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "mydgv-portal"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1q2w3e4r5t6y7u8i9o0"
+s3_prefix = "mydgv-portal"
+region = "ap-south-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = false
