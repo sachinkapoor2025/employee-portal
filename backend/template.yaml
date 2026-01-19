@@ -14,12 +14,12 @@ Globals:
     MemorySize: 256
     Environment:
       Variables:
-        USERS_TABLE: Users
-        ATTENDANCE_TABLE: Attendance
-        WORK_TABLE: WorkTasks
-        PERFORMANCE_TABLE: Performance
-        TRAINING_PROGRESS_TABLE: TrainingProgress
-        USER_ACCESS_TABLE: UserAccess
+        USERS_TABLE: !Ref UsersTable
+        ATTENDANCE_TABLE: !Ref AttendanceTable
+        WORK_TABLE: !Ref WorkTasksTable
+        PERFORMANCE_TABLE: !Ref PerformanceTable
+        TRAINING_PROGRESS_TABLE: !Ref TrainingProgressTable
+        USER_ACCESS_TABLE: !Ref UserAccessTable
 
 Resources:
   # =====================================================
@@ -144,7 +144,7 @@ Resources:
   UsersTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Users
+      TableName: !Sub "${AWS::StackName}-Users"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -160,7 +160,7 @@ Resources:
   AttendanceTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Attendance
+      TableName: !Sub "${AWS::StackName}-Attendance"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -176,7 +176,7 @@ Resources:
   WorkTasksTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: WorkTasks
+      TableName: !Sub "${AWS::StackName}-WorkTasks"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -192,7 +192,7 @@ Resources:
   PerformanceTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Performance
+      TableName: !Sub "${AWS::StackName}-Performance"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -208,7 +208,7 @@ Resources:
   TrainingProgressTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: TrainingProgress
+      TableName: !Sub "${AWS::StackName}-TrainingProgress"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -224,7 +224,7 @@ Resources:
   UserAccessTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: UserAccess
+      TableName: !Sub "${AWS::StackName}-UserAccess"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -313,7 +313,7 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Attendance
+            TableName: !Ref AttendanceTable
       Events:
         AttendancePostApi:
           Type: Api
@@ -336,7 +336,7 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: TrainingProgress
+            TableName: !Ref TrainingProgressTable
       Events:
         TrainingGetApi:
           Type: Api
@@ -359,7 +359,7 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: WorkTasks
+            TableName: !Ref WorkTasksTable
       Events:
         WorkApi:
           Type: Api
@@ -376,7 +376,7 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Performance
+            TableName: !Ref PerformanceTable
       Events:
         PerformanceApi:
           Type: Api
@@ -393,11 +393,11 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Users
+            TableName: !Ref UsersTable
         - DynamoDBCrudPolicy:
-            TableName: WorkTasks
+            TableName: !Ref WorkTasksTable
         - DynamoDBCrudPolicy:
-            TableName: UserAccess
+            TableName: !Ref UserAccessTable
       Events:
         AdminUsersGetApi:
           Type: Api
@@ -420,7 +420,7 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: UserAccess
+            TableName: !Ref UserAccessTable
       Events:
         AccessApi:
           Type: Api
