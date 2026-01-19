@@ -49,9 +49,32 @@ exports.handler = async (event) => {
 
       console.log("DynamoDB GET result:", result);
 
-      // ❌ No record → Request Access page
+      // ❌ No record → Auto-create with USER role and ACTIVE status
       if (!result.Item) {
-        return ok({ access: "DENIED" });
+        console.log("No access record found, auto-creating for new user");
+
+        try {
+          await client.send(
+            new PutItemCommand({
+              TableName: tableName,
+              Item: {
+                PK: { S: email },
+                SK: { S: email },
+                email: { S: email },
+                role: { S: "USER" },
+                status: { S: "ACTIVE" },
+                createdAt: { S: new Date().toISOString() },
+              },
+              ConditionExpression: "attribute_not_exists(PK)",
+            })
+          );
+
+          console.log("Auto-created access record for:", email);
+          return ok({ access: "USER" });
+        } catch (error) {
+          console.error("Failed to auto-create access record:", error);
+          return serverError();
+        }
       }
 
       const status = result.Item.status?.S;
