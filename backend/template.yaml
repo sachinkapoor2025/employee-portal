@@ -29,7 +29,7 @@ Resources:
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub "${AWS::StackName}-user-pool"`
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:
