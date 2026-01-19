@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Layout from "../components/Layout";
 import { api, fetchUserTrainings } from "../services/api";
 
@@ -8,7 +8,7 @@ export default function Work() {
   const [loading, setLoading] = useState(true);
 
   // TEMP – later fetch from profile / auth
-  const userSkills = ["AWS"];
+  const userSkills = useMemo(() => ["AWS"], []);
 
   const fetchData = useCallback(async () => {
     try {
