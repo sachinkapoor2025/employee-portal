@@ -26,7 +26,7 @@ export const handleCallback = async () => {
     window.location.replace("/login");
     return;
   }
-
+  localStorage.setItem("id_token", idToken);
   localStorage.setItem("token", idToken);
 
   try {
