@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Layout from "../components/Layout";
 
 /* ======================
@@ -79,7 +79,7 @@ export default function Attendance() {
      FETCH ATTENDANCE
   ====================== */
 
-  const fetchAttendance = async (start, end) => {
+  const fetchAttendance = useCallback(async (start, end) => {
     try {
       const res = await fetch(
         `${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`,
@@ -114,7 +114,7 @@ export default function Attendance() {
     } catch (err) {
       console.error("Fetch attendance error:", err);
     }
-  };
+  }, [token]);
 
   /* ======================
      SUBMIT ATTENDANCE
@@ -184,7 +184,7 @@ export default function Attendance() {
   useEffect(() => {
     const dates = getWeekDates(currentWeekStart);
     fetchAttendance(formatDate(dates[0]), formatDate(dates[6]));
-  }, [currentWeekStart]);
+  }, [currentWeekStart, fetchAttendance]);
 
   const dates = getWeekDates(currentWeekStart);
 

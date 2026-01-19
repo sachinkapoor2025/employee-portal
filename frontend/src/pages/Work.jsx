@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Layout from "../components/Layout";
 import { api, fetchUserTrainings } from "../services/api";
 
@@ -10,11 +10,7 @@ export default function Work() {
   // TEMP – later fetch from profile / auth
   const userSkills = ["AWS"];
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
 
@@ -45,7 +41,11 @@ export default function Work() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [userSkills]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   // =========================
   // STYLES (UNCHANGED)
