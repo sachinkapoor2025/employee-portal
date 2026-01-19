@@ -29,7 +29,7 @@ Resources:
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"`
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:
@@ -47,10 +47,22 @@ Resources:
       ClientName: !Sub "${AWS::StackName}-client"
       UserPoolId: !Ref CognitoUserPool
       GenerateSecret: false
+            # REQUIRED for Hosted UI
       AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthFlows: [implicit]
-      AllowedOAuthScopes: [email, openid]
+      AllowedOAuthFlows:
+        - implicit
+        - code
+
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+
+      SupportedIdentityProviders:
+      - COGNITO
+
       ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       CallbackURLs:
