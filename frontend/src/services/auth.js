@@ -1,5 +1,5 @@
-const domain = "https://employee-portal-auth.auth.ap-south-1.amazoncognito.com";
-const clientId = "2o013hc1m4tqrflvt257tmkmhf";
+const domain = "https://mydgv-portal-auth.auth.ap-south-1.amazoncognito.com";
+const clientId = "5q797v9k55ad1q36mol3glhecf";
 const redirectUri = `${window.location.origin}/callback`;
 
 // ===============================
