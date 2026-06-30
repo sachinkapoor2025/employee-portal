@@ -1,4 +1,4 @@
-const { getUser } = require("../common/auth");
+const { getUser, isAllowedEmail } = require("../common/auth");
 const {
   DynamoDBClient,
   GetItemCommand,
@@ -17,6 +17,22 @@ const corsHeaders = {
   "Content-Type": "application/json",
 };
 
+function resolveAccess(user, record) {
+  if (!isAllowedEmail(user.email)) {
+    return "DENIED";
+  }
+
+  if (!record) {
+    return user.isAdmin ? "ADMIN" : "USER";
+  }
+
+  const status = record.status?.S;
+  if (status === "PENDING") return "PENDING";
+  if (status !== "ACTIVE") return "BLOCKED";
+
+  return user.isAdmin ? "ADMIN" : "USER";
+}
+
 exports.handler = async (event) => {
   console.log("Incoming event:", JSON.stringify(event));
 
@@ -28,7 +44,12 @@ exports.handler = async (event) => {
     return serverError();
   }
 
-  console.log("Authenticated email:", email);
+  if (!isAllowedEmail(email)) {
+    console.warn("Blocked non-company email:", email);
+    return ok({ access: "DENIED", message: "Only @mydgv.com accounts are allowed" });
+  }
+
+  console.log("Authenticated email:", email, "groups:", user.groups);
 
   const tableName = process.env.USER_ACCESS_TABLE;
 
@@ -37,61 +58,34 @@ exports.handler = async (event) => {
       const result = await client.send(
         new GetItemCommand({
           TableName: tableName,
-          Key: {
-            PK: { S: email },
-            SK: { S: email },
-          },
+          Key: { PK: { S: email }, SK: { S: email } },
         })
       );
 
-      console.log("DynamoDB GET result:", result);
-
       if (!result.Item) {
-        console.log("No access record found, auto-creating for new user");
+        const access = resolveAccess(user, null);
+        if (access === "DENIED") return ok({ access: "DENIED" });
 
-        try {
-          await client.send(
-            new PutItemCommand({
-              TableName: tableName,
-              Item: {
-                PK: { S: email },
-                SK: { S: email },
-                email: { S: email },
-                role: { S: "USER" },
-                status: { S: "ACTIVE" },
-                createdAt: { S: new Date().toISOString() },
-              },
-              ConditionExpression: "attribute_not_exists(PK)",
-            })
-          );
+        await client.send(
+          new PutItemCommand({
+            TableName: tableName,
+            Item: {
+              PK: { S: email },
+              SK: { S: email },
+              email: { S: email },
+              role: { S: user.isAdmin ? "ADMIN" : "USER" },
+              status: { S: "ACTIVE" },
+              createdAt: { S: new Date().toISOString() },
+            },
+            ConditionExpression: "attribute_not_exists(PK)",
+          })
+        );
 
-          console.log("Auto-created access record for:", email);
-          return ok({ access: "USER" });
-        } catch (error) {
-          console.error("Failed to auto-create access record:", error);
-          return serverError();
-        }
+        return ok({ access });
       }
 
-      const status = result.Item.status?.S;
-      const role = result.Item.role?.S;
-
-      console.log("Resolved access:", { email, role, status });
-
-      if (status === "PENDING") {
-        return ok({ access: "PENDING" });
-      }
-
-      if (status !== "ACTIVE") {
-        return ok({ access: "BLOCKED" });
-      }
-
-      if (role === "ADMIN" || role === "USER") {
-        return ok({ access: role });
-      }
-
-      console.warn("Invalid role detected:", role);
-      return ok({ access: "DENIED" });
+      const access = resolveAccess(user, result.Item);
+      return ok({ access });
     } catch (error) {
       console.error("Access check failed:", error);
       return serverError();
@@ -103,25 +97,21 @@ exports.handler = async (event) => {
       const existing = await client.send(
         new GetItemCommand({
           TableName: tableName,
-          Key: {
-            PK: { S: email },
-            SK: { S: email },
-          },
+          Key: { PK: { S: email }, SK: { S: email } },
         })
       );
 
       if (existing.Item) {
-        const status = existing.Item.status?.S;
-        const role = existing.Item.role?.S;
+        const access = resolveAccess(user, existing.Item);
 
-        if (status === "ACTIVE" && (role === "USER" || role === "ADMIN")) {
+        if (access === "USER" || access === "ADMIN") {
           return ok({
             message: "You already have access. Redirecting to portal.",
-            access: role,
+            access,
           });
         }
 
-        if (status === "PENDING") {
+        if (access === "PENDING") {
           return ok({
             message: "Your access request is already pending approval.",
             access: "PENDING",
@@ -131,16 +121,10 @@ exports.handler = async (event) => {
         await client.send(
           new UpdateItemCommand({
             TableName: tableName,
-            Key: {
-              PK: { S: email },
-              SK: { S: email },
-            },
+            Key: { PK: { S: email }, SK: { S: email } },
             UpdateExpression:
               "SET #status = :status, #role = :role, updatedAt = :updatedAt",
-            ExpressionAttributeNames: {
-              "#status": "status",
-              "#role": "role",
-            },
+            ExpressionAttributeNames: { "#status": "status", "#role": "role" },
             ExpressionAttributeValues: {
               ":status": { S: "PENDING" },
               ":role": { S: "USER" },
@@ -149,10 +133,7 @@ exports.handler = async (event) => {
           })
         );
 
-        return ok({
-          message: "Access request submitted",
-          access: "PENDING",
-        });
+        return ok({ message: "Access request submitted", access: "PENDING" });
       }
 
       await client.send(

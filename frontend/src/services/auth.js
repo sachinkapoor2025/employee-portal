@@ -105,6 +105,12 @@ export function applyAccessRedirect(data) {
     return true;
   }
 
+  if (data.access === "DENIED") {
+    localStorage.clear();
+    window.location.replace("/login?domainDenied=1");
+    return true;
+  }
+
   localStorage.removeItem("role");
   return false;
 }

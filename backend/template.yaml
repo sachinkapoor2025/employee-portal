@@ -38,12 +38,32 @@ Resources:
         - email
       AutoVerifiedAttributes:
         - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpFunction.Arn
       Policies:
         PasswordPolicy:
           MinimumLength: 8
           RequireUppercase: true
           RequireLowercase: true
           RequireNumbers: true
+
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-PreSignUpFunction"
+      Handler: lambda/cognito/preSignUp.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PreSignUpFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
 
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -526,6 +546,7 @@ Resources:
               Action:
                 - cognito-idp:AdminCreateUser
                 - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
               Resource: !GetAtt CognitoUserPool.Arn
       Environment:
         Variables:

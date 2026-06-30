@@ -6,54 +6,15 @@ import {
   switchPortalView,
   getViewRole,
 } from "../services/auth";
+import { colors, navButton } from "../theme";
 
 export default function Layout({ children }) {
   const navigate = useNavigate();
   const [viewRole, setViewRole] = useState(getViewRole());
   const isAdminAccount = canAccessAdmin();
 
-  const styles = {
-    page: {
-      minHeight: "100vh",
-      padding: "20px",
-      fontFamily: "Arial, sans-serif",
-      backgroundImage: "url('/images/dgv_bg.png')",
-      backgroundSize: "cover",
-      backgroundPosition: "center",
-      backgroundRepeat: "no-repeat",
-      backgroundAttachment: "fixed",
-    },
-    nav: {
-      backgroundColor: "rgba(255,255,255,0.9)",
-      padding: "10px",
-      borderRadius: "8px",
-      marginBottom: "20px",
-      textAlign: "center",
-    },
-    navButton: {
-      display: "inline-block",
-      margin: "0 5px",
-      backgroundColor: "#1976d2",
-      color: "white",
-      border: "none",
-      padding: "10px 15px",
-      borderRadius: "8px",
-      fontSize: "14px",
-      cursor: "pointer",
-      textDecoration: "none",
-      textAlign: "center",
-    },
-    adminButton: {
-      backgroundColor: "#ff9800",
-    },
-    switchBar: {
-      marginBottom: 8,
-      padding: "8px 12px",
-      background: "#fff3e0",
-      borderRadius: 8,
-      display: "inline-block",
-    },
-  };
+  const activeBtn = { ...navButton, opacity: 1 };
+  const inactiveBtn = { ...navButton, opacity: 0.55 };
 
   const handleSwitch = (view) => {
     if (!switchPortalView(view)) return;
@@ -63,28 +24,48 @@ export default function Layout({ children }) {
   };
 
   return (
-    <div style={styles.page}>
-      <nav style={styles.nav}>
+    <div
+      style={{
+        minHeight: "100vh",
+        padding: "20px",
+        fontFamily: "Arial, sans-serif",
+        backgroundImage: "url('/images/dgv_bg.png')",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+        backgroundAttachment: "fixed",
+      }}
+    >
+      <nav
+        style={{
+          backgroundColor: "rgba(255,255,255,0.9)",
+          padding: "10px",
+          borderRadius: "8px",
+          marginBottom: "20px",
+          textAlign: "center",
+        }}
+      >
         {isAdminAccount && (
-          <div style={styles.switchBar}>
-            <span style={{ marginRight: 10, fontWeight: 600 }}>
+          <div
+            style={{
+              marginBottom: 8,
+              padding: "8px 12px",
+              background: colors.primaryLight,
+              borderRadius: 8,
+              display: "inline-block",
+            }}
+          >
+            <span style={{ marginRight: 10, fontWeight: 600, color: colors.text }}>
               Portal view:
             </span>
             <button
-              style={{
-                ...styles.navButton,
-                ...(viewRole === "USER" ? {} : { opacity: 0.6 }),
-              }}
+              style={viewRole === "USER" ? activeBtn : inactiveBtn}
               onClick={() => handleSwitch("employee")}
             >
               Employee
             </button>
             <button
-              style={{
-                ...styles.navButton,
-                ...styles.adminButton,
-                ...(viewRole === "ADMIN" ? {} : { opacity: 0.6 }),
-              }}
+              style={viewRole === "ADMIN" ? activeBtn : inactiveBtn}
               onClick={() => handleSwitch("admin")}
             >
               Admin
@@ -94,68 +75,28 @@ export default function Layout({ children }) {
 
         {(viewRole === "USER" || !isAdminAccount) && (
           <>
-            <button style={styles.navButton} onClick={() => navigate("/")}>
-              Dashboard
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/attendance")}>
-              Attendance
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/training")}>
-              Training
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/work")}>
-              Work
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/performance")}>
-              Performance
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/expertise")}>
-              Expertise
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/profile")}>
-              Profile
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/payroll")}>
-              Payroll
-            </button>
-            <button style={styles.navButton} onClick={() => navigate("/exit")}>
-              Exit the Firm
-            </button>
+            <button style={navButton} onClick={() => navigate("/")}>Dashboard</button>
+            <button style={navButton} onClick={() => navigate("/attendance")}>Attendance</button>
+            <button style={navButton} onClick={() => navigate("/training")}>Training</button>
+            <button style={navButton} onClick={() => navigate("/work")}>Work</button>
+            <button style={navButton} onClick={() => navigate("/performance")}>Performance</button>
+            <button style={navButton} onClick={() => navigate("/expertise")}>Expertise</button>
+            <button style={navButton} onClick={() => navigate("/profile")}>Profile</button>
+            <button style={navButton} onClick={() => navigate("/payroll")}>Payroll</button>
+            <button style={navButton} onClick={() => navigate("/exit")}>Exit the Firm</button>
           </>
         )}
 
         {viewRole === "ADMIN" && isAdminAccount && (
           <>
-            <button
-              style={{ ...styles.navButton, ...styles.adminButton }}
-              onClick={() => navigate("/admin/users")}
-            >
-              Manage Users
-            </button>
-            <button
-              style={{ ...styles.navButton, ...styles.adminButton }}
-              onClick={() => navigate("/admin/tasks")}
-            >
-              Manage Tasks
-            </button>
-            <button
-              style={{ ...styles.navButton, ...styles.adminButton }}
-              onClick={() => navigate("/admin/resignations")}
-            >
-              Resignations
-            </button>
-            <button
-              style={{ ...styles.navButton, ...styles.adminButton }}
-              onClick={() => navigate("/admin/add-training")}
-            >
-              Add Training
-            </button>
+            <button style={navButton} onClick={() => navigate("/admin/users")}>Manage Users</button>
+            <button style={navButton} onClick={() => navigate("/admin/tasks")}>Manage Tasks</button>
+            <button style={navButton} onClick={() => navigate("/admin/resignations")}>Resignations</button>
+            <button style={navButton} onClick={() => navigate("/admin/add-training")}>Add Training</button>
           </>
         )}
 
-        <button style={styles.navButton} onClick={logout}>
-          Logout
-        </button>
+        <button style={navButton} onClick={logout}>Logout</button>
       </nav>
 
       {children}

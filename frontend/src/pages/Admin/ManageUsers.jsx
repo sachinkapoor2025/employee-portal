@@ -210,7 +210,7 @@ export default function ManageUsers() {
                   ) : (
                     <button
                       style={{
-                        background: "#ff9800",
+                        background: "#1976d2",
                         color: "#fff",
                         border: "none",
                         padding: "6px 12px",
