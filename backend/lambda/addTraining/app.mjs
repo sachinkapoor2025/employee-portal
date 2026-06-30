@@ -11,20 +11,20 @@ export const handler = async (event) => {
 
     const { title, skill, level, duration_hours, video_s3_key } = body;
 
-    if (!title || !skill || !level || !duration_hours || !video_s3_key) {
-      return response(400, { message: "All fields are required" });
+    if (!title || !skill || !level || !video_s3_key) {
+      return response(400, { message: "Title, skill, level, and video are required" });
     }
 
     const training_id = randomUUID();
 
     const item = {
-      PK: `SKILL#${skill}`,
+      PK: `SKILL#${String(skill).trim().toUpperCase()}`,
       SK: `TRAINING#${training_id}`,
       training_id,
       title,
-      skill,
+      skill: String(skill).trim().toUpperCase(),
       level,
-      duration_hours,
+      duration_hours: duration_hours ?? 0,
       video_s3_key,
       is_active: true,
       created_at: new Date().toISOString(),

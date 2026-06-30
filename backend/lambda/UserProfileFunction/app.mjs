@@ -109,6 +109,9 @@ export const handler = async (event) => {
           SK: "PROFILE",
           email,
           ...profile,
+          skill: profile?.skill
+            ? String(profile.skill).trim().toUpperCase()
+            : profile?.skill,
           updatedAt: new Date().toISOString(),
         },
       })

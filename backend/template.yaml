@@ -24,6 +24,7 @@ Globals:
         PERFORMANCE_TABLE: !Ref PerformanceTable
         TRAINING_PROGRESS_TABLE: !Ref TrainingProgressTable
         USER_ACCESS_TABLE: !Ref UserAccessTable
+        ACTIVITY_TABLE: !Ref ActivityLogTable
 
 Resources:
   # =====================================================
@@ -336,6 +337,45 @@ Resources:
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+
+  ActivityLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ActivityLog"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DateIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AgentDownloadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-agent-downloads-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
   # =====================================================
   # 4️⃣ LAMBDAS (ALL INCLUDED)
@@ -715,6 +755,195 @@ Resources:
           Properties:
             Path: /addTrainingMaterial
             Method: POST
+            RestApiId: !Ref ApiGateway
+
+  ActivityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ActivityFunction"
+      Handler: lambda/activity/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActivityLogTable
+      Events:
+        ActivityPostApi:
+          Type: Api
+          Properties:
+            Path: /activity
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        ActivityTodayApi:
+          Type: Api
+          Properties:
+            Path: /activity/today
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminActivityApi:
+          Type: Api
+          Properties:
+            Path: /admin/activity
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDashboardApi:
+          Type: Api
+          Properties:
+            Path: /admin/dashboard
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  ProjectsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ProjectsFunction"
+      Handler: lambda/projects/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        ProjectsGetApi:
+          Type: Api
+          Properties:
+            Path: /projects
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ProjectsPostApi:
+          Type: Api
+          Properties:
+            Path: /projects
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TasksGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TasksPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TasksPutApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        TimeEntriesGetApi:
+          Type: Api
+          Properties:
+            Path: /time-entries
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TimeEntriesPostApi:
+          Type: Api
+          Properties:
+            Path: /time-entries
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  LeaveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-LeaveFunction"
+      Handler: lambda/leave/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        LeaveGetApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        LeavePostApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        LeavePutApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+
+  AnnouncementsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-AnnouncementsFunction"
+      Handler: lambda/announcements/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        AnnouncementsGetApi:
+          Type: Api
+          Properties:
+            Path: /announcements
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminAnnouncementsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminAnnouncementsDeleteApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+
+  ConsentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ConsentFunction"
+      Handler: lambda/consent/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        ConsentGetApi:
+          Type: Api
+          Properties:
+            Path: /consent
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ConsentPostApi:
+          Type: Api
+          Properties:
+            Path: /consent
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  AgentDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-AgentDownloadFunction"
+      Handler: lambda/agentDownload/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref AgentDownloadsBucket
+      Environment:
+        Variables:
+          AGENT_BUCKET: !Ref AgentDownloadsBucket
+      Events:
+        AgentDownloadApi:
+          Type: Api
+          Properties:
+            Path: /downloads/agent
+            Method: GET
             RestApiId: !Ref ApiGateway
 
   # =====================================================

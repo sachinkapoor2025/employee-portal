@@ -1,114 +1,120 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
-import { api, fetchUserTrainings } from "../services/api";
+import { fetchTasks, updateTask, logTimeEntry } from "../services/api";
+import {
+  colors,
+  pageCard,
+  pageTitle,
+  formLabel,
+  formInput,
+  buttonPrimary,
+} from "../theme";
+
+const STATUSES = ["TODO", "IN_PROGRESS", "REVIEW", "DONE"];
 
 export default function Work() {
   const [tasks, setTasks] = useState([]);
-  const [basicCompleted, setBasicCompleted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [timeForm, setTimeForm] = useState({ taskId: "", minutes: "", note: "" });
 
-  // TEMP – later fetch from profile / auth
-  const userSkills = useMemo(() => ["AWS"], []);
-
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-
-      // =========================
-      // FETCH WORK TASKS
-      // =========================
-      const tasksRes = await api("/work");
-      const safeTasks = Array.isArray(tasksRes) ? tasksRes : [];
-      setTasks(safeTasks);
-
-      // =========================
-      // FETCH TRAININGS (NEW FLOW)
-      // =========================
-      const trainingRes = await fetchUserTrainings(userSkills);
-      const safeTrainings = Array.isArray(trainingRes) ? trainingRes : [];
-
-      const basicTrainings = safeTrainings.filter((t) => t.level === "BASIC");
-
-      const allCompleted =
-        basicTrainings.length > 0 &&
-        basicTrainings.every((t) => t.status === "Completed");
-
-      setBasicCompleted(allCompleted);
-    } catch (err) {
-      console.error("Work page fetch failed:", err);
-      setTasks([]);
-      setBasicCompleted(false);
-    } finally {
-      setLoading(false);
-    }
-  }, [userSkills]);
+  const load = () =>
+    fetchTasks({ mine: "true" })
+      .then(setTasks)
+      .catch(console.error)
+      .finally(() => setLoading(false));
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    load();
+  }, []);
 
-  // =========================
-  // STYLES (UNCHANGED)
-  // =========================
-  const styles = {
-    container: {
-      backgroundColor: "rgba(255,255,255,0.9)",
-      padding: "24px",
-      borderRadius: "12px",
-    },
-    task: {
-      margin: "10px 0",
-      padding: "10px",
-      border: "1px solid #ddd",
-      borderRadius: "4px",
-    },
-    button: {
-      marginLeft: "10px",
-      padding: "5px 10px",
-      backgroundColor: "#1976d2",
-      color: "white",
-      border: "none",
-      borderRadius: "4px",
-      cursor: "pointer",
-    },
-    disabledButton: {
-      backgroundColor: "#ccc",
-      cursor: "not-allowed",
-    },
-    warning: {
-      color: "red",
-      fontWeight: "bold",
-      marginBottom: "20px",
-    },
+  const changeStatus = async (task, status) => {
+    await updateTask({ taskId: task.taskId, projectId: task.projectId, status });
+    load();
   };
+
+  const logTime = async () => {
+    if (!timeForm.taskId || !timeForm.minutes) return;
+    const task = tasks.find((t) => t.taskId === timeForm.taskId);
+    await logTimeEntry({
+      taskId: timeForm.taskId,
+      projectId: task?.projectId,
+      minutes: Number(timeForm.minutes),
+      note: timeForm.note,
+    });
+    setTimeForm({ taskId: "", minutes: "", note: "" });
+    alert("Time logged!");
+  };
+
+  if (loading) {
+    return (
+      <Layout>
+        <div style={pageCard}><p>Loading tasks...</p></div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
-      <div style={styles.container}>
-        <h2>Work Pool</h2>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>My Tasks</h2>
 
-        {loading && <p>Loading work tasks...</p>}
-
-        {!loading && !basicCompleted && (
-          <div style={styles.warning}>
-            You must complete all BASIC trainings before assigning tasks.
-          </div>
+        {tasks.length === 0 ? (
+          <p style={{ color: colors.textMuted }}>No tasks assigned yet. Your admin will assign tasks from Manage Tasks.</p>
+        ) : (
+          tasks.map((task) => (
+            <div
+              key={task.taskId}
+              style={{
+                border: `1px solid ${colors.border}`,
+                borderRadius: 10,
+                padding: 16,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>{task.title}</div>
+              <p style={{ color: colors.textMuted, fontSize: 14 }}>{task.description}</p>
+              <div style={{ fontSize: 13, marginBottom: 8 }}>
+                Priority: {task.priority} | Due: {task.dueDate || "—"}
+              </div>
+              <select
+                value={task.status || "TODO"}
+                onChange={(e) => changeStatus(task, e.target.value)}
+                style={{ padding: 6, borderRadius: 6 }}
+              >
+                {STATUSES.map((s) => (
+                  <option key={s} value={s}>{s.replace("_", " ")}</option>
+                ))}
+              </select>
+            </div>
+          ))
         )}
 
-        {!loading &&
-          tasks.map((t) => (
-            <div key={t.id || t.task_id} style={styles.task}>
-              {t.description} ({t.hours} hrs)
-              <button
-                style={basicCompleted ? styles.button : styles.disabledButton}
-                disabled={!basicCompleted}
-              >
-                Assign
-              </button>
-            </div>
+        <h3 style={{ marginTop: 24 }}>Log Time on Task</h3>
+        <label style={formLabel}>Task</label>
+        <select
+          style={formInput}
+          value={timeForm.taskId}
+          onChange={(e) => setTimeForm({ ...timeForm, taskId: e.target.value })}
+        >
+          <option value="">Select task</option>
+          {tasks.map((t) => (
+            <option key={t.taskId} value={t.taskId}>{t.title}</option>
           ))}
-
-        {!loading && tasks.length === 0 && <p>No tasks available.</p>}
+        </select>
+        <label style={formLabel}>Minutes</label>
+        <input
+          type="number"
+          style={formInput}
+          value={timeForm.minutes}
+          onChange={(e) => setTimeForm({ ...timeForm, minutes: e.target.value })}
+        />
+        <label style={formLabel}>Note</label>
+        <input
+          style={formInput}
+          value={timeForm.note}
+          onChange={(e) => setTimeForm({ ...timeForm, note: e.target.value })}
+        />
+        <button style={buttonPrimary} onClick={logTime}>Log Time</button>
       </div>
     </Layout>
   );

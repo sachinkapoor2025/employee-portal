@@ -1,95 +1,138 @@
 const { getUser } = require("../common/auth");
-const { DynamoDBClient, ScanCommand, UpdateItemCommand } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const {
+  DynamoDBDocumentClient,
+  ScanCommand,
+  UpdateCommand,
+} = require("@aws-sdk/lib-dynamodb");
 
-const client = new DynamoDBClient({ region: process.env.AWS_REGION });
+const client = DynamoDBDocumentClient.from(
+  new DynamoDBClient({ region: process.env.AWS_REGION })
+);
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type,Authorization",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Content-Type": "application/json",
+};
+
+async function scanAllUsers(tableName) {
+  const items = [];
+  let lastKey;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: tableName,
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return items;
+}
 
 exports.handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 200, headers: corsHeaders, body: "" };
+  }
+
   const adminUser = getUser(event);
   const tableName = process.env.USER_ACCESS_TABLE;
 
-  if (event.httpMethod === 'GET') {
-    // Get all users
-    const params = {
-      TableName: tableName
+  if (!adminUser.isAdmin) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: "Admin access required" }),
     };
+  }
 
+  if (event.httpMethod === "GET") {
     try {
-      const result = await client.send(new ScanCommand(params));
-      const users = result.Items.map(item => ({
-        email: item.email.S,
-        role: item.role.S,
-        status: item.status.S,
-        createdAt: item.createdAt.S
-      }));
+      const items = await scanAllUsers(tableName);
+      const users = items
+        .map((item) => ({
+          email: item.email || item.PK,
+          role: item.role || "USER",
+          status: item.status || "UNKNOWN",
+          createdAt: item.createdAt || "",
+        }))
+        .filter((u) => u.email && u.email.includes("@"))
+        .sort((a, b) => a.email.localeCompare(b.email));
 
       return {
         statusCode: 200,
-        body: JSON.stringify(users)
+        headers: corsHeaders,
+        body: JSON.stringify(users),
       };
     } catch (error) {
       console.error("Error fetching users:", error);
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: "Internal server error" })
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "Internal server error" }),
       };
     }
-  } else if (event.httpMethod === 'POST') {
-    const { email, action, role, status } = JSON.parse(event.body);
+  }
 
-    const updateExpression = [];
-    const expressionAttributeValues = {};
-    const expressionAttributeNames = {};
+  if (event.httpMethod === "POST") {
+    const { email, action, role } = JSON.parse(event.body || "{}");
 
-    if (action === 'approve') {
-      updateExpression.push("#status = :status");
-      expressionAttributeNames["#status"] = "status";
-      expressionAttributeValues[":status"] = { S: "ACTIVE" };
-    } else if (action === 'reject') {
-      updateExpression.push("#status = :status");
-      expressionAttributeNames["#status"] = "status";
-      expressionAttributeValues[":status"] = { S: "BLOCKED" };
-    } else if (action === 'changeRole') {
-      updateExpression.push("#role = :role");
-      expressionAttributeNames["#role"] = "role";
-      expressionAttributeValues[":role"] = { S: role };
-    } else if (action === 'block') {
-      updateExpression.push("#status = :status");
-      expressionAttributeNames["#status"] = "status";
-      expressionAttributeValues[":status"] = { S: "BLOCKED" };
-    } else if (action === 'activate') {
-      updateExpression.push("#status = :status");
-      expressionAttributeNames["#status"] = "status";
-      expressionAttributeValues[":status"] = { S: "ACTIVE" };
+    const updates = {};
+    if (action === "approve" || action === "activate") updates.status = "ACTIVE";
+    else if (action === "reject" || action === "block") updates.status = "BLOCKED";
+    else if (action === "changeRole" && role) updates.role = role;
+
+    if (!email || Object.keys(updates).length === 0) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "Invalid request" }),
+      };
     }
 
-    const params = {
-      TableName: tableName,
-      Key: {
-        PK: { S: email },
-        SK: { S: email }
-      },
-      UpdateExpression: `SET ${updateExpression.join(', ')}`,
-      ExpressionAttributeValues: expressionAttributeValues,
-      ExpressionAttributeNames: expressionAttributeNames
-    };
+    const setParts = [];
+    const names = {};
+    const values = {};
+    Object.entries(updates).forEach(([key, value], i) => {
+      setParts.push(`#f${i} = :v${i}`);
+      names[`#f${i}`] = key;
+      values[`:v${i}`] = value;
+    });
 
     try {
-      await client.send(new UpdateItemCommand(params));
+      await client.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { PK: email, SK: email },
+          UpdateExpression: `SET ${setParts.join(", ")}`,
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: values,
+        })
+      );
+
       return {
         statusCode: 200,
-        body: JSON.stringify({ message: "User updated" })
+        headers: corsHeaders,
+        body: JSON.stringify({ message: "User updated" }),
       };
     } catch (error) {
       console.error("Error updating user:", error);
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: "Internal server error" })
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "Internal server error" }),
       };
     }
   }
 
   return {
     statusCode: 405,
-    body: JSON.stringify({ error: "Method not allowed" })
+    headers: corsHeaders,
+    body: JSON.stringify({ error: "Method not allowed" }),
   };
 };

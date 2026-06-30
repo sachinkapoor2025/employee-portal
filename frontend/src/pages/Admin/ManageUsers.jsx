@@ -8,17 +8,28 @@ import {
   updateUserStatus,
   updateUserRole,
 } from "../../services/api";
+import {
+  colors,
+  pageCard,
+  pageTitle,
+  pageSubtitle,
+  formLabel,
+  formInput,
+  formSelect,
+  buttonPrimary,
+} from "../../theme";
 
 export default function ManageUsers() {
   const [users, setUsers] = useState([]);
   const [skills, setSkills] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const [profileView, setProfileView] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("CREATE");
   const [saving, setSaving] = useState(false);
 
-  /* ✅ DESIGNATION ADDED */
   const emptyForm = {
     email: "",
     name: "",
@@ -33,31 +44,39 @@ export default function ManageUsers() {
 
   const [form, setForm] = useState(emptyForm);
 
-  /* ================= FETCH ================= */
-
   useEffect(() => {
     loadUsers();
     loadSkills();
   }, []);
 
   const loadUsers = async () => {
-    const data = await fetchUsers();
-    setUsers(data);
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchUsers();
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error(err);
+      setError("Unable to load users. Please refresh or sign in again as admin.");
+      setUsers([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadSkills = async () => {
-    const data = await fetchSkills();
-    setSkills(data);
+    try {
+      const data = await fetchSkills();
+      setSkills(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error(err);
+    }
   };
-
-  /* ================= VIEW PROFILE ================= */
 
   const openProfileView = async (email) => {
     const profile = await fetchUserProfile(email);
     setProfileView(profile);
   };
-
-  /* ================= CREATE / EDIT ================= */
 
   const openCreateUser = () => {
     setMode("CREATE");
@@ -73,7 +92,7 @@ export default function ManageUsers() {
       email,
       name: profile?.name || "",
       empId: profile?.empId || "",
-      designation: profile?.designation || "", // ✅ FIX
+      designation: profile?.designation || "",
       skill: profile?.skill || "",
       manager: profile?.manager || "",
       groupLead: profile?.groupLead || "",
@@ -95,262 +114,204 @@ export default function ManageUsers() {
 
     setSaving(true);
 
-    await saveUserProfile({
-      mode,
-      email: form.email,
-      profile: form, // ✅ designation included
-    });
-
-    setSaving(false);
-    setShowModal(false);
-    loadUsers();
+    try {
+      await saveUserProfile({
+        mode,
+        email: form.email,
+        profile: form,
+      });
+      setShowModal(false);
+      await loadUsers();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to save user. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   };
-
-  /* ================= UI ================= */
 
   return (
     <Layout>
-      <div style={{ background: "#fff", padding: 24, borderRadius: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <h2>Manage Users</h2>
-          <button
-            onClick={openCreateUser}
-            style={{
-              background: "#1976d2",
-              color: "#fff",
-              padding: "10px 18px",
-              borderRadius: 8,
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-            }}
-          >
+      <div style={pageCard}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <h2 style={pageTitle}>Manage Users</h2>
+            <p style={pageSubtitle}>
+              Create employees, view profiles, and manage access status.
+            </p>
+          </div>
+          <button onClick={openCreateUser} style={buttonPrimary}>
             + Create User
           </button>
         </div>
 
-        {/* ================= TABLE ================= */}
-        <table
-          style={{
-            width: "100%",
-            marginTop: 16,
-            borderCollapse: "collapse",
-          }}
-        >
-          <thead>
-            <tr style={{ background: "#1976d2", color: "#fff" }}>
-              <th style={{ padding: 10 }}>Email</th>
-              <th style={{ padding: 10 }}>Role</th>
-              <th style={{ padding: 10 }}>Status</th>
-              <th style={{ padding: 10 }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.email} style={{ borderBottom: "1px solid #eee" }}>
-                <td style={{ padding: 10 }}>
-                  <span
-                    style={{
-                      color: "#1976d2",
-                      cursor: "pointer",
-                      fontWeight: 500,
-                    }}
-                    onClick={() => openProfileView(u.email)}
-                  >
-                    {u.email}
-                  </span>
-                </td>
+        {error && (
+          <div style={{ padding: 12, background: "#ffebee", color: colors.error, borderRadius: 8, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
 
-                <td style={{ padding: 10 }}>
-                  <select
-                    value={u.role}
-                    onChange={(e) =>
-                      updateUserRole(u.email, e.target.value).then(loadUsers)
-                    }
-                  >
-                    <option value="USER">USER</option>
-                    <option value="ADMIN">ADMIN</option>
-                  </select>
-                </td>
-
-                <td style={{ padding: 10 }}>{u.status}</td>
-
-                <td style={{ padding: 10 }}>
-                  {u.status === "ACTIVE" ? (
-                    <>
-                      <button
-                        style={{
-                          background: "#f44336",
-                          color: "#fff",
-                          border: "none",
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          marginRight: 6,
-                        }}
-                        onClick={() =>
-                          updateUserStatus(u.email, "block").then(loadUsers)
-                        }
-                      >
-                        Block
-                      </button>
-
-                      <button
-                        style={{
-                          background: "#1976d2",
-                          color: "#fff",
-                          border: "none",
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                        }}
-                        onClick={() => openEditUser(u.email)}
-                      >
-                        Edit Profile
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      style={{
-                        background: "#1976d2",
-                        color: "#fff",
-                        border: "none",
-                        padding: "6px 12px",
-                        borderRadius: 6,
-                      }}
-                      onClick={() =>
-                        updateUserStatus(u.email, "activate").then(loadUsers)
-                      }
-                    >
-                      Activate
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ================= PROFILE VIEW POPUP ================= */}
-      {profileView && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 2000,
-          }}
-        >
+        {loading ? (
+          <p style={{ color: colors.textMuted }}>Loading users...</p>
+        ) : users.length === 0 ? (
           <div
             style={{
-              background: "#fff",
-              width: 500,
-              padding: 20,
+              textAlign: "center",
+              padding: "40px 20px",
+              background: colors.background,
               borderRadius: 12,
+              border: `1px dashed ${colors.border}`,
             }}
           >
-            <h3>User Profile</h3>
-            <p>
-              <b>Name:</b> {profileView.name}
+            <p style={{ margin: 0, fontWeight: 600 }}>No users found yet</p>
+            <p style={{ color: colors.textMuted, fontSize: 14 }}>
+              Click &quot;Create User&quot; to add your first employee.
             </p>
-            <p>
-              <b>Employee ID:</b> {profileView.empId}
-            </p>
-            <p>
-              <b>Email:</b> {profileView.email}
-            </p>
-            <p>
-              <b>Designation:</b> {profileView.designation}
-            </p>{" "}
-            {/* ✅ FIX */}
-            <p>
-              <b>Skill:</b> {profileView.skill}
-            </p>
-            <p>
-              <b>Manager:</b> {profileView.manager}
-            </p>
-            <p>
-              <b>Group Lead:</b> {profileView.groupLead}
-            </p>
-            <p>
-              <b>Phone:</b> {profileView.phone}
-            </p>
-            <p>
-              <b>Date of Joining:</b> {profileView.doj}
-            </p>
-            <div style={{ textAlign: "right" }}>
-              <button onClick={() => setProfileView(null)}>Close</button>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+              <thead>
+                <tr style={{ background: colors.primary, color: colors.white }}>
+                  <th style={{ padding: 12, textAlign: "left" }}>Email</th>
+                  <th style={{ padding: 12, textAlign: "left" }}>Role</th>
+                  <th style={{ padding: 12, textAlign: "left" }}>Status</th>
+                  <th style={{ padding: 12, textAlign: "left" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.email} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: 12 }}>
+                      <span
+                        style={{ color: colors.primary, cursor: "pointer", fontWeight: 500 }}
+                        onClick={() => openProfileView(u.email)}
+                      >
+                        {u.email}
+                      </span>
+                    </td>
+
+                    <td style={{ padding: 12 }}>
+                      <select
+                        value={u.role}
+                        style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${colors.border}` }}
+                        onChange={(e) =>
+                          updateUserRole(u.email, e.target.value).then(loadUsers)
+                        }
+                      >
+                        <option value="USER">USER</option>
+                        <option value="ADMIN">ADMIN</option>
+                      </select>
+                    </td>
+
+                    <td style={{ padding: 12 }}>
+                      <span
+                        style={{
+                          padding: "4px 10px",
+                          borderRadius: 20,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          background: u.status === "ACTIVE" ? colors.successBg : "#ffebee",
+                          color: u.status === "ACTIVE" ? colors.success : colors.error,
+                        }}
+                      >
+                        {u.status}
+                      </span>
+                    </td>
+
+                    <td style={{ padding: 12 }}>
+                      {u.status === "ACTIVE" ? (
+                        <>
+                          <button
+                            style={{
+                              background: colors.error,
+                              color: colors.white,
+                              border: "none",
+                              padding: "6px 12px",
+                              borderRadius: 6,
+                              marginRight: 6,
+                              cursor: "pointer",
+                            }}
+                            onClick={() =>
+                              updateUserStatus(u.email, "block").then(loadUsers)
+                            }
+                          >
+                            Block
+                          </button>
+                          <button
+                            style={{ ...buttonPrimary, padding: "6px 12px" }}
+                            onClick={() => openEditUser(u.email)}
+                          >
+                            Edit Profile
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          style={{ ...buttonPrimary, padding: "6px 12px" }}
+                          onClick={() =>
+                            updateUserStatus(u.email, "activate").then(loadUsers)
+                          }
+                        >
+                          Activate
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {profileView && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <h3 style={{ marginTop: 0 }}>User Profile</h3>
+            <ProfileRow label="Name" value={profileView.name} />
+            <ProfileRow label="Employee ID" value={profileView.empId} />
+            <ProfileRow label="Email" value={profileView.email} />
+            <ProfileRow label="Designation" value={profileView.designation} />
+            <ProfileRow label="Skill" value={profileView.skill} />
+            <ProfileRow label="Manager" value={profileView.manager} />
+            <ProfileRow label="Group Lead" value={profileView.groupLead} />
+            <ProfileRow label="Phone" value={profileView.phone} />
+            <ProfileRow label="Date of Joining" value={profileView.doj} />
+            <div style={{ textAlign: "right", marginTop: 16 }}>
+              <button style={buttonPrimary} onClick={() => setProfileView(null)}>
+                Close
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ================= CREATE / EDIT MODAL ================= */}
       {showModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 2000,
-          }}
-        >
-          <div
-            style={{
-              background: "#fff",
-              width: 520,
-              borderRadius: 12,
-              padding: 20,
-            }}
-          >
-            <h3>{mode === "CREATE" ? "Create User" : "Edit User"}</h3>
+        <div style={overlayStyle}>
+          <div style={{ ...modalStyle, maxWidth: 520, width: "100%" }}>
+            <h3 style={{ marginTop: 0 }}>{mode === "CREATE" ? "Create User" : "Edit User"}</h3>
 
-            <label>Email</label>
+            <label style={formLabel}>Email</label>
             <input
               name="email"
               disabled={mode === "EDIT"}
               value={form.email}
               onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
+              style={formInput}
+              placeholder="name@mydgv.com"
             />
 
-            <label>Full Name</label>
-            <input
-              name="name"
-              value={form.name}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Full Name</label>
+            <input name="name" value={form.name} onChange={handleChange} style={formInput} />
 
-            <label>Employee ID</label>
-            <input
-              name="empId"
-              value={form.empId}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Employee ID</label>
+            <input name="empId" value={form.empId} onChange={handleChange} style={formInput} />
 
-            {/* ✅ DESIGNATION FIELD */}
-            <label>Designation</label>
-            <input
-              name="designation"
-              value={form.designation}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Designation</label>
+            <input name="designation" value={form.designation} onChange={handleChange} style={formInput} />
 
-            <label>Skill</label>
-            <select
-              name="skill"
-              value={form.skill}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            >
+            <label style={formLabel}>Skill</label>
+            <select name="skill" value={form.skill} onChange={handleChange} style={formSelect}>
               <option value="">Select Skill</option>
               {skills.map((s) => (
                 <option key={s.code} value={s.code}>
@@ -359,52 +320,36 @@ export default function ManageUsers() {
               ))}
             </select>
 
-            <label>Manager</label>
-            <input
-              name="manager"
-              value={form.manager}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Manager</label>
+            <input name="manager" value={form.manager} onChange={handleChange} style={formInput} />
 
-            <label>Group Lead</label>
-            <input
-              name="groupLead"
-              value={form.groupLead}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Group Lead</label>
+            <input name="groupLead" value={form.groupLead} onChange={handleChange} style={formInput} />
 
-            <label>Phone</label>
-            <input
-              name="phone"
-              value={form.phone}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 10 }}
-            />
+            <label style={formLabel}>Phone</label>
+            <input name="phone" value={form.phone} onChange={handleChange} style={formInput} />
 
-            <label>Date of Joining</label>
-            <input
-              type="date"
-              name="doj"
-              value={form.doj}
-              onChange={handleChange}
-              style={{ width: "100%", marginBottom: 16 }}
-            />
+            <label style={formLabel}>Date of Joining</label>
+            <input type="date" name="doj" value={form.doj} onChange={handleChange} style={formInput} />
 
             <div style={{ textAlign: "right" }}>
-              <button onClick={() => setShowModal(false)}>Cancel</button>
+              <button
+                onClick={() => setShowModal(false)}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${colors.border}`,
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  marginRight: 8,
+                }}
+              >
+                Cancel
+              </button>
               <button
                 onClick={saveProfile}
                 disabled={saving}
-                style={{
-                  marginLeft: 8,
-                  background: "#4caf50",
-                  color: "#fff",
-                  border: "none",
-                  padding: "8px 16px",
-                  borderRadius: 6,
-                }}
+                style={{ ...buttonPrimary, background: colors.success }}
               >
                 {saving ? "Saving..." : "Save"}
               </button>
@@ -415,3 +360,28 @@ export default function ManageUsers() {
     </Layout>
   );
 }
+
+const overlayStyle = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.5)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 2000,
+  padding: 16,
+};
+
+const modalStyle = {
+  background: colors.white,
+  padding: 24,
+  borderRadius: 12,
+  maxHeight: "90vh",
+  overflowY: "auto",
+};
+
+const ProfileRow = ({ label, value }) => (
+  <p style={{ margin: "6px 0", fontSize: 14 }}>
+    <b>{label}:</b> {value || "—"}
+  </p>
+);

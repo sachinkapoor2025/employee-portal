@@ -5,6 +5,15 @@ import {
   saveUserProfile,
   getProfileImageUploadUrl,
 } from "../services/api";
+import {
+  colors,
+  pageCard,
+  pageTitle,
+  pageSubtitle,
+  formLabel,
+  formInput,
+  buttonPrimary,
+} from "../theme";
 
 export default function Profile() {
   const [profile, setProfile] = useState({});
@@ -18,7 +27,7 @@ export default function Profile() {
 
   const loadProfile = async () => {
     try {
-      const data = await fetchUserProfile(); // logged-in user
+      const data = await fetchUserProfile();
       setProfile(data || {});
       setPreview(data?.imageUrl || null);
     } catch (e) {
@@ -36,32 +45,23 @@ export default function Profile() {
     setUploading(true);
 
     try {
-      // 1️⃣ ask backend for presigned URL
       const { uploadUrl, imageUrl } = await getProfileImageUploadUrl(
         file,
         profile.email
       );
 
-      // 2️⃣ upload image to S3
       await fetch(uploadUrl, {
         method: "PUT",
-        headers: {
-          "Content-Type": file.type,
-        },
+        headers: { "Content-Type": file.type },
         body: file,
       });
 
-      // 3️⃣ save image URL in DynamoDB
       await saveUserProfile({
         mode: "EDIT",
         email: profile.email,
-        profile: {
-          ...profile,
-          imageUrl,
-        },
+        profile: { ...profile, imageUrl },
       });
 
-      // 4️⃣ reload profile
       await loadProfile();
     } catch (err) {
       console.error("Image upload failed:", err);
@@ -71,86 +71,98 @@ export default function Profile() {
     }
   };
 
-  if (loading)
+  if (loading) {
     return (
       <Layout>
-        <p>Loading...</p>
+        <div style={pageCard}>
+          <p style={{ color: colors.textMuted }}>Loading profile...</p>
+        </div>
       </Layout>
     );
+  }
+
+  const fields = [
+    { label: "Full Name", value: profile.name },
+    { label: "Employee ID", value: profile.empId },
+    { label: "Email", value: profile.email },
+    { label: "Designation", value: profile.designation },
+    { label: "Skill", value: profile.skill },
+    { label: "Manager", value: profile.manager },
+    { label: "Group Lead", value: profile.groupLead },
+    { label: "Phone", value: profile.phone },
+    { label: "Date of Joining", value: profile.doj },
+  ];
 
   return (
     <Layout>
-      <div style={{ background: "#fff", padding: 24, borderRadius: 12 }}>
-        <h2>My Profile</h2>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>My Profile</h2>
+        <p style={pageSubtitle}>Your employee information at DGV.</p>
 
-        {/* PROFILE IMAGE */}
-        <div style={{ marginBottom: 24 }}>
-          <label style={{ fontWeight: 600 }}>Profile Image</label>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: 32,
+          }}
+        >
+          <div style={{ textAlign: "center" }}>
+            <label style={{ ...formLabel, textAlign: "left" }}>Profile Image</label>
+            <div
+              style={{
+                margin: "10px auto 16px",
+                width: 140,
+                height: 140,
+                borderRadius: "50%",
+                border: `3px solid ${colors.primary}`,
+                overflow: "hidden",
+                background: colors.background,
+              }}
+            >
+              {preview ? (
+                <img
+                  src={preview}
+                  alt="profile"
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              ) : (
+                <div
+                  style={{
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: colors.textMuted,
+                    fontSize: 13,
+                  }}
+                >
+                  No Image
+                </div>
+              )}
+            </div>
 
-          <div
-            style={{
-              marginTop: 10,
-              width: 140,
-              height: 140,
-              borderRadius: "50%",
-              border: "3px solid #1976d2",
-              overflow: "hidden",
-              background: "#f5f5f5",
-            }}
-          >
-            {preview ? (
-              <img
-                src={preview}
-                alt="profile"
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            <label style={{ ...buttonPrimary, display: "inline-block", cursor: "pointer" }}>
+              {uploading ? "Uploading..." : "Change Photo"}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageChange}
+                disabled={uploading}
+                style={{ display: "none" }}
               />
-            ) : (
-              <div
-                style={{
-                  height: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#888",
-                }}
-              >
-                No Image
-              </div>
-            )}
+            </label>
           </div>
 
-          <input
-            type="file"
-            accept="image/*"
-            onChange={handleImageChange}
-            disabled={uploading}
-            style={{ marginTop: 10 }}
-          />
-
-          {uploading && <p>Uploading...</p>}
+          <div>
+            {fields.map(({ label, value }) => (
+              <div key={label} style={{ marginBottom: 14 }}>
+                <label style={formLabel}>{label}</label>
+                <input disabled value={value || ""} style={formInput} />
+              </div>
+            ))}
+          </div>
         </div>
-
-        <Field label="Full Name" value={profile.name} />
-        <Field label="Employee ID" value={profile.empId} />
-        <Field label="Email" value={profile.email} />
-        <Field label="Designation" value={profile.designation} />
-        <Field label="Skill" value={profile.skill} />
-        <Field label="Manager" value={profile.manager} />
-        <Field label="Group Lead" value={profile.groupLead} />
-        <Field label="Phone" value={profile.phone} />
-        <Field label="Date of Joining" value={profile.doj} />
       </div>
     </Layout>
   );
 }
-
-const Field = ({ label, value }) => (
-  <div style={{ marginBottom: 12 }}>
-    <label style={{ fontWeight: 600 }}>{label}</label>
-    <input
-      disabled
-      value={value || ""}
-      style={{ width: "100%", marginTop: 4 }}
-    />
-  </div>
-);

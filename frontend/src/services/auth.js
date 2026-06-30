@@ -71,11 +71,13 @@ export function applyAccessRedirect(data) {
 
     if (intent === "admin") {
       localStorage.setItem("role", "ADMIN");
-      window.location.replace("/admin/users");
+      import("./activityTracker").then(({ trackLogin }) => trackLogin());
+      window.location.replace("/admin/dashboard");
       return true;
     }
 
     localStorage.setItem("role", "USER");
+    import("./activityTracker").then(({ trackLogin }) => trackLogin());
     window.location.replace("/");
     return true;
   }
@@ -89,6 +91,7 @@ export function applyAccessRedirect(data) {
     }
 
     localStorage.setItem("role", "USER");
+    import("./activityTracker").then(({ trackLogin }) => trackLogin());
     window.location.replace("/");
     return true;
   }

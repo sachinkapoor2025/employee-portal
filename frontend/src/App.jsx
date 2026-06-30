@@ -23,6 +23,14 @@ import ManageUsers from "./pages/Admin/ManageUsers";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import Resignations from "./pages/Admin/Resignations";
 import AddTraining from "./pages/Admin/AddTraining";
+import AdminDashboard from "./pages/Admin/AdminDashboard";
+import TeamActivity from "./pages/Admin/TeamActivity";
+import LeaveManagement from "./pages/Admin/LeaveManagement";
+import AdminAnnouncements from "./pages/Admin/AdminAnnouncements";
+import Leave from "./pages/Leave";
+import Downloads from "./pages/Downloads";
+import ConsentGate from "./components/ConsentGate";
+import ActivityTracker from "./components/ActivityTracker";
 
 function getAuth() {
   return {
@@ -46,7 +54,11 @@ function RequireAuth({ children, adminOnly = false }) {
     return <Navigate to="/" replace />;
   }
 
-  return children;
+  return (
+    <ConsentGate>
+      {children}
+    </ConsentGate>
+  );
 }
 
 function HomeRedirect() {
@@ -61,7 +73,7 @@ function HomeRedirect() {
   }
 
   if (role === "ADMIN") {
-    return <Navigate to="/admin/users" replace />;
+    return <Navigate to="/admin/dashboard" replace />;
   }
 
   return <Dashboard />;
@@ -70,6 +82,7 @@ function HomeRedirect() {
 export default function App() {
   return (
     <Router>
+      <ActivityTracker />
       <Routes>
         {/* Public */}
         <Route path="/login" element={<Login />} />
@@ -146,7 +159,56 @@ export default function App() {
           }
         />
 
+        <Route
+          path="/leave"
+          element={
+            <RequireAuth>
+              <Leave />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/downloads"
+          element={
+            <RequireAuth>
+              <Downloads />
+            </RequireAuth>
+          }
+        />
+
         {/* Admin */}
+        <Route
+          path="/admin/dashboard"
+          element={
+            <RequireAuth adminOnly>
+              <AdminDashboard />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/activity"
+          element={
+            <RequireAuth adminOnly>
+              <TeamActivity />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/leave"
+          element={
+            <RequireAuth adminOnly>
+              <LeaveManagement />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/announcements"
+          element={
+            <RequireAuth adminOnly>
+              <AdminAnnouncements />
+            </RequireAuth>
+          }
+        />
         <Route
           path="/admin/users"
           element={

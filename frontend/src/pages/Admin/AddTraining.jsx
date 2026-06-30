@@ -5,6 +5,18 @@ import {
   getTrainingUploadUrl,
   addTrainingMaterial,
 } from "../../services/api";
+import {
+  colors,
+  pageCard,
+  pageTitle,
+  pageSubtitle,
+  formLabel,
+  formInput,
+  formSelect,
+  buttonPrimary,
+  alertSuccess,
+  alertError,
+} from "../../theme";
 
 export default function AddTraining() {
   const [skills, setSkills] = useState([]);
@@ -12,60 +24,58 @@ export default function AddTraining() {
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState("");
   const [level, setLevel] = useState("BASIC");
-  const [duration, setDuration] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState("");
+  const [fileKey, setFileKey] = useState(0);
 
-  // ======================
-  // LOAD SKILLS
-  // ======================
   useEffect(() => {
     fetchSkills().then(setSkills).catch(console.error);
   }, []);
 
-  // ======================
-  // SUBMIT
-  // ======================
-  const handleSubmit = async () => {
-    if (!file || !title || !skill || !duration) {
-      setMessage("All fields required");
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!file || !title || !skill) {
+      setMessageType("error");
+      setMessage("Please fill in title, skill, and upload a video.");
       return;
     }
 
     try {
       setLoading(true);
       setMessage("");
+      setMessageType("");
 
-      // 1️⃣ Presigned URL
       const { uploadUrl, video_s3_key } = await getTrainingUploadUrl(
         file.name,
         skill
       );
 
-      // 2️⃣ Upload
       await fetch(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": "video/mp4" },
         body: file,
       });
 
-      // 3️⃣ Save metadata
       await addTrainingMaterial({
         title,
         skill,
         level,
-        duration_hours: Number(duration),
         video_s3_key,
       });
 
-      setMessage("✅ Training added");
+      setMessageType("success");
+      setMessage("Training material added successfully!");
       setFile(null);
       setTitle("");
       setSkill("");
-      setDuration("");
+      setLevel("BASIC");
+      setFileKey((k) => k + 1);
     } catch (err) {
       console.error(err);
-      setMessage("❌ Upload failed");
+      setMessageType("error");
+      setMessage("Upload failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -73,63 +83,85 @@ export default function AddTraining() {
 
   return (
     <Layout>
-      <div style={{ maxWidth: 600, padding: 24 }}>
-        <h2>Add Training</h2>
+      <div style={{ ...pageCard, maxWidth: 560 }}>
+        <h2 style={pageTitle}>Add Training</h2>
+        <p style={pageSubtitle}>
+          Upload a training video. Choose &quot;All Employees&quot; to show it to everyone,
+          or pick a skill to limit visibility.
+        </p>
 
-        <input
-          placeholder="Training title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-        />
+        <form onSubmit={handleSubmit}>
+          <label style={formLabel}>Training Title</label>
+          <input
+            style={formInput}
+            placeholder="e.g. AWS Fundamentals"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
 
-        <br />
-        <br />
+          <label style={formLabel}>Skill</label>
+          <select
+            style={formSelect}
+            value={skill}
+            onChange={(e) => setSkill(e.target.value)}
+          >
+            <option value="">Select Skill</option>
+            <option value="ALL">All Employees</option>
+            {skills.map((s) => (
+              <option key={s.code} value={s.code}>
+                {s.name}
+              </option>
+            ))}
+          </select>
 
-        <select value={skill} onChange={(e) => setSkill(e.target.value)}>
-          <option value="">Select Skill</option>
-          {skills.map((s) => (
-            <option key={s.code} value={s.code}>
-              {s.name}
-            </option>
-          ))}
-        </select>
+          <label style={formLabel}>Level</label>
+          <select
+            style={formSelect}
+            value={level}
+            onChange={(e) => setLevel(e.target.value)}
+          >
+            <option value="BASIC">Basic</option>
+            <option value="REGULAR">Regular</option>
+            <option value="ADVANCED">Advanced</option>
+          </select>
 
-        <br />
-        <br />
+          <label style={formLabel}>Training Video (MP4)</label>
+          <input
+            key={fileKey}
+            type="file"
+            accept="video/mp4"
+            style={{
+              ...formInput,
+              padding: 8,
+              background: colors.background,
+            }}
+            onChange={(e) => setFile(e.target.files[0])}
+          />
+          {file && (
+            <p style={{ margin: "-8px 0 16px", fontSize: 13, color: colors.textMuted }}>
+              Selected: {file.name}
+            </p>
+          )}
 
-        <select value={level} onChange={(e) => setLevel(e.target.value)}>
-          <option value="BASIC">BASIC</option>
-          <option value="REGULAR">REGULAR</option>
-          <option value="ADVANCED">ADVANCED</option>
-        </select>
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              ...buttonPrimary,
+              width: "100%",
+              opacity: loading ? 0.7 : 1,
+            }}
+          >
+            {loading ? "Uploading..." : "Add Training"}
+          </button>
 
-        <br />
-        <br />
-
-        <input
-          type="number"
-          placeholder="Duration (hours)"
-          value={duration}
-          onChange={(e) => setDuration(e.target.value)}
-        />
-
-        <br />
-        <br />
-
-        <input
-          type="file"
-          accept="video/mp4"
-          onChange={(e) => setFile(e.target.files[0])}
-        />
-
-        <br />
-        <br />
-
-        <button onClick={handleSubmit} disabled={loading}>
-          {loading ? "Uploading..." : "Add Training"}
-        </button>
-
-        {message && <p>{message}</p>}
+          {message && (
+            <div style={messageType === "success" ? alertSuccess : alertError}>
+              {messageType === "success" ? "✓ " : "✕ "}
+              {message}
+            </div>
+          )}
+        </form>
       </div>
     </Layout>
   );

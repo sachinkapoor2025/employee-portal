@@ -7,6 +7,7 @@ import {
   getViewRole,
 } from "../services/auth";
 import { colors, navButton } from "../theme";
+import Footer from "./Footer";
 
 export default function Layout({ children }) {
   const navigate = useNavigate();
@@ -20,7 +21,7 @@ export default function Layout({ children }) {
     if (!switchPortalView(view)) return;
     const nextRole = view === "admin" ? "ADMIN" : "USER";
     setViewRole(nextRole);
-    navigate(nextRole === "ADMIN" ? "/admin/users" : "/");
+    navigate(nextRole === "ADMIN" ? "/admin/dashboard" : "/");
   };
 
   return (
@@ -78,21 +79,26 @@ export default function Layout({ children }) {
             <button style={navButton} onClick={() => navigate("/")}>Dashboard</button>
             <button style={navButton} onClick={() => navigate("/attendance")}>Attendance</button>
             <button style={navButton} onClick={() => navigate("/training")}>Training</button>
-            <button style={navButton} onClick={() => navigate("/work")}>Work</button>
-            <button style={navButton} onClick={() => navigate("/performance")}>Performance</button>
-            <button style={navButton} onClick={() => navigate("/expertise")}>Expertise</button>
+            <button style={navButton} onClick={() => navigate("/work")}>My Tasks</button>
+            <button style={navButton} onClick={() => navigate("/leave")}>Leave</button>
+            <button style={navButton} onClick={() => navigate("/downloads")}>Downloads</button>
             <button style={navButton} onClick={() => navigate("/profile")}>Profile</button>
+            <button style={navButton} onClick={() => navigate("/performance")}>Performance</button>
             <button style={navButton} onClick={() => navigate("/payroll")}>Payroll</button>
-            <button style={navButton} onClick={() => navigate("/exit")}>Exit the Firm</button>
+            <button style={navButton} onClick={() => navigate("/exit")}>Exit</button>
           </>
         )}
 
         {viewRole === "ADMIN" && isAdminAccount && (
           <>
-            <button style={navButton} onClick={() => navigate("/admin/users")}>Manage Users</button>
-            <button style={navButton} onClick={() => navigate("/admin/tasks")}>Manage Tasks</button>
+            <button style={navButton} onClick={() => navigate("/admin/dashboard")}>Dashboard</button>
+            <button style={navButton} onClick={() => navigate("/admin/users")}>Users</button>
+            <button style={navButton} onClick={() => navigate("/admin/tasks")}>Tasks</button>
+            <button style={navButton} onClick={() => navigate("/admin/activity")}>Activity</button>
+            <button style={navButton} onClick={() => navigate("/admin/leave")}>Leave</button>
+            <button style={navButton} onClick={() => navigate("/admin/announcements")}>Announce</button>
+            <button style={navButton} onClick={() => navigate("/admin/add-training")}>Training</button>
             <button style={navButton} onClick={() => navigate("/admin/resignations")}>Resignations</button>
-            <button style={navButton} onClick={() => navigate("/admin/add-training")}>Add Training</button>
           </>
         )}
 
@@ -100,6 +106,8 @@ export default function Layout({ children }) {
       </nav>
 
       {children}
+
+      <Footer />
     </div>
   );
 }
