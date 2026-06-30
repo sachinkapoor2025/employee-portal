@@ -50,6 +50,9 @@ export const updateUserRole = (email, role) =>
 export const updateUserStatus = (email, action) =>
   api("/admin/users", "POST", { email, action });
 
+export const deleteUser = (email) =>
+  api("/admin/users", "POST", { email, action: "delete" });
+
 /* ================= PROFILE IMAGE ================= */
 
 export const getProfileImageUploadUrl = (file, email) =>

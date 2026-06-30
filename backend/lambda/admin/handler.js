@@ -4,11 +4,20 @@ const {
   DynamoDBDocumentClient,
   ScanCommand,
   UpdateCommand,
+  DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const {
+  CognitoIdentityProviderClient,
+  AdminDeleteUserCommand,
+} = require("@aws-sdk/client-cognito-identity-provider");
 
 const client = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
+
+const cognito = new CognitoIdentityProviderClient({
+  region: process.env.AWS_REGION,
+});
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -81,6 +90,66 @@ exports.handler = async (event) => {
 
   if (event.httpMethod === "POST") {
     const { email, action, role } = JSON.parse(event.body || "{}");
+
+    if (action === "delete") {
+      if (!email) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Email required" }),
+        };
+      }
+
+      if (email.toLowerCase() === adminUser.email) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "You cannot delete your own account" }),
+        };
+      }
+
+      try {
+        try {
+          await cognito.send(
+            new AdminDeleteUserCommand({
+              UserPoolId: process.env.USER_POOL_ID,
+              Username: email,
+            })
+          );
+        } catch (err) {
+          if (err.name !== "UserNotFoundException") throw err;
+        }
+
+        await client.send(
+          new DeleteCommand({
+            TableName: tableName,
+            Key: { PK: email, SK: email },
+          })
+        );
+
+        if (process.env.USER_PROFILE_TABLE) {
+          await client.send(
+            new DeleteCommand({
+              TableName: process.env.USER_PROFILE_TABLE,
+              Key: { PK: `USER#${email}`, SK: "PROFILE" },
+            })
+          );
+        }
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ message: "User deleted" }),
+        };
+      } catch (error) {
+        console.error("Error deleting user:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Failed to delete user" }),
+        };
+      }
+    }
 
     const updates = {};
     if (action === "approve" || action === "activate") updates.status = "ACTIVE";

@@ -6,12 +6,11 @@ export default function Footer() {
       style={{
         marginTop: 32,
         padding: "20px 24px",
-        background: "rgba(255,255,255,0.95)",
-        borderRadius: 12,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+        background: "transparent",
         textAlign: "center",
         fontSize: 14,
         color: colors.textMuted,
+        textShadow: "0 1px 3px rgba(255,255,255,0.9)",
       }}
     >
       <div style={{ fontWeight: 700, color: colors.primary, marginBottom: 8 }}>
@@ -33,7 +32,7 @@ export default function Footer() {
         <span>GST Number: {companyDetails.gst}</span>
       </div>
       <div style={{ marginTop: 8, fontSize: 12 }}>
-        © {new Date().getFullYear()} DGV Portal. All rights reserved.
+        © 2025 DGV Portal. All rights reserved.
       </div>
     </footer>
   );

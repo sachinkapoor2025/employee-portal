@@ -7,7 +7,9 @@ import {
   saveUserProfile,
   updateUserStatus,
   updateUserRole,
+  deleteUser,
 } from "../../services/api";
+import { getLoggedInEmail } from "../../services/auth";
 import {
   colors,
   pageCard,
@@ -130,6 +132,31 @@ export default function ManageUsers() {
     }
   };
 
+  const handleDeleteUser = async (email) => {
+    if (email.toLowerCase() === getLoggedInEmail().toLowerCase()) {
+      alert("You cannot delete your own account.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Delete ${email}? This removes Cognito login, access record, and profile permanently.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await deleteUser(email);
+      await loadUsers();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to delete user.");
+    }
+  };
+
+  const currentEmail = getLoggedInEmail().toLowerCase();
+
   return (
     <Layout>
       <div style={pageCard}>
@@ -239,7 +266,7 @@ export default function ManageUsers() {
                             Block
                           </button>
                           <button
-                            style={{ ...buttonPrimary, padding: "6px 12px" }}
+                            style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
                             onClick={() => openEditUser(u.email)}
                           >
                             Edit Profile
@@ -247,12 +274,27 @@ export default function ManageUsers() {
                         </>
                       ) : (
                         <button
-                          style={{ ...buttonPrimary, padding: "6px 12px" }}
+                          style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
                           onClick={() =>
                             updateUserStatus(u.email, "activate").then(loadUsers)
                           }
                         >
                           Activate
+                        </button>
+                      )}
+                      {u.email.toLowerCase() !== currentEmail && (
+                        <button
+                          style={{
+                            background: "#b71c1c",
+                            color: colors.white,
+                            border: "none",
+                            padding: "6px 12px",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                          }}
+                          onClick={() => handleDeleteUser(u.email)}
+                        >
+                          Delete
                         </button>
                       )}
                     </td>

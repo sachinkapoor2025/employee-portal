@@ -474,6 +474,17 @@ Resources:
             TableName: !Ref WorkTasksTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UserAccessTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserProfileTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminDeleteUser
+              Resource: !GetAtt CognitoUserPool.Arn
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Events:
         AdminUsersGetApi:
           Type: Api
