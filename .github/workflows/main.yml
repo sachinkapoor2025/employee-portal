@@ -42,29 +42,13 @@ jobs:
 
       - name: Resolve login.mydgv.com DNS and SSL
         id: domain
+        env:
+          LOGIN_MYDGV_ACM_CERT_ARN: ${{ secrets.LOGIN_MYDGV_ACM_CERT_ARN }}
         run: |
-          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
-            --dns-name mydgv.com \
-            --query 'HostedZones[0].Id' \
-            --output text | sed 's|/hostedzone/||')
-
-          if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "None" ]; then
-            echo "::error::Route53 hosted zone for mydgv.com not found"
-            exit 1
-          fi
-
-          CERT_ARN=$(aws acm list-certificates --region us-east-1 --certificate-statuses ISSUED \
-            --query "CertificateSummaryList[?DomainName=='login.mydgv.com' || DomainName=='*.mydgv.com' || DomainName=='mydgv.com'].CertificateArn | [0]" \
-            --output text)
-
-          if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" = "None" ]; then
-            echo "::error::No issued ACM certificate in us-east-1 for login.mydgv.com or *.mydgv.com"
-            exit 1
-          fi
-
-          echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
-          echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
-          echo "Using Route53 zone $ZONE_ID and certificate $CERT_ARN"
+          chmod +x scripts/resolve-login-domain.sh
+          eval "$(./scripts/resolve-login-domain.sh login.mydgv.com)"
+          echo "zone_id=$zone_id" >> $GITHUB_OUTPUT
+          echo "cert_arn=$cert_arn" >> $GITHUB_OUTPUT
 
       - name: SAM Deploy
         run: |
