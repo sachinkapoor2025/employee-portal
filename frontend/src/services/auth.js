@@ -1,5 +1,8 @@
-const domain = "https://mydgv-portal-auth.auth.ap-south-1.amazoncognito.com";
-const clientId = "5q797v9k55ad1q36mol3glhecf";
+const domain =
+  process.env.REACT_APP_COGNITO_DOMAIN ||
+  "https://mydgv-portal-auth.auth.ap-south-1.amazoncognito.com";
+const clientId =
+  process.env.REACT_APP_COGNITO_CLIENT_ID || "5q797v9k55ad1q36mol3glhecf";
 const redirectUri = `${window.location.origin}/callback`;
 
 // ===============================

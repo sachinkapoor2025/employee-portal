@@ -32,7 +32,7 @@ export const handler = async (event) => {
 
     await ddb.send(
       new PutCommand({
-        TableName: "Training_Materials",
+        TableName: process.env.TRAINING_TABLE,
         Item: item,
       })
     );

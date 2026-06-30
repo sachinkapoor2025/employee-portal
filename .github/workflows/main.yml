@@ -6,6 +6,10 @@ on:
       - main
       - feature/*
 
+env:
+  FRONTEND_DOMAIN: login.mydgv.com
+  CLOUDFRONT_DISTRIBUTION_ID: EODXDF7V0TW06
+
 jobs:
   deploy-backend:
     name: Deploy Backend (SAM)
@@ -43,7 +47,8 @@ jobs:
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --resolve-s3 \
             --no-confirm-changeset \
-            --no-fail-on-empty-changeset
+            --no-fail-on-empty-changeset \
+            --parameter-overrides FrontendDomainName=${{ env.FRONTEND_DOMAIN }}
 
       - name: Fetch CloudFormation Outputs
         id: outputs
@@ -59,7 +64,7 @@ jobs:
           echo "CognitoDomain=$(jq -r '.[] | select(.OutputKey=="CognitoDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
 
   deploy-frontend:
-    name: Deploy Frontend (S3)
+    name: Deploy Frontend (S3 + CloudFront)
     needs: deploy-backend
     runs-on: ubuntu-latest
 
@@ -71,6 +76,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
       - name: Create Frontend Env File
         run: |
@@ -85,20 +97,6 @@ jobs:
           cd frontend
           npm install
           npm run build
-          echo "Build output contents:"
-          ls -la build/
-          echo "Checking for static folder:"
-          find build/ -name "static" -type d
-          echo "Checking for src folder:"
-          find build/ -name "src" -type d
-
-      - name: Copy Source Files to Build
-        run: |
-          cd frontend
-          # Copy src folder to build directory if needed for any reason
-          cp -r src build/src
-          echo "Copied src folder to build directory"
-          ls -la build/
 
       - name: Upload Frontend to S3
         uses: jakejarvis/s3-sync-action@v0.5.1
@@ -110,3 +108,9 @@ jobs:
           AWS_REGION: ap-south-1
           AWS_S3_BUCKET: ${{ needs.deploy-backend.outputs.s3_bucket }}
           SOURCE_DIR: frontend/build
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"

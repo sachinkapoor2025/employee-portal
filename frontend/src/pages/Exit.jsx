@@ -16,7 +16,7 @@ export default function Exit() {
     const token = localStorage.getItem("token");
 
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/resignations`, {
+      const res = await fetch(`${process.env.REACT_APP_API_URL}/resignation`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

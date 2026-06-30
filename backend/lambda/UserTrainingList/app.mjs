@@ -22,7 +22,7 @@ export const handler = async (event) => {
     // 2️⃣ Fetch user profile to get skill
     const userRes = await ddb.send(
       new GetCommand({
-        TableName: "UserProfile",
+        TableName: process.env.USER_PROFILE_TABLE,
         Key: {
           PK: `USER#${email}`,
           SK: "PROFILE",
@@ -41,7 +41,7 @@ export const handler = async (event) => {
     // 3️⃣ Scan training materials by skill
     const trainingRes = await ddb.send(
       new ScanCommand({
-        TableName: "Training_Materials",
+        TableName: process.env.TRAINING_TABLE,
         FilterExpression: "#skill = :s AND is_active = :a",
         ExpressionAttributeNames: {
           "#skill": "skill",

@@ -5,7 +5,11 @@ Description: Employee Portal – Full Serverless Stack (Backend + Auth + Fronten
 Parameters:
   FrontendDomainName:
     Type: String
-    Default: demo.mydgv.com
+    Default: login.mydgv.com
+  LoginCloudFrontDistributionId:
+    Type: String
+    Default: EODXDF7V0TW06
+    Description: Existing CloudFront distribution serving login.mydgv.com
 
 Globals:
   Function:
@@ -321,7 +325,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-AttendanceFunction"
-      Handler: src/attendance/handler.handler
+      Handler: lambda/attendance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -344,7 +348,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-TrainingFunction"
-      Handler: src/training/handler.handler
+      Handler: lambda/training/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -367,7 +371,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-WorkFunction"
-      Handler: src/work/handler.handler
+      Handler: lambda/work/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -384,7 +388,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-PerformanceFunction"
-      Handler: src/performance/handler.handler
+      Handler: lambda/performance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -401,7 +405,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-AdminFunction"
-      Handler: src/admin/handler.handler
+      Handler: lambda/admin/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -428,7 +432,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-AccessFunction"
-      Handler: src/access/handler.handler
+      Handler: lambda/access/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -451,7 +455,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-MockTestFunction"
-      Handler: src/llm/mockTest.handler
+      Handler: lambda/llm/mockTest.handler
       Policies: [AWSLambdaBasicExecutionRole]
       Events:
         MockTestApi:
@@ -490,7 +494,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-ImageUploadFunction"
-      Handler: backend/lambda/ImageUpload/app.handler
+      Handler: lambda/ImageUpload/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - S3WritePolicy:
@@ -510,13 +514,19 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-UserProfileFunction"
-      Handler: backend/lambda/UserProfileFunction/app.handler
+      Handler: lambda/UserProfileFunction/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref UserProfileTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UserAccessTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminAddUserToGroup
+              Resource: !GetAtt CognitoUserPool.Arn
       Environment:
         Variables:
           USER_ACCESS_TABLE: !Ref UserAccessTable
@@ -534,7 +544,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-UserProfile"
-      Handler: backend/lambda/UserProfile/app.handler
+      Handler: lambda/UserProfile/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBReadPolicy:
@@ -564,8 +574,14 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-TrainingVideoUrl"
-      Handler: backend/lambda/TrainingVideoUrl/app.handler
-      Policies: [AWSLambdaBasicExecutionRole]
+      Handler: lambda/TrainingVideoUrl/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
       Events:
         TrainingVideoUrlApi:
           Type: Api
@@ -578,10 +594,10 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-trainingUrl"
-      Handler: backend/lambda/trainingUrl/app.handler
+      Handler: lambda/trainingUrl/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
-        - S3ReadPolicy:
+        - S3WritePolicy:
             BucketName: !Ref TrainingMaterialBucket
       Environment:
         Variables:
@@ -598,7 +614,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-UserTrainingList"
-      Handler: backend/lambda/UserTrainingList/app.handler
+      Handler: lambda/UserTrainingList/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBReadPolicy:
@@ -621,7 +637,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-getSkills"
-      Handler: backend/lambda/getSkills/app.handler
+      Handler: lambda/getSkills/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBReadPolicy:
@@ -641,7 +657,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-resignation"
-      Handler: backend/lambda/resignation/app.handler
+      Handler: lambda/resignation/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -661,7 +677,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-addTraining"
-      Handler: backend/lambda/addTraining/app.handler
+      Handler: lambda/addTraining/app.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -671,6 +687,7 @@ Resources:
       Environment:
         Variables:
           TRAINING_BUCKET: !Ref TrainingMaterialBucket
+          TRAINING_TABLE: !Ref TrainingMaterialsTable
       Events:
         AddTrainingApi:
           Type: Api
@@ -745,6 +762,14 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${LoginCloudFrontDistributionId}"
 
 # =====================================================
 # OUTPUTS
@@ -757,6 +782,9 @@ Outputs:
   CognitoHostedUI:
     Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
 
+  CognitoDomain:
+    Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
+
   UserPoolClientId:
     Value: !Ref CognitoUserPoolClient
 
@@ -765,3 +793,6 @@ Outputs:
 
   FrontendBucketName:
     Value: !Ref FrontendBucket
+
+  FrontendCloudFrontDomain:
+    Value: !GetAtt FrontendDistribution.DomainName

@@ -6,6 +6,7 @@ version = 0.1
 stack_name = "mydgv-portal"
 s3_prefix = "mydgv-portal"
 region = "ap-south-1"
-confirm_changeset = true
-capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
+parameter_overrides = "FrontendDomainName=login.mydgv.com"

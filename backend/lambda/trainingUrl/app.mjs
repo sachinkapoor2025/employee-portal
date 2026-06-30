@@ -1,52 +1,41 @@
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { randomUUID } from "crypto";
 
-const s3 = new S3Client({ region: "ap-south-1" });
+const s3 = new S3Client({ region: process.env.AWS_REGION || "ap-south-1" });
+const bucket = process.env.TRAINING_BUCKET;
 
 export const handler = async (event) => {
   try {
-    const { video_s3_key } = JSON.parse(event.body || "{}");
+    const { fileName, skill } = JSON.parse(event.body || "{}");
 
-    if (!video_s3_key) {
-      return {
-        statusCode: 400,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "Content-Type,Authorization",
-          "Access-Control-Allow-Methods": "POST,OPTIONS",
-        },
-        body: JSON.stringify({ message: "video_s3_key is required" }),
-      };
+    if (!fileName || !skill) {
+      return response(400, { message: "fileName and skill are required" });
     }
 
-    const command = new GetObjectCommand({
-      Bucket: "dgv-training-materials",
+    const video_s3_key = `${skill}/${randomUUID()}-${fileName}`;
+
+    const command = new PutObjectCommand({
+      Bucket: bucket,
       Key: video_s3_key,
+      ContentType: "video/mp4",
     });
 
-    const url = await getSignedUrl(s3, command, {
-      expiresIn: 900, // 15 minutes
-    });
+    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 900 });
 
-    return {
-      statusCode: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Access-Control-Allow-Methods": "POST,OPTIONS",
-      },
-      body: JSON.stringify({ url }),
-    };
+    return response(200, { uploadUrl, video_s3_key });
   } catch (error) {
     console.error(error);
-    return {
-      statusCode: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Access-Control-Allow-Methods": "POST,OPTIONS",
-      },
-      body: JSON.stringify({ message: "Failed to generate URL" }),
-    };
+    return response(500, { message: "Failed to generate upload URL" });
   }
 };
+
+const response = (statusCode, body) => ({
+  statusCode,
+  headers: {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+  },
+  body: JSON.stringify(body),
+});

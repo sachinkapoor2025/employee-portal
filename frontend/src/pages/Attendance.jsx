@@ -85,7 +85,7 @@ export default function Attendance() {
         `${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`,
         {
           headers: {
-            Authorization: token,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -148,12 +148,9 @@ export default function Attendance() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: token,
+          Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          week: formatDate(currentWeekStart),
-          attendance,
-        }),
+        body: JSON.stringify(attendance),
       });
 
       if (!res.ok) throw new Error("Submit failed");
