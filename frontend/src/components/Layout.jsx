@@ -1,9 +1,16 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { logout } from "../services/auth";
+import {
+  logout,
+  canAccessAdmin,
+  switchPortalView,
+  getViewRole,
+} from "../services/auth";
 
 export default function Layout({ children }) {
   const navigate = useNavigate();
-  const role = localStorage.getItem("role") || "USER";
+  const [viewRole, setViewRole] = useState(getViewRole());
+  const isAdminAccount = canAccessAdmin();
 
   const styles = {
     page: {
@@ -39,56 +46,85 @@ export default function Layout({ children }) {
     adminButton: {
       backgroundColor: "#ff9800",
     },
+    switchBar: {
+      marginBottom: 8,
+      padding: "8px 12px",
+      background: "#fff3e0",
+      borderRadius: 8,
+      display: "inline-block",
+    },
+  };
+
+  const handleSwitch = (view) => {
+    if (!switchPortalView(view)) return;
+    const nextRole = view === "admin" ? "ADMIN" : "USER";
+    setViewRole(nextRole);
+    navigate(nextRole === "ADMIN" ? "/admin/users" : "/");
   };
 
   return (
     <div style={styles.page}>
       <nav style={styles.nav}>
-        {/* ===== COMMON (USER + ADMIN) ===== */}
-        <button style={styles.navButton} onClick={() => navigate("/")}>
-          Dashboard
-        </button>
+        {isAdminAccount && (
+          <div style={styles.switchBar}>
+            <span style={{ marginRight: 10, fontWeight: 600 }}>
+              Portal view:
+            </span>
+            <button
+              style={{
+                ...styles.navButton,
+                ...(viewRole === "USER" ? {} : { opacity: 0.6 }),
+              }}
+              onClick={() => handleSwitch("employee")}
+            >
+              Employee
+            </button>
+            <button
+              style={{
+                ...styles.navButton,
+                ...styles.adminButton,
+                ...(viewRole === "ADMIN" ? {} : { opacity: 0.6 }),
+              }}
+              onClick={() => handleSwitch("admin")}
+            >
+              Admin
+            </button>
+          </div>
+        )}
 
-        <button
-          style={styles.navButton}
-          onClick={() => navigate("/attendance")}
-        >
-          Attendance
-        </button>
+        {(viewRole === "USER" || !isAdminAccount) && (
+          <>
+            <button style={styles.navButton} onClick={() => navigate("/")}>
+              Dashboard
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/attendance")}>
+              Attendance
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/training")}>
+              Training
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/work")}>
+              Work
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/performance")}>
+              Performance
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/expertise")}>
+              Expertise
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/profile")}>
+              Profile
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/payroll")}>
+              Payroll
+            </button>
+            <button style={styles.navButton} onClick={() => navigate("/exit")}>
+              Exit the Firm
+            </button>
+          </>
+        )}
 
-        <button style={styles.navButton} onClick={() => navigate("/training")}>
-          Training
-        </button>
-
-        <button style={styles.navButton} onClick={() => navigate("/work")}>
-          Work
-        </button>
-
-        <button
-          style={styles.navButton}
-          onClick={() => navigate("/performance")}
-        >
-          Performance
-        </button>
-
-        <button style={styles.navButton} onClick={() => navigate("/expertise")}>
-          Expertise
-        </button>
-
-        <button style={styles.navButton} onClick={() => navigate("/profile")}>
-          Profile
-        </button>
-
-        <button style={styles.navButton} onClick={() => navigate("/payroll")}>
-          Payroll
-        </button>
-
-        <button style={styles.navButton} onClick={() => navigate("/exit")}>
-          Exit the Firm
-        </button>
-
-        {/* ===== ADMIN ONLY ===== */}
-        {role === "ADMIN" && (
+        {viewRole === "ADMIN" && isAdminAccount && (
           <>
             <button
               style={{ ...styles.navButton, ...styles.adminButton }}
@@ -96,22 +132,18 @@ export default function Layout({ children }) {
             >
               Manage Users
             </button>
-
             <button
               style={{ ...styles.navButton, ...styles.adminButton }}
               onClick={() => navigate("/admin/tasks")}
             >
               Manage Tasks
             </button>
-
             <button
               style={{ ...styles.navButton, ...styles.adminButton }}
               onClick={() => navigate("/admin/resignations")}
             >
               Resignations
             </button>
-
-            {/* ✅ ADD TRAINING (NEW) */}
             <button
               style={{ ...styles.navButton, ...styles.adminButton }}
               onClick={() => navigate("/admin/add-training")}
@@ -121,7 +153,6 @@ export default function Layout({ children }) {
           </>
         )}
 
-        {/* ===== LOGOUT ===== */}
         <button style={styles.navButton} onClick={logout}>
           Logout
         </button>

@@ -9,6 +9,9 @@ const apiUrl =
   process.env.REACT_APP_API_URL ||
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
+export const PORTAL_INTENT_KEY = "portalIntent";
+export const ACTUAL_ROLE_KEY = "actualRole";
+
 function parseEmailFromToken(token) {
   try {
     const payload = token.split(".")[1];
@@ -22,6 +25,24 @@ function parseEmailFromToken(token) {
 export function getLoggedInEmail() {
   const token = localStorage.getItem("token");
   return token ? parseEmailFromToken(token) : "";
+}
+
+export function canAccessAdmin() {
+  return localStorage.getItem(ACTUAL_ROLE_KEY) === "ADMIN";
+}
+
+export function getViewRole() {
+  return localStorage.getItem("role") || "USER";
+}
+
+export function switchPortalView(view) {
+  if (view === "admin") {
+    if (!canAccessAdmin()) return false;
+    localStorage.setItem("role", "ADMIN");
+    return true;
+  }
+  localStorage.setItem("role", "USER");
+  return true;
 }
 
 export async function checkAccess() {
@@ -42,13 +63,31 @@ export async function checkAccess() {
 }
 
 export function applyAccessRedirect(data) {
+  const intent = sessionStorage.getItem(PORTAL_INTENT_KEY) || "employee";
+  sessionStorage.removeItem(PORTAL_INTENT_KEY);
+
   if (data.access === "ADMIN") {
-    localStorage.setItem("role", "ADMIN");
-    window.location.replace("/admin/users");
+    localStorage.setItem(ACTUAL_ROLE_KEY, "ADMIN");
+
+    if (intent === "admin") {
+      localStorage.setItem("role", "ADMIN");
+      window.location.replace("/admin/users");
+      return true;
+    }
+
+    localStorage.setItem("role", "USER");
+    window.location.replace("/");
     return true;
   }
 
   if (data.access === "USER") {
+    localStorage.setItem(ACTUAL_ROLE_KEY, "USER");
+
+    if (intent === "admin") {
+      window.location.replace("/login?adminDenied=1");
+      return true;
+    }
+
     localStorage.setItem("role", "USER");
     window.location.replace("/");
     return true;
@@ -70,10 +109,9 @@ export function applyAccessRedirect(data) {
   return false;
 }
 
-// ===============================
-// LOGIN
-// ===============================
-export const login = () => {
+// employee | admin
+export const login = (intent = "employee") => {
+  sessionStorage.setItem(PORTAL_INTENT_KEY, intent);
   window.location.href =
     `${domain}/login` +
     `?client_id=${clientId}` +
@@ -82,9 +120,6 @@ export const login = () => {
     `&redirect_uri=${encodeURIComponent(redirectUri)}`;
 };
 
-// ===============================
-// CALLBACK
-// ===============================
 export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
@@ -119,9 +154,6 @@ export const handleCallback = async () => {
   }
 };
 
-// ===============================
-// REQUEST ACCESS
-// ===============================
 export const requestAccess = async () => {
   const token = localStorage.getItem("token");
   if (!token) {
@@ -151,11 +183,9 @@ export const requestAccess = async () => {
   return data;
 };
 
-// ===============================
-// LOGOUT
-// ===============================
 export const logout = () => {
   localStorage.clear();
+  sessionStorage.clear();
 
   window.location.href =
     `${domain}/logout` +
