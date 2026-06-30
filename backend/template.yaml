@@ -6,10 +6,19 @@ Parameters:
   FrontendDomainName:
     Type: String
     Default: login.mydgv.com
-  LoginCloudFrontDistributionId:
+  Route53HostedZoneId:
     Type: String
-    Default: EODXDF7V0TW06
-    Description: Existing CloudFront distribution serving login.mydgv.com
+    Default: ""
+    Description: Route53 hosted zone ID for mydgv.com (enables login.mydgv.com DNS)
+  FrontendAcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN in us-east-1 for login.mydgv.com on CloudFront
+
+Conditions:
+  UseCustomDomain: !And
+    - !Not [!Equals [!Ref FrontendAcmCertificateArn, ""]]
+    - !Not [!Equals [!Ref Route53HostedZoneId, ""]]
 
 Globals:
   Function:
@@ -1052,6 +1061,16 @@ Resources:
       DistributionConfig:
         Enabled: true
         DefaultRootObject: index.html
+        Aliases: !If
+          - UseCustomDomain
+          - [!Ref FrontendDomainName]
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - UseCustomDomain
+          - AcmCertificateArn: !Ref FrontendAcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
         CustomErrorResponses:
           - ErrorCode: 403
             ResponsePagePath: /index.html
@@ -1075,6 +1094,18 @@ Resources:
           ForwardedValues:
             QueryString: true
 
+  LoginDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: UseCustomDomain
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref FrontendDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt FrontendDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -1089,14 +1120,6 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
-          - Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: s3:GetObject
-            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${LoginCloudFrontDistributionId}"
 
 # =====================================================
 # OUTPUTS
@@ -1123,3 +1146,7 @@ Outputs:
 
   FrontendCloudFrontDomain:
     Value: !GetAtt FrontendDistribution.DomainName
+
+  FrontendCloudFrontDistributionId:
+    Value: !Ref FrontendDistribution
+    Description: CloudFront distribution for login.mydgv.com — use for cache invalidation

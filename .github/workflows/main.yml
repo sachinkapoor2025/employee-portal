@@ -8,7 +8,6 @@ on:
 
 env:
   FRONTEND_DOMAIN: login.mydgv.com
-  CLOUDFRONT_DISTRIBUTION_ID: EODXDF7V0TW06
 
 jobs:
   deploy-backend:
@@ -20,6 +19,7 @@ jobs:
       s3_bucket: ${{ steps.outputs.outputs.FrontendBucketName }}
       cognito_client_id: ${{ steps.outputs.outputs.UserPoolClientId }}
       cognito_domain: ${{ steps.outputs.outputs.CognitoDomain }}
+      cloudfront_distribution_id: ${{ steps.outputs.outputs.FrontendCloudFrontDistributionId }}
 
     steps:
       - name: Checkout code
@@ -40,6 +40,32 @@ jobs:
           cd backend
           sam build
 
+      - name: Resolve login.mydgv.com DNS and SSL
+        id: domain
+        run: |
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name mydgv.com \
+            --query 'HostedZones[0].Id' \
+            --output text | sed 's|/hostedzone/||')
+
+          if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "None" ]; then
+            echo "::error::Route53 hosted zone for mydgv.com not found"
+            exit 1
+          fi
+
+          CERT_ARN=$(aws acm list-certificates --region us-east-1 --certificate-statuses ISSUED \
+            --query "CertificateSummaryList[?DomainName=='login.mydgv.com' || DomainName=='*.mydgv.com' || DomainName=='mydgv.com'].CertificateArn | [0]" \
+            --output text)
+
+          if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" = "None" ]; then
+            echo "::error::No issued ACM certificate in us-east-1 for login.mydgv.com or *.mydgv.com"
+            exit 1
+          fi
+
+          echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
+          echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
+          echo "Using Route53 zone $ZONE_ID and certificate $CERT_ARN"
+
       - name: SAM Deploy
         run: |
           cd backend
@@ -48,7 +74,10 @@ jobs:
             --resolve-s3 \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides FrontendDomainName=${{ env.FRONTEND_DOMAIN }}
+            --parameter-overrides \
+              FrontendDomainName=${{ env.FRONTEND_DOMAIN }} \
+              Route53HostedZoneId=${{ steps.domain.outputs.zone_id }} \
+              FrontendAcmCertificateArn=${{ steps.domain.outputs.cert_arn }}
 
       - name: Fetch CloudFormation Outputs
         id: outputs
@@ -62,6 +91,7 @@ jobs:
           echo "FrontendBucketName=$(jq -r '.[] | select(.OutputKey=="FrontendBucketName") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "UserPoolClientId=$(jq -r '.[] | select(.OutputKey=="UserPoolClientId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "CognitoDomain=$(jq -r '.[] | select(.OutputKey=="CognitoDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+          echo "FrontendCloudFrontDistributionId=$(jq -r '.[] | select(.OutputKey=="FrontendCloudFrontDistributionId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
 
   deploy-frontend:
     name: Deploy Frontend (S3 + CloudFront)
@@ -111,6 +141,11 @@ jobs:
 
       - name: Invalidate CloudFront Cache
         run: |
+          DIST_ID="${{ needs.deploy-backend.outputs.cloudfront_distribution_id }}"
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "null" ]; then
+            echo "::error::CloudFront distribution ID missing from stack outputs"
+            exit 1
+          fi
           aws cloudfront create-invalidation \
-            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-id "$DIST_ID" \
             --paths "/*"

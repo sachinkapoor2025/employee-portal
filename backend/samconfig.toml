@@ -9,4 +9,4 @@ region = "ap-south-1"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
-parameter_overrides = "FrontendDomainName=login.mydgv.com"
+parameter_overrides = "FrontendDomainName=login.mydgv.com Route53HostedZoneId= FrontendAcmCertificateArn="
