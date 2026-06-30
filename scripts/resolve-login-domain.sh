@@ -9,7 +9,7 @@ ACM_REGION="us-east-1"
 if [ -n "${LOGIN_MYDGV_ACM_CERT_ARN:-}" ]; then
   CERT_ARN="$LOGIN_MYDGV_ACM_CERT_ARN"
   aws acm describe-certificate --region "$ACM_REGION" --certificate-arn "$CERT_ARN" >/dev/null
-  echo "Using certificate from LOGIN_MYDGV_ACM_CERT_ARN: $CERT_ARN"
+  echo "Using certificate from LOGIN_MYDGV_ACM_CERT_ARN: $CERT_ARN" >&2
 else
   cert_covers_domain() {
     local arn="$1"
@@ -74,7 +74,7 @@ else
     exit 1
   fi
 
-  echo "Selected certificate for $DOMAIN: $CERT_ARN"
+  echo "Selected certificate for $DOMAIN: $CERT_ARN" >&2
 fi
 
 ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name mydgv.com \

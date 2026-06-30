@@ -46,9 +46,11 @@ jobs:
           LOGIN_MYDGV_ACM_CERT_ARN: ${{ secrets.LOGIN_MYDGV_ACM_CERT_ARN }}
         run: |
           chmod +x scripts/resolve-login-domain.sh
-          eval "$(./scripts/resolve-login-domain.sh login.mydgv.com)"
-          echo "zone_id=$zone_id" >> $GITHUB_OUTPUT
-          echo "cert_arn=$cert_arn" >> $GITHUB_OUTPUT
+          RESOLVED=$(./scripts/resolve-login-domain.sh login.mydgv.com)
+          ZONE_ID=$(echo "$RESOLVED" | grep '^zone_id=' | cut -d= -f2-)
+          CERT_ARN=$(echo "$RESOLVED" | grep '^cert_arn=' | cut -d= -f2-)
+          echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
+          echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
 
       - name: SAM Deploy
         run: |
