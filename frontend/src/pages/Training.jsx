@@ -2,6 +2,14 @@ import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import { fetchUserTrainings, fetchTrainingVideoUrl } from "../services/api";
 
+function normalizeLevel(level = "") {
+  const value = level.toUpperCase();
+  if (value.includes("BASIC") || value.includes("BEGINNER")) return "BASIC";
+  if (value.includes("REGULAR") || value.includes("INTERMEDIATE")) return "REGULAR";
+  if (value.includes("ADVANCED")) return "ADVANCED";
+  return "OTHER";
+}
+
 export default function Training() {
   const [videos, setVideos] = useState([]);
   const [videoUrl, setVideoUrl] = useState(null);
@@ -34,7 +42,7 @@ export default function Training() {
         data.map((v) => ({
           ...v,
           id: v.training_id,
-          category: v.level,
+          category: normalizeLevel(v.level),
           status: "Not Started",
         }))
       );
@@ -99,7 +107,7 @@ export default function Training() {
   }, {});
 
   // ✅ FIXED ORDER (ONLY ADDITION)
-  const levelOrder = ["BASIC", "REGULAR", "ADVANCED"];
+  const levelOrder = ["BASIC", "REGULAR", "ADVANCED", "OTHER"];
 
   // ======================
   // RENDER
@@ -113,7 +121,10 @@ export default function Training() {
         {error && <p style={{ color: "red" }}>{error}</p>}
 
         {!loading && !error && videos.length === 0 && (
-          <p>No training available.</p>
+          <p>
+            No training videos are assigned yet. Ask your admin to set your skill
+            in Manage Users and add training materials for that skill.
+          </p>
         )}
 
         {levelOrder.map(

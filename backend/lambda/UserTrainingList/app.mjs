@@ -31,8 +31,8 @@ export const handler = async (event) => {
     );
 
     if (!userRes.Item || !userRes.Item.skill) {
-      console.error("User skill not found");
-      return response(404, { message: "User skill not found" });
+      console.log("No profile or skill for user, returning empty list");
+      return response(200, []);
     }
 
     const userSkill = userRes.Item.skill;

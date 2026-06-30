@@ -1,4 +1,6 @@
-const API = process.env.REACT_APP_API_URL;
+const API =
+  process.env.REACT_APP_API_URL ||
+  "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
 /* ================= CORE ================= */
 
