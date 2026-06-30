@@ -62,7 +62,6 @@ jobs:
             --no-fail-on-empty-changeset \
             --parameter-overrides \
               FrontendDomainName=${{ env.FRONTEND_DOMAIN }} \
-              Route53HostedZoneId=${{ steps.domain.outputs.zone_id }} \
               FrontendAcmCertificateArn=${{ steps.domain.outputs.cert_arn }}
 
       - name: Fetch CloudFormation Outputs
@@ -78,6 +77,15 @@ jobs:
           echo "UserPoolClientId=$(jq -r '.[] | select(.OutputKey=="UserPoolClientId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "CognitoDomain=$(jq -r '.[] | select(.OutputKey=="CognitoDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "FrontendCloudFrontDistributionId=$(jq -r '.[] | select(.OutputKey=="FrontendCloudFrontDistributionId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+          echo "FrontendCloudFrontDomain=$(jq -r '.[] | select(.OutputKey=="FrontendCloudFrontDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
+
+      - name: Point login.mydgv.com to CloudFront
+        run: |
+          chmod +x scripts/upsert-login-dns.sh
+          ./scripts/upsert-login-dns.sh \
+            "${{ steps.domain.outputs.zone_id }}" \
+            "${{ env.FRONTEND_DOMAIN }}" \
+            "${{ steps.outputs.outputs.FrontendCloudFrontDomain }}"
 
   deploy-frontend:
     name: Deploy Frontend (S3 + CloudFront)
