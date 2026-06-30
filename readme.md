@@ -16,9 +16,6 @@ employee-portal/
 │   │   └── common/
 │   │       └── auth.js
 
-
-
-
 │
 ├── frontend/
 │   ├── public/
