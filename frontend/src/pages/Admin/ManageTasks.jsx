@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Layout from "../../components/Layout";
 import {
   fetchProjects,
@@ -42,7 +42,7 @@ export default function ManageTasks() {
     dueDate: "",
   });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [p, t, u] = await Promise.all([
       fetchProjects(),
       fetchTasks(projectId ? { projectId } : {}),
@@ -52,12 +52,11 @@ export default function ManageTasks() {
     setTasks(t);
     setUsers(u);
     if (!projectId && p.length) setProjectId(p[0].projectId);
-  };
+  }, [projectId]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     load().catch(console.error);
-  }, [projectId]);
+  }, [load]);
 
   const saveProject = async () => {
     await createProject(projectForm);
