@@ -50,7 +50,7 @@ export default function Dashboard() {
           <button style={buttonPrimary} onClick={() => navigate("/attendance")}>Mark Attendance</button>
           <button style={buttonPrimary} onClick={() => navigate("/work")}>My Tasks</button>
           <button style={buttonPrimary} onClick={() => navigate("/leave")}>Apply Leave</button>
-          <button style={buttonPrimary} onClick={() => navigate("/downloads")}>Downloads</button>
+          <button style={buttonPrimary} onClick={() => navigate("/software-center")}>Software Center</button>
         </div>
 
         {announcements.length > 0 && (

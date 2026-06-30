@@ -1,6 +1,7 @@
 const { getUser } = require("../common/auth");
 const { json } = require("../common/response");
 const { getRequestMeta, todayKey } = require("../common/requestMeta");
+const { resolveLocation } = require("../common/geo");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -15,10 +16,42 @@ const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
+async function fetchProfileName(email) {
+  if (!process.env.USER_PROFILE_TABLE) {
+    return email.split("@")[0];
+  }
+  try {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: process.env.USER_PROFILE_TABLE,
+        Key: { PK: `USER#${email}`, SK: "PROFILE" },
+      })
+    );
+    return res.Item?.name || email.split("@")[0];
+  } catch {
+    return email.split("@")[0];
+  }
+}
+
+async function locationFromEvent(ev, ipCache) {
+  if (ev.location && ev.location !== "Unknown") return ev.location;
+  const ip = ev.ip;
+  if (!ip || ip === "unknown") return "Unknown";
+  if (!ipCache[ip]) {
+    ipCache[ip] = await resolveLocation(ip);
+  }
+  return ipCache[ip];
+}
+
 async function logEvent(email, type, meta = {}, body = {}) {
   const now = new Date().toISOString();
   const date = todayKey();
   const id = randomUUID();
+  const ip = meta.ip || body.ip || "unknown";
+  const location =
+    body.location && body.location !== "Unknown"
+      ? body.location
+      : await resolveLocation(ip);
 
   await ddb.send(
     new PutCommand({
@@ -32,12 +65,12 @@ async function logEvent(email, type, meta = {}, body = {}) {
         type,
         timestamp: now,
         date,
-        ip: meta.ip || body.ip || "unknown",
+        ip,
         device: meta.device || body.device || "unknown",
         browser: meta.browser || body.browser || "unknown",
         userAgent: meta.userAgent || body.userAgent || "",
         page: body.page || null,
-        location: body.location || "Unknown",
+        location,
         sessionMinutes: body.sessionMinutes || null,
       },
     })
@@ -138,26 +171,34 @@ exports.handler = async (event) => {
             email: ev.email,
             events: [],
             lastSeen: ev.timestamp,
-            ips: new Set(),
             devices: new Set(),
           };
         }
         byUser[ev.email].events.push(ev);
-        byUser[ev.email].ips.add(ev.ip);
         byUser[ev.email].devices.add(ev.device);
         if (ev.timestamp > byUser[ev.email].lastSeen) {
           byUser[ev.email].lastSeen = ev.timestamp;
         }
       }
 
-      const users = Object.values(byUser).map((u) => ({
-        email: u.email,
-        lastSeen: u.lastSeen,
-        eventCount: u.events.length,
-        ips: [...u.ips],
-        devices: [...u.devices],
-        logins: u.events.filter((e) => e.type === "login").length,
-      }));
+      const ipCache = {};
+      const users = await Promise.all(
+        Object.values(byUser).map(async (u) => {
+          const locations = new Set();
+          for (const ev of u.events) {
+            locations.add(await locationFromEvent(ev, ipCache));
+          }
+          return {
+            email: u.email,
+            name: await fetchProfileName(u.email),
+            lastSeen: u.lastSeen,
+            eventCount: u.events.length,
+            locations: [...locations],
+            devices: [...u.devices],
+            logins: u.events.filter((e) => e.type === "login").length,
+          };
+        })
+      );
 
       return json(200, { date, users, events: dayEvents.Items || [] });
     }
@@ -205,6 +246,18 @@ exports.handler = async (event) => {
       );
       const pendingLeave = (leaves.Items || []).filter((l) => l.status === "PENDING");
 
+      const ipCache = {};
+      const recentActivity = await Promise.all(
+        (activity.Items || []).slice(0, 20).map(async (ev) => ({
+          timestamp: ev.timestamp,
+          email: ev.email,
+          name: await fetchProfileName(ev.email),
+          type: ev.type,
+          location: await locationFromEvent(ev, ipCache),
+          device: ev.device,
+        }))
+      );
+
       return json(200, {
         date,
         stats: {
@@ -213,7 +266,7 @@ exports.handler = async (event) => {
           openTasks: openTasks.length,
           pendingLeave: pendingLeave.length,
         },
-        recentActivity: (activity.Items || []).slice(0, 20),
+        recentActivity,
         overdueTasks: openTasks.filter(
           (t) => t.dueDate && t.dueDate < date
         ),

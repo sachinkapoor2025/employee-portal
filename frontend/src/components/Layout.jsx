@@ -28,11 +28,13 @@ export default function Layout({ children }) {
     <div
       style={{
         minHeight: "100vh",
-        padding: "20px",
+        display: "flex",
+        flexDirection: "column",
+        padding: "20px 20px 0",
         fontFamily: "Arial, sans-serif",
         backgroundImage: "url('/images/dgv_bg.png')",
         backgroundSize: "cover",
-        backgroundPosition: "center",
+        backgroundPosition: "center top",
         backgroundRepeat: "no-repeat",
         backgroundAttachment: "fixed",
       }}
@@ -44,6 +46,7 @@ export default function Layout({ children }) {
           borderRadius: "8px",
           marginBottom: "20px",
           textAlign: "center",
+          flexShrink: 0,
         }}
       >
         {isAdminAccount && (
@@ -81,7 +84,7 @@ export default function Layout({ children }) {
             <button style={navButton} onClick={() => navigate("/training")}>Training</button>
             <button style={navButton} onClick={() => navigate("/work")}>My Tasks</button>
             <button style={navButton} onClick={() => navigate("/leave")}>Leave</button>
-            <button style={navButton} onClick={() => navigate("/downloads")}>Downloads</button>
+            <button style={navButton} onClick={() => navigate("/software-center")}>Software Center</button>
             <button style={navButton} onClick={() => navigate("/profile")}>Profile</button>
             <button style={navButton} onClick={() => navigate("/performance")}>Performance</button>
             <button style={navButton} onClick={() => navigate("/payroll")}>Payroll</button>
@@ -98,6 +101,7 @@ export default function Layout({ children }) {
             <button style={navButton} onClick={() => navigate("/admin/leave")}>Leave</button>
             <button style={navButton} onClick={() => navigate("/admin/announcements")}>Announce</button>
             <button style={navButton} onClick={() => navigate("/admin/add-training")}>Training</button>
+            <button style={navButton} onClick={() => navigate("/software-center")}>Software Center</button>
             <button style={navButton} onClick={() => navigate("/admin/resignations")}>Resignations</button>
           </>
         )}
@@ -105,9 +109,16 @@ export default function Layout({ children }) {
         <button style={navButton} onClick={logout}>Logout</button>
       </nav>
 
-      {children}
+      <main style={{ flex: "1 0 auto", width: "100%", maxWidth: 1200, margin: "0 auto" }}>
+        {children}
+      </main>
 
-      <Footer />
+      {/* Spacer clears background tagline ("Your gateway to company resources") */}
+      <div style={{ flex: "1 1 180px", minHeight: 120, maxHeight: 280 }} aria-hidden="true" />
+
+      <div style={{ flexShrink: 0, width: "100%", marginTop: "auto" }}>
+        <Footer />
+      </div>
     </div>
   );
 }

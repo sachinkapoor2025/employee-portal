@@ -63,9 +63,9 @@ export default function AdminDashboard() {
             <thead>
               <tr style={{ background: colors.primary, color: "#fff" }}>
                 <th style={{ padding: 8, textAlign: "left" }}>Time</th>
-                <th style={{ padding: 8, textAlign: "left" }}>User</th>
+                <th style={{ padding: 8, textAlign: "left" }}>Name</th>
                 <th style={{ padding: 8, textAlign: "left" }}>Type</th>
-                <th style={{ padding: 8, textAlign: "left" }}>IP</th>
+                <th style={{ padding: 8, textAlign: "left" }}>Location</th>
                 <th style={{ padding: 8, textAlign: "left" }}>Device</th>
               </tr>
             </thead>
@@ -73,9 +73,12 @@ export default function AdminDashboard() {
               {(data?.recentActivity || []).map((ev, i) => (
                 <tr key={i} style={{ borderBottom: `1px solid ${colors.border}` }}>
                   <td style={{ padding: 8, fontSize: 13 }}>{new Date(ev.timestamp).toLocaleTimeString()}</td>
-                  <td style={{ padding: 8 }}>{ev.email}</td>
+                  <td style={{ padding: 8 }}>
+                    <div style={{ fontWeight: 600 }}>{ev.name || "—"}</div>
+                    <div style={{ fontSize: 11, color: colors.textMuted }}>{ev.email}</div>
+                  </td>
                   <td style={{ padding: 8 }}>{ev.type}</td>
-                  <td style={{ padding: 8, fontSize: 13 }}>{ev.ip}</td>
+                  <td style={{ padding: 8, fontSize: 13 }}>{ev.location || "Unknown"}</td>
                   <td style={{ padding: 8 }}>{ev.device}</td>
                 </tr>
               ))}

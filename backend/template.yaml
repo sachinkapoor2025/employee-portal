@@ -376,6 +376,12 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
 
   # =====================================================
   # 4️⃣ LAMBDAS (ALL INCLUDED)
@@ -773,10 +779,16 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-ActivityFunction"
       Handler: lambda/activity/handler.handler
+      Timeout: 15
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref ActivityLogTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Environment:
+        Variables:
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Events:
         ActivityPostApi:
           Type: Api
@@ -955,6 +967,60 @@ Resources:
           Properties:
             Path: /downloads/agent
             Method: GET
+            RestApiId: !Ref ApiGateway
+
+  SoftwareFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-SoftwareFunction"
+      Handler: lambda/software/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - S3ReadPolicy:
+            BucketName: !Ref AgentDownloadsBucket
+        - S3WritePolicy:
+            BucketName: !Ref AgentDownloadsBucket
+      Environment:
+        Variables:
+          SOFTWARE_BUCKET: !Ref AgentDownloadsBucket
+      Events:
+        SoftwareListApi:
+          Type: Api
+          Properties:
+            Path: /software
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareListApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminSoftwarePostApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminSoftwarePutApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareDeleteApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareUploadApi:
+          Type: Api
+          Properties:
+            Path: /admin/software/upload-url
+            Method: POST
             RestApiId: !Ref ApiGateway
 
   # =====================================================

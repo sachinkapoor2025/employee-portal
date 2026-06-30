@@ -28,7 +28,7 @@ import TeamActivity from "./pages/Admin/TeamActivity";
 import LeaveManagement from "./pages/Admin/LeaveManagement";
 import AdminAnnouncements from "./pages/Admin/AdminAnnouncements";
 import Leave from "./pages/Leave";
-import Downloads from "./pages/Downloads";
+import SoftwareCenter from "./pages/SoftwareCenter";
 import ConsentGate from "./components/ConsentGate";
 import ActivityTracker from "./components/ActivityTracker";
 
@@ -168,13 +168,14 @@ export default function App() {
           }
         />
         <Route
-          path="/downloads"
+          path="/software-center"
           element={
             <RequireAuth>
-              <Downloads />
+              <SoftwareCenter />
             </RequireAuth>
           }
         />
+        <Route path="/downloads" element={<Navigate to="/software-center" replace />} />
 
         {/* Admin */}
         <Route
