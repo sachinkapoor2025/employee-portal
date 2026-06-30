@@ -5,6 +5,10 @@ import Layout from "../components/Layout";
    BUTTON COLORS
 ====================== */
 
+const API_URL =
+  process.env.REACT_APP_API_URL ||
+  "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
+
 const STATUS_COLORS = {
   Working: "#22c55e", // green
   Leave: "#ef4444", // red
@@ -45,7 +49,10 @@ export default function Attendance() {
   }
 
   function formatDate(date) {
-    return date.toISOString().split("T")[0];
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   }
 
   function getWeekDates(start) {
@@ -82,7 +89,7 @@ export default function Attendance() {
   const fetchAttendance = useCallback(async (start, end) => {
     try {
       const res = await fetch(
-        `${process.env.REACT_APP_API_URL}/attendance?startDate=${start}&endDate=${end}`,
+        `${API_URL}/attendance?startDate=${start}&endDate=${end}`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -144,7 +151,7 @@ export default function Attendance() {
     }
 
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/attendance`, {
+      const res = await fetch(`${API_URL}/attendance`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -153,7 +160,10 @@ export default function Attendance() {
         body: JSON.stringify(attendance),
       });
 
-      if (!res.ok) throw new Error("Submit failed");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Submit failed (${res.status})`);
+      }
 
       alert("Attendance submitted successfully");
 
@@ -161,7 +171,7 @@ export default function Attendance() {
       fetchAttendance(formatDate(dates[0]), formatDate(dates[6]));
     } catch (err) {
       console.error("Submit error:", err);
-      alert("Failed to submit attendance");
+      alert(err.message || "Failed to submit attendance");
     }
   };
 
