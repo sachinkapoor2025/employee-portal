@@ -6,13 +6,6 @@ Parameters:
   FrontendDomainName:
     Type: String
     Default: login.mydgv.com
-  FrontendAcmCertificateArn:
-    Type: String
-    Default: ""
-    Description: ACM certificate ARN in us-east-1 for login.mydgv.com on CloudFront
-
-Conditions:
-  UseCustomDomain: !Not [!Equals [!Ref FrontendAcmCertificateArn, ""]]
 
 Globals:
   Function:
@@ -1055,16 +1048,6 @@ Resources:
       DistributionConfig:
         Enabled: true
         DefaultRootObject: index.html
-        Aliases: !If
-          - UseCustomDomain
-          - [!Ref FrontendDomainName]
-          - !Ref AWS::NoValue
-        ViewerCertificate: !If
-          - UseCustomDomain
-          - AcmCertificateArn: !Ref FrontendAcmCertificateArn
-            SslSupportMethod: sni-only
-            MinimumProtocolVersion: TLSv1.2_2021
-          - CloudFrontDefaultCertificate: true
         CustomErrorResponses:
           - ErrorCode: 403
             ResponsePagePath: /index.html

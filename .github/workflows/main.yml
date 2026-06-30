@@ -40,18 +40,6 @@ jobs:
           cd backend
           sam build
 
-      - name: Resolve login.mydgv.com DNS and SSL
-        id: domain
-        env:
-          LOGIN_MYDGV_ACM_CERT_ARN: ${{ secrets.LOGIN_MYDGV_ACM_CERT_ARN }}
-        run: |
-          chmod +x scripts/resolve-login-domain.sh
-          RESOLVED=$(./scripts/resolve-login-domain.sh login.mydgv.com)
-          ZONE_ID=$(echo "$RESOLVED" | grep '^zone_id=' | cut -d= -f2-)
-          CERT_ARN=$(echo "$RESOLVED" | grep '^cert_arn=' | cut -d= -f2-)
-          echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
-          echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
-
       - name: SAM Deploy
         run: |
           cd backend
@@ -60,9 +48,7 @@ jobs:
             --resolve-s3 \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              FrontendDomainName=${{ env.FRONTEND_DOMAIN }} \
-              FrontendAcmCertificateArn=${{ steps.domain.outputs.cert_arn }}
+            --parameter-overrides FrontendDomainName=${{ env.FRONTEND_DOMAIN }}
 
       - name: Fetch CloudFormation Outputs
         id: outputs
@@ -77,15 +63,6 @@ jobs:
           echo "UserPoolClientId=$(jq -r '.[] | select(.OutputKey=="UserPoolClientId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "CognitoDomain=$(jq -r '.[] | select(.OutputKey=="CognitoDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
           echo "FrontendCloudFrontDistributionId=$(jq -r '.[] | select(.OutputKey=="FrontendCloudFrontDistributionId") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
-          echo "FrontendCloudFrontDomain=$(jq -r '.[] | select(.OutputKey=="FrontendCloudFrontDomain") | .OutputValue' outputs.json)" >> $GITHUB_OUTPUT
-
-      - name: Point login.mydgv.com to CloudFront
-        run: |
-          chmod +x scripts/upsert-login-dns.sh
-          ./scripts/upsert-login-dns.sh \
-            "${{ steps.domain.outputs.zone_id }}" \
-            "${{ env.FRONTEND_DOMAIN }}" \
-            "${{ steps.outputs.outputs.FrontendCloudFrontDomain }}"
 
   deploy-frontend:
     name: Deploy Frontend (S3 + CloudFront)
