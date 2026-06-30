@@ -113,8 +113,8 @@ export const createSoftware = (data) => api("/admin/software", "POST", data);
 export const updateSoftware = (data) => api("/admin/software", "PUT", data);
 export const deleteSoftware = (softwareId) =>
   api("/admin/software", "DELETE", { softwareId });
-export const getSoftwareUploadUrl = (fileName) =>
-  api("/admin/software/upload-url", "POST", { fileName });
+export const getSoftwareUploadUrl = (fileName, softwareId) =>
+  api("/admin/software/upload-url", "POST", { fileName, softwareId });
 
 /* ================= ATTENDANCE ================= */
 

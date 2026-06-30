@@ -6,8 +6,15 @@ const {
   PutCommand,
   QueryCommand,
   DeleteCommand,
+  GetCommand,
 } = require("@aws-sdk/lib-dynamodb");
-const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+} = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
 
@@ -16,6 +23,71 @@ const ddb = DynamoDBDocumentClient.from(
 );
 const s3 = new S3Client({ region: process.env.AWS_REGION });
 const BUCKET = process.env.SOFTWARE_BUCKET;
+const DGV_SOFTWARE_ID = "dgv-work-tracker";
+const DGV_S3_KEY = "DGV-WorkTracker-Setup.exe";
+
+async function s3ObjectExists(key) {
+  if (!key || !BUCKET) return false;
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDgvWorkTracker() {
+  let existing = await getSoftwareItem(DGV_SOFTWARE_ID);
+  const fileExists = await s3ObjectExists(DGV_S3_KEY);
+
+  if (existing) {
+    if (fileExists && !existing.s3Key) {
+      existing = {
+        ...existing,
+        s3Key: DGV_S3_KEY,
+        downloadType: "file",
+        active: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await ddb.send(new PutCommand({ TableName: process.env.WORK_TABLE, Item: existing }));
+    } else if (fileExists && existing.s3Key !== DGV_S3_KEY) {
+      existing = {
+        ...existing,
+        s3Key: DGV_S3_KEY,
+        downloadType: "file",
+        active: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await ddb.send(new PutCommand({ TableName: process.env.WORK_TABLE, Item: existing }));
+    }
+    return;
+  }
+
+  await ddb.send(
+    new PutCommand({
+      TableName: process.env.WORK_TABLE,
+      Item: {
+        PK: "ENTITY#SOFTWARE",
+        SK: `SW#${DGV_SOFTWARE_ID}`,
+        softwareId: DGV_SOFTWARE_ID,
+        name: "DGV Work Tracker",
+        description:
+          "Official DGV Windows installer for attendance, check-in, and activity tracking. Download only from DGV Portal — no third-party sites.",
+        category: "DGV Tools",
+        platform: "Windows",
+        vendor: "Divit Global Ventures",
+        version: "1.0",
+        downloadType: "file",
+        s3Key: fileExists ? DGV_S3_KEY : null,
+        active: true,
+        verified: true,
+        systemDefault: true,
+        createdAt: new Date().toISOString(),
+        createdBy: "system",
+      },
+    })
+  );
+}
 
 async function deleteS3Object(key) {
   if (!key || !BUCKET) return;
@@ -27,20 +99,18 @@ async function deleteS3Object(key) {
 }
 
 async function getSoftwareItem(softwareId) {
-  const existing = await ddb.send(
-    new QueryCommand({
+  const result = await ddb.send(
+    new GetCommand({
       TableName: process.env.WORK_TABLE,
-      KeyConditionExpression: "PK = :pk AND SK = :sk",
-      ExpressionAttributeValues: {
-        ":pk": "ENTITY#SOFTWARE",
-        ":sk": `SW#${softwareId}`,
-      },
+      Key: { PK: "ENTITY#SOFTWARE", SK: `SW#${softwareId}` },
     })
   );
-  return existing.Items?.[0] || null;
+  return result.Item || null;
 }
 
 async function listSoftware(activeOnly) {
+  await ensureDgvWorkTracker();
+
   const res = await ddb.send(
     new QueryCommand({
       TableName: process.env.WORK_TABLE,
@@ -73,6 +143,12 @@ async function listSoftware(activeOnly) {
   );
 }
 
+function sortSoftware(a, b) {
+  if (a.softwareId === DGV_SOFTWARE_ID) return -1;
+  if (b.softwareId === DGV_SOFTWARE_ID) return 1;
+  return a.name.localeCompare(b.name);
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return json(200, "");
 
@@ -85,21 +161,26 @@ exports.handler = async (event) => {
     if (event.httpMethod === "GET" && path.includes("/admin/software")) {
       if (!user.isAdmin) return json(403, { error: "Admin required" });
       const items = await listSoftware(false);
-      return json(200, items.sort((a, b) => a.name.localeCompare(b.name)));
+      return json(200, items.sort(sortSoftware));
     }
 
     if (event.httpMethod === "GET" && path.endsWith("/software")) {
       if (!user.email) return json(401, { error: "Unauthorized" });
       const items = await listSoftware(true);
-      return json(200, items.sort((a, b) => a.name.localeCompare(b.name)));
+      return json(200, items.sort(sortSoftware));
     }
 
     if (path.endsWith("/software/upload-url") && event.httpMethod === "POST") {
       if (!user.isAdmin) return json(403, { error: "Admin required" });
-      const { fileName } = body;
+      const { fileName, softwareId } = body;
       if (!fileName) return json(400, { error: "fileName required" });
 
-      const s3Key = `software/${randomUUID()}-${fileName}`;
+      const useDgvKey =
+        softwareId === DGV_SOFTWARE_ID || fileName.toLowerCase().includes("dgv");
+      const s3Key = useDgvKey
+        ? DGV_S3_KEY
+        : `software/${randomUUID()}-${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+
       const uploadUrl = await getSignedUrl(
         s3,
         new PutObjectCommand({
@@ -115,9 +196,26 @@ exports.handler = async (event) => {
 
     if (path.endsWith("/software") && event.httpMethod === "POST" && isAdminPath) {
       if (!user.isAdmin) return json(403, { error: "Admin required" });
-      const { name, description, category, platform, vendor, version, downloadType, downloadUrl, s3Key } = body;
-      if (!name || !downloadType) {
-        return json(400, { error: "name and downloadType required" });
+      const {
+        name,
+        description,
+        category,
+        platform,
+        vendor,
+        version,
+        downloadType,
+        downloadUrl,
+        s3Key,
+      } = body;
+
+      if (!name) return json(400, { error: "name required" });
+
+      const type = downloadType || "file";
+      if (type === "file" && !s3Key) {
+        return json(400, { error: "Installer file (.exe) is required — upload on DGV Portal" });
+      }
+      if (type === "external" && !downloadUrl) {
+        return json(400, { error: "downloadUrl required for external links" });
       }
 
       const id = randomUUID();
@@ -129,11 +227,11 @@ exports.handler = async (event) => {
         description: description || "",
         category: category || "General",
         platform: platform || "Windows",
-        vendor: vendor || "",
-        version: version || "",
-        downloadType,
-        downloadUrl: downloadType === "external" ? downloadUrl : null,
-        s3Key: downloadType === "file" ? s3Key : null,
+        vendor: vendor || "DGV",
+        version: version || "1.0",
+        downloadType: type,
+        downloadUrl: type === "external" ? downloadUrl : null,
+        s3Key: type === "file" ? s3Key : null,
         active: true,
         verified: true,
         createdAt: new Date().toISOString(),
@@ -192,6 +290,12 @@ exports.handler = async (event) => {
       if (!softwareId) return json(400, { error: "softwareId required" });
 
       const item = await getSoftwareItem(softwareId);
+      if (!item) return json(404, { error: "Not found" });
+
+      if (item.systemDefault && softwareId === DGV_SOFTWARE_ID) {
+        return json(400, { error: "DGV Work Tracker cannot be deleted. Use Update Version instead." });
+      }
+
       if (item?.s3Key) {
         await deleteS3Object(item.s3Key);
       }

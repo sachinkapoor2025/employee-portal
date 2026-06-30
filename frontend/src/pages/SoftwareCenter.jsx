@@ -31,7 +31,7 @@ const emptyForm = {
   platform: "Windows",
   vendor: "",
   version: "",
-  downloadType: "external",
+  downloadType: "file",
   downloadUrl: "",
   s3Key: "",
 };
@@ -95,7 +95,7 @@ export default function SoftwareCenter() {
       platform: item.platform || "Windows",
       vendor: item.vendor || "",
       version: item.version || "",
-      downloadType: item.downloadType || "external",
+      downloadType: item.downloadType || "file",
       downloadUrl: item.downloadType === "external" ? item.downloadUrl || "" : "",
       s3Key: item.s3Key || "",
     });
@@ -114,26 +114,25 @@ export default function SoftwareCenter() {
     setMsg("");
 
     try {
-      let payload = { ...form };
+      let payload = { ...form, downloadType: "file" };
       let replaceFile = false;
 
-      if (form.downloadType === "file") {
-        if (file) {
-          const { uploadUrl, s3Key } = await getSoftwareUploadUrl(file.name);
-          await fetch(uploadUrl, {
-            method: "PUT",
-            headers: { "Content-Type": "application/octet-stream" },
-            body: file,
-          });
-          payload.s3Key = s3Key;
-          replaceFile = true;
-        } else if (formMode === "create") {
-          alert("Please select an installer file (.exe) to upload");
-          setSaving(false);
-          return;
-        }
-      } else if (!form.downloadUrl) {
-        alert("Official download URL is required");
+      if (file) {
+        const uploadTargetId = formMode === "update" ? editingId : null;
+        const { uploadUrl, s3Key } = await getSoftwareUploadUrl(file.name, uploadTargetId);
+        await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: file,
+        });
+        payload.s3Key = s3Key;
+        replaceFile = true;
+      } else if (formMode === "create") {
+        alert("Please select an installer file (.exe) to upload");
+        setSaving(false);
+        return;
+      } else if (formMode === "update" && !form.s3Key) {
+        alert("Select a new installer file (.exe) to upload");
         setSaving(false);
         return;
       }
@@ -166,6 +165,10 @@ export default function SoftwareCenter() {
   };
 
   const handleDelete = async (item) => {
+    if (item.systemDefault) {
+      alert("DGV Work Tracker is a required company tool and cannot be deleted. Use Update Version to replace the installer.");
+      return;
+    }
     const extra =
       item.downloadType === "file"
         ? " The uploaded installer will also be removed from storage."
@@ -201,7 +204,7 @@ export default function SoftwareCenter() {
           <div>
             <h2 style={pageTitle}>Software Center</h2>
             <p style={pageSubtitle}>
-              Verified and approved software only — download safely from DGV Portal.
+              Verified and approved software only — all installers hosted on DGV Portal (no external sites).
             </p>
           </div>
           {isAdminView && (
@@ -218,7 +221,11 @@ export default function SoftwareCenter() {
         ) : Object.keys(grouped).length === 0 ? (
           <div style={{ textAlign: "center", padding: 40, color: colors.textMuted }}>
             <p>No software listed yet.</p>
-            {isAdminView && <p>Add Cursor, GitHub Desktop, and other approved tools for your team.</p>}
+            {isAdminView && (
+              <p>
+                Click <strong>+ Add Software</strong> to upload .exe installers. DGV Work Tracker appears automatically once the installer is on the server.
+              </p>
+            )}
           </div>
         ) : (
           Object.entries(grouped).map(([category, list]) => (
@@ -250,9 +257,13 @@ export default function SoftwareCenter() {
               {formMode === "update" ? `Update — ${form.name}` : "Add Approved Software"}
             </h3>
 
+            <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
+              Upload the Windows installer (.exe) here. Employees download only from DGV Portal — never from public websites.
+            </p>
+
             {formMode === "update" && (
               <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>
-                Upload a new .exe to replace the old installer. Employees will download the latest version immediately.
+                Upload a new .exe to replace the old installer. Employees get the latest version immediately.
               </p>
             )}
 
@@ -288,38 +299,24 @@ export default function SoftwareCenter() {
             <label style={formLabel}>Version</label>
             <input style={formInput} placeholder="e.g. 2.1.0" value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} />
 
-            {formMode === "create" && (
-              <>
-                <label style={formLabel}>Download Source</label>
-                <select style={formSelect} value={form.downloadType} onChange={(e) => setForm({ ...form, downloadType: e.target.value })}>
-                  <option value="external">Official website link</option>
-                  <option value="file">Upload installer (.exe)</option>
-                </select>
-              </>
+            <label style={formLabel}>
+              {formMode === "update" ? "New installer file (.exe)" : "Installer file (.exe)"}
+            </label>
+            <input key={fileKey} type="file" accept=".exe,.msi,.zip" style={formInput} onChange={(e) => setFile(e.target.files[0])} />
+            {formMode === "update" && form.s3Key && !file && (
+              <p style={{ fontSize: 12, color: colors.textMuted, marginTop: -8 }}>
+                Current file on server. Select a new file to replace it.
+              </p>
             )}
-
-            {form.downloadType === "external" ? (
-              <>
-                <label style={formLabel}>Official Download URL</label>
-                <input style={formInput} placeholder="https://cursor.com/download" value={form.downloadUrl} onChange={(e) => setForm({ ...form, downloadUrl: e.target.value })} />
-              </>
-            ) : (
-              <>
-                <label style={formLabel}>
-                  {formMode === "update" ? "New installer file (.exe)" : "Installer file (.exe)"}
-                </label>
-                <input key={fileKey} type="file" accept=".exe,.msi,.zip" style={formInput} onChange={(e) => setFile(e.target.files[0])} />
-                {formMode === "update" && form.s3Key && !file && (
-                  <p style={{ fontSize: 12, color: colors.textMuted, marginTop: -8 }}>
-                    Current file on server. Select a new file to replace it.
-                  </p>
-                )}
-                {file && (
-                  <p style={{ fontSize: 12, color: colors.success, marginTop: -8 }}>
-                    New file selected: {file.name}
-                  </p>
-                )}
-              </>
+            {!form.s3Key && formMode === "update" && !file && (
+              <p style={{ fontSize: 12, color: colors.warning || "#b45309", marginTop: -8 }}>
+                No installer uploaded yet — select the .exe file to make this available for download.
+              </p>
+            )}
+            {file && (
+              <p style={{ fontSize: 12, color: colors.success, marginTop: -8 }}>
+                Selected: {file.name}
+              </p>
             )}
 
             <div style={{ textAlign: "right", marginTop: 8 }}>
@@ -365,7 +362,7 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
         {item.platform}
         {item.version ? ` · v${item.version}` : ""}
-        {item.downloadType === "file" ? " · Hosted installer" : " · External link"}
+        {item.downloadType === "file" ? " · DGV hosted" : " · External link"}
       </div>
 
       {isAdminView && fileLabel && (
@@ -386,7 +383,7 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
         </a>
       ) : (
         <button style={{ ...buttonPrimary, width: "100%", opacity: 0.5 }} disabled>
-          Unavailable
+          {isAdminView ? "Upload installer required" : "Coming soon"}
         </button>
       )}
 
@@ -421,8 +418,11 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
                 color: "#fff",
                 cursor: "pointer",
                 fontWeight: 600,
+                opacity: item.systemDefault ? 0.4 : 1,
               }}
               onClick={onDelete}
+              disabled={item.systemDefault}
+              title={item.systemDefault ? "Required company software — use Update Version" : "Delete from catalog"}
             >
               Delete
             </button>
