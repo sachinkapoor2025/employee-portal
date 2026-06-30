@@ -23,9 +23,19 @@ export const login = () => {
 export const handleCallback = async () => {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
+
+  const error = params.get("error_description") || params.get("error");
+  if (error) {
+    console.error("Cognito error:", error);
+    localStorage.clear();
+    window.location.replace("/login");
+    return;
+  }
+
   const idToken = params.get("id_token");
 
   if (!idToken) {
+    localStorage.clear();
     window.location.replace("/login");
     return;
   }
@@ -33,11 +43,20 @@ export const handleCallback = async () => {
   localStorage.setItem("token", idToken);
 
   try {
-    const res = await fetch(`${process.env.REACT_APP_API_URL}/access`, {
+    const apiUrl = process.env.REACT_APP_API_URL;
+    if (!apiUrl) {
+      throw new Error("REACT_APP_API_URL is not configured");
+    }
+
+    const res = await fetch(`${apiUrl}/access`, {
       headers: {
         Authorization: `Bearer ${idToken}`,
       },
     });
+
+    if (!res.ok) {
+      throw new Error(`Access check failed (${res.status})`);
+    }
 
     const data = await res.json();
 

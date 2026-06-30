@@ -19,51 +19,169 @@ import Exit from "./pages/Exit";
 import RequestAccess from "./pages/RequestAccess";
 import Blocked from "./pages/Blocked";
 
-// ADMIN
 import ManageUsers from "./pages/Admin/ManageUsers";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import Resignations from "./pages/Admin/Resignations";
 import AddTraining from "./pages/Admin/AddTraining";
 
-export default function App() {
-  const token = localStorage.getItem("token");
-  const role = localStorage.getItem("role");
+function getAuth() {
+  return {
+    token: localStorage.getItem("token"),
+    role: localStorage.getItem("role"),
+  };
+}
 
+function RequireAuth({ children, adminOnly = false }) {
+  const { token, role } = getAuth();
+
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!role) {
+    return <Navigate to="/request-access" replace />;
+  }
+
+  if (adminOnly && role !== "ADMIN") {
+    return <Navigate to="/" replace />;
+  }
+
+  return children;
+}
+
+function HomeRedirect() {
+  const { token, role } = getAuth();
+
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!role) {
+    return <Navigate to="/request-access" replace />;
+  }
+
+  if (role === "ADMIN") {
+    return <Navigate to="/admin/users" replace />;
+  }
+
+  return <Dashboard />;
+}
+
+export default function App() {
   return (
     <Router>
       <Routes>
-        {/* PUBLIC */}
+        {/* Public */}
         <Route path="/login" element={<Login />} />
         <Route path="/callback" element={<Callback />} />
         <Route path="/request-access" element={<RequestAccess />} />
         <Route path="/blocked" element={<Blocked />} />
 
-        {!token && <Route path="*" element={<Navigate to="/login" />} />}
+        {/* Home */}
+        <Route path="/" element={<HomeRedirect />} />
 
-        {token && (role === "USER" || role === "ADMIN") && (
-          <>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/attendance" element={<Attendance />} />
-            <Route path="/training" element={<Training />} />
-            <Route path="/work" element={<Work />} />
-            <Route path="/performance" element={<Performance />} />
-            <Route path="/expertise" element={<Expertise />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/payroll" element={<Payroll />} />
-            <Route path="/exit" element={<Exit />} />
-          </>
-        )}
+        {/* Employee */}
+        <Route
+          path="/attendance"
+          element={
+            <RequireAuth>
+              <Attendance />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/training"
+          element={
+            <RequireAuth>
+              <Training />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/work"
+          element={
+            <RequireAuth>
+              <Work />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/performance"
+          element={
+            <RequireAuth>
+              <Performance />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/expertise"
+          element={
+            <RequireAuth>
+              <Expertise />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <RequireAuth>
+              <Profile />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/payroll"
+          element={
+            <RequireAuth>
+              <Payroll />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/exit"
+          element={
+            <RequireAuth>
+              <Exit />
+            </RequireAuth>
+          }
+        />
 
-        {token && role === "ADMIN" && (
-          <>
-            <Route path="/admin/users" element={<ManageUsers />} />
-            <Route path="/admin/tasks" element={<ManageTasks />} />
-            <Route path="/admin/resignations" element={<Resignations />} />
-            <Route path="/admin/add-training" element={<AddTraining />} />
-          </>
-        )}
+        {/* Admin */}
+        <Route
+          path="/admin/users"
+          element={
+            <RequireAuth adminOnly>
+              <ManageUsers />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/tasks"
+          element={
+            <RequireAuth adminOnly>
+              <ManageTasks />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/resignations"
+          element={
+            <RequireAuth adminOnly>
+              <Resignations />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/add-training"
+          element={
+            <RequireAuth adminOnly>
+              <AddTraining />
+            </RequireAuth>
+          }
+        />
 
-        <Route path="*" element={<Navigate to="/" />} />
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
   );
