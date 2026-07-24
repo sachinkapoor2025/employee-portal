@@ -1,6 +1,11 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Employee Portal – Full Serverless Stack (Backend + Auth + Frontend Infra)
+
+Parameters:
+  FrontendDomainName:
+    Type: String
+    Default: login.mydgv.com
 
 Globals:
   Function:
@@ -9,28 +14,31 @@ Globals:
     MemorySize: 256
     Environment:
       Variables:
-        USERS_TABLE: Users
-        ATTENDANCE_TABLE: Attendance
-        WORK_TABLE: WorkTasks
-        PERFORMANCE_TABLE: Performance
+        USERS_TABLE: !Ref UsersTable
+        ATTENDANCE_TABLE: !Ref AttendanceTable
+        WORK_TABLE: !Ref WorkTasksTable
+        PERFORMANCE_TABLE: !Ref PerformanceTable
+        TRAINING_PROGRESS_TABLE: !Ref TrainingProgressTable
+        USER_ACCESS_TABLE: !Ref UserAccessTable
+        ACTIVITY_TABLE: !Ref ActivityLogTable
 
-# =====================================================
-# RESOURCES
-# =====================================================
 Resources:
-
-# -----------------------------------------------------
-# 1️⃣ COGNITO (AUTH)
-# -----------------------------------------------------
+  # =====================================================
+  # 1️⃣ COGNITO
+  # =====================================================
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: employee-portal-user-pool
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:
         - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpFunction.Arn
       Policies:
         PasswordPolicy:
           MinimumLength: 8
@@ -38,32 +46,57 @@ Resources:
           RequireLowercase: true
           RequireNumbers: true
 
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-PreSignUpFunction"
+      Handler: lambda/cognito/preSignUp.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  PreSignUpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PreSignUpFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: employee-portal-client
+      ClientName: !Sub "${AWS::StackName}-client"
       UserPoolId: !Ref CognitoUserPool
       GenerateSecret: false
-      ExplicitAuthFlows:
-        - ALLOW_USER_SRP_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
+            # REQUIRED for Hosted UI
+      AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthFlows:
         - implicit
+        - code
+
       AllowedOAuthScopes:
-        - email
         - openid
-      AllowedOAuthFlowsUserPoolClient: true
+        - email
+        - profile
+
+      SupportedIdentityProviders:
+      - COGNITO
+
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
       CallbackURLs:
         - http://localhost:3000/callback
-        - https://mydgv.com/callback
+        - !Sub "https://${FrontendDomainName}/callback"
       LogoutURLs:
         - http://localhost:3000
-        - https://mydgv.com
+        - !Sub "https://${FrontendDomainName}"
 
   CognitoDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: employee-portal-auth
+      Domain: !Sub "${AWS::StackName}-auth"
       UserPoolId: !Ref CognitoUserPool
 
   CognitoAdminGroup:
@@ -78,32 +111,73 @@ Resources:
       GroupName: Employee
       UserPoolId: !Ref CognitoUserPool
 
-# -----------------------------------------------------
-# 2️⃣ API GATEWAY (WITH COGNITO AUTH)
-# -----------------------------------------------------
+  # =====================================================
+  # 2️⃣ API GATEWAY LOGGING (NEW)
+  # =====================================================
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-prod"
+      RetentionInDays: 14
+
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ApiGatewayCloudWatchRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # =====================================================
+  # 3️⃣ API GATEWAY
+  # =====================================================
 
   ApiGateway:
     Type: AWS::Serverless::Api
+    DependsOn: ApiGatewayAccount
     Properties:
+      Name: !Sub "${AWS::StackName}-api"
       StageName: prod
+
       Cors:
         AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
-        AllowHeaders: "'*'"
+        AllowHeaders: "'Authorization,Content-Type'"
         AllowOrigin: "'*'"
+
       Auth:
         DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
         Authorizers:
           CognitoAuthorizer:
             UserPoolArn: !GetAtt CognitoUserPool.Arn
 
-# -----------------------------------------------------
-# 3️⃣ DYNAMODB TABLES
-# -----------------------------------------------------
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+
+  # =====================================================
+  # 3️⃣ DYNAMODB
+  # =====================================================
 
   UsersTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Users
+      TableName: !Sub "${AWS::StackName}-Users"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -119,7 +193,7 @@ Resources:
   AttendanceTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Attendance
+      TableName: !Sub "${AWS::StackName}-Attendance"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -135,7 +209,7 @@ Resources:
   WorkTasksTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: WorkTasks
+      TableName: !Sub "${AWS::StackName}-WorkTasks"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -151,7 +225,7 @@ Resources:
   PerformanceTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: Performance
+      TableName: !Sub "${AWS::StackName}-Performance"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -164,48 +238,206 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
-# -----------------------------------------------------
-# 4️⃣ LAMBDA FUNCTIONS
-# -----------------------------------------------------
+  TrainingProgressTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-TrainingProgress"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  UserAccessTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-UserAccess"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  UserProfileTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-UserProfile"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  TrainingMaterialsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Training_Materials"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  SkillMasterTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-SkillMaster"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  ResignationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-Resignations"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  ActivityLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ActivityLog"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DateIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  AgentDownloadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-agent-downloads-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  # =====================================================
+  # 4️⃣ LAMBDAS (ALL INCLUDED)
+  # =====================================================
 
   AttendanceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/attendance/handler.handler
+      FunctionName: !Sub "${AWS::StackName}-AttendanceFunction"
+      Handler: lambda/attendance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Attendance
+            TableName: !Ref AttendanceTable
       Events:
-        AttendanceApi:
+        AttendancePostApi:
           Type: Api
           Properties:
             Path: /attendance
             Method: POST
             RestApiId: !Ref ApiGateway
+        AttendanceGetApi:
+          Type: Api
+          Properties:
+            Path: /attendance
+            Method: GET
+            RestApiId: !Ref ApiGateway
 
   TrainingFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/training/handler.handler
+      FunctionName: !Sub "${AWS::StackName}-TrainingFunction"
+      Handler: lambda/training/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TrainingProgressTable
       Events:
-        TrainingApi:
+        TrainingGetApi:
           Type: Api
           Properties:
             Path: /training
             Method: GET
             RestApiId: !Ref ApiGateway
+        TrainingPostApi:
+          Type: Api
+          Properties:
+            Path: /training
+            Method: POST
+            RestApiId: !Ref ApiGateway
 
   WorkFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/work/handler.handler
+      FunctionName: !Sub "${AWS::StackName}-WorkFunction"
+      Handler: lambda/work/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: WorkTasks
+            TableName: !Ref WorkTasksTable
       Events:
         WorkApi:
           Type: Api
@@ -217,11 +449,12 @@ Resources:
   PerformanceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/performance/handler.handler
+      FunctionName: !Sub "${AWS::StackName}-PerformanceFunction"
+      Handler: lambda/performance/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Performance
+            TableName: !Ref PerformanceTable
       Events:
         PerformanceApi:
           Type: Api
@@ -233,27 +466,70 @@ Resources:
   AdminFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/admin/handler.handler
+      FunctionName: !Sub "${AWS::StackName}-AdminFunction"
+      Handler: lambda/admin/handler.handler
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
-            TableName: Users
+            TableName: !Ref UsersTable
         - DynamoDBCrudPolicy:
-            TableName: WorkTasks
+            TableName: !Ref WorkTasksTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserAccessTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserProfileTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminDeleteUser
+              Resource: !GetAtt CognitoUserPool.Arn
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Events:
-        AdminApi:
+        AdminUsersGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/users
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminUsersPostApi:
           Type: Api
           Properties:
             Path: /admin/users
             Method: POST
             RestApiId: !Ref ApiGateway
 
+  AccessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-AccessFunction"
+      Handler: lambda/access/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserAccessTable
+      Events:
+        AccessApi:
+          Type: Api
+          Properties:
+            Path: /access
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        RequestAccessApi:
+          Type: Api
+          Properties:
+            Path: /request-access
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
   MockTestFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/llm/mockTest.handler
-      Policies:
-        - AWSLambdaBasicExecutionRole
+      FunctionName: !Sub "${AWS::StackName}-MockTestFunction"
+      Handler: lambda/llm/mockTest.handler
+      Policies: [AWSLambdaBasicExecutionRole]
       Events:
         MockTestApi:
           Type: Api
@@ -262,22 +538,538 @@ Resources:
             Method: POST
             RestApiId: !Ref ApiGateway
 
-# -----------------------------------------------------
-# 5️⃣ S3 BUCKET (FRONTEND HOSTING)
-# -----------------------------------------------------
+  # =====================================================
+  # 5️⃣ S3 BUCKETS
+  # =====================================================
+
+  ProfileImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-profile-images"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET, POST]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+
+  TrainingMaterialBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-training-material"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET, POST]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+  ImageUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ImageUploadFunction"
+      Handler: lambda/ImageUpload/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3WritePolicy:
+            BucketName: !Ref ProfileImagesBucket
+      Environment:
+        Variables:
+          PROFILE_IMAGE_BUCKET: !Ref ProfileImagesBucket
+      Events:
+        UploadImageApi:
+          Type: Api
+          Properties:
+            Path: /getProfileImageUploadUrl
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserProfileFunction"
+      Handler: lambda/UserProfileFunction/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserAccessTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+              Resource: !GetAtt CognitoUserPool.Arn
+      Environment:
+        Variables:
+          USER_ACCESS_TABLE: !Ref UserAccessTable
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserProfileFnApi:
+          Type: Api
+          Properties:
+            Path: /admin/save-user-profile
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserProfile:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserProfile"
+      Handler: lambda/UserProfile/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+      Environment:
+        Variables:
+          ACCESS_TABLE: !Ref UserAccessTable
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserProfileApi:
+          Type: Api
+          Properties:
+            Path: /user/profile
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminGetUserProfileApi:
+          Type: Api
+          Properties:
+            Path: /admin/getUserProfile
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  TrainingVideoUrl:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-TrainingVideoUrl"
+      Handler: lambda/TrainingVideoUrl/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
+      Events:
+        TrainingVideoUrlApi:
+          Type: Api
+          Properties:
+            Path: /getTrainingVideoUrl
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  trainingUrl:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-trainingUrl"
+      Handler: lambda/trainingUrl/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3WritePolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
+      Events:
+        TrainingUrlApi:
+          Type: Api
+          Properties:
+            Path: /getTrainingUploadUrl
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  UserTrainingList:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UserTrainingList"
+      Handler: lambda/UserTrainingList/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref TrainingMaterialsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Environment:
+        Variables:
+          TRAINING_TABLE: !Ref TrainingMaterialsTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        UserTrainingListApi:
+          Type: Api
+          Properties:
+            Path: /getUserTrainingList
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  getSkills:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-getSkills"
+      Handler: lambda/getSkills/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref SkillMasterTable
+      Environment:
+        Variables:
+          SKILL_TABLE: !Ref SkillMasterTable
+      Events:
+        GetSkillsApi:
+          Type: Api
+          Properties:
+            Path: /skills
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  resignation:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-resignation"
+      Handler: lambda/resignation/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResignationsTable
+      Environment:
+        Variables:
+          RESIGNATIONS_TABLE: !Ref ResignationsTable
+      Events:
+        ResignationApi:
+          Type: Api
+          Properties:
+            Path: /resignation
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  addTraining:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-addTraining"
+      Handler: lambda/addTraining/app.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TrainingMaterialsTable
+        - S3WritePolicy:
+            BucketName: !Ref TrainingMaterialBucket
+      Environment:
+        Variables:
+          TRAINING_BUCKET: !Ref TrainingMaterialBucket
+          TRAINING_TABLE: !Ref TrainingMaterialsTable
+      Events:
+        AddTrainingApi:
+          Type: Api
+          Properties:
+            Path: /addTrainingMaterial
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  ActivityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ActivityFunction"
+      Handler: lambda/activity/handler.handler
+      Timeout: 15
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActivityLogTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Environment:
+        Variables:
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Events:
+        ActivityPostApi:
+          Type: Api
+          Properties:
+            Path: /activity
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        ActivityTodayApi:
+          Type: Api
+          Properties:
+            Path: /activity/today
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminActivityApi:
+          Type: Api
+          Properties:
+            Path: /admin/activity
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDashboardApi:
+          Type: Api
+          Properties:
+            Path: /admin/dashboard
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  ProjectsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ProjectsFunction"
+      Handler: lambda/projects/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        ProjectsGetApi:
+          Type: Api
+          Properties:
+            Path: /projects
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ProjectsPostApi:
+          Type: Api
+          Properties:
+            Path: /projects
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TasksGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TasksPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TasksPutApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        TimeEntriesGetApi:
+          Type: Api
+          Properties:
+            Path: /time-entries
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TimeEntriesPostApi:
+          Type: Api
+          Properties:
+            Path: /time-entries
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  LeaveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-LeaveFunction"
+      Handler: lambda/leave/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        LeaveGetApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        LeavePostApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        LeavePutApi:
+          Type: Api
+          Properties:
+            Path: /leave
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+
+  AnnouncementsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-AnnouncementsFunction"
+      Handler: lambda/announcements/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        AnnouncementsGetApi:
+          Type: Api
+          Properties:
+            Path: /announcements
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminAnnouncementsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminAnnouncementsDeleteApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+
+  ConsentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ConsentFunction"
+      Handler: lambda/consent/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        ConsentGetApi:
+          Type: Api
+          Properties:
+            Path: /consent
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ConsentPostApi:
+          Type: Api
+          Properties:
+            Path: /consent
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  AgentDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-AgentDownloadFunction"
+      Handler: lambda/agentDownload/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref AgentDownloadsBucket
+      Environment:
+        Variables:
+          AGENT_BUCKET: !Ref AgentDownloadsBucket
+      Events:
+        AgentDownloadApi:
+          Type: Api
+          Properties:
+            Path: /downloads/agent
+            Method: GET
+            RestApiId: !Ref ApiGateway
+
+  SoftwareFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-SoftwareFunction"
+      Handler: lambda/software/handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - S3ReadPolicy:
+            BucketName: !Ref AgentDownloadsBucket
+        - S3WritePolicy:
+            BucketName: !Ref AgentDownloadsBucket
+      Environment:
+        Variables:
+          SOFTWARE_BUCKET: !Ref AgentDownloadsBucket
+      Events:
+        SoftwareListApi:
+          Type: Api
+          Properties:
+            Path: /software
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareListApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminSoftwarePostApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminSoftwarePutApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareDeleteApi:
+          Type: Api
+          Properties:
+            Path: /admin/software
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        AdminSoftwareUploadApi:
+          Type: Api
+          Properties:
+            Path: /admin/software/upload-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  # =====================================================
+  # 5️⃣ FRONTEND (S3 + CLOUDFRONT HTTPS)
+  # =====================================================
 
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "employee-portal-ui-${AWS::AccountId}"
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      BucketName: !Sub "${AWS::StackName}-frontend-${AWS::AccountId}"
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+
+          - ErrorCode: 404
+            ResponsePagePath: /index.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref FrontendOAC
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: true
 
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -285,38 +1077,41 @@ Resources:
       Bucket: !Ref FrontendBucket
       PolicyDocument:
         Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
-            Principal: "*"
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
 
 # =====================================================
 # OUTPUTS
 # =====================================================
 
 Outputs:
-
   ApiUrl:
-    Description: API Gateway URL
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
 
-  UserPoolId:
-    Description: Cognito User Pool ID
-    Value: !Ref CognitoUserPool
-
-  UserPoolClientId:
-    Description: Cognito App Client ID
-    Value: !Ref CognitoUserPoolClient
-
-  CognitoDomain:
-    Description: Cognito Hosted UI Domain
+  CognitoHostedUI:
     Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
 
+  CognitoDomain:
+    Value: !Sub "https://${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+  UserPoolClientId:
+    Value: !Ref CognitoUserPoolClient
+
+  FrontendURL:
+    Value: !Sub "https://${FrontendDomainName}"
+
   FrontendBucketName:
-    Description: S3 bucket for frontend hosting
     Value: !Ref FrontendBucket
 
-  FrontendWebsiteURL:
-    Description: S3 Static Website URL
-    Value: !GetAtt FrontendBucket.WebsiteURL
+  FrontendCloudFrontDomain:
+    Value: !GetAtt FrontendDistribution.DomainName
+
+  FrontendCloudFrontDistributionId:
+    Value: !Ref FrontendDistribution
+    Description: CloudFront distribution for login.mydgv.com — use for cache invalidation
