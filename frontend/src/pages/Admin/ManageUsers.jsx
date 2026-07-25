@@ -26,6 +26,7 @@ export default function ManageUsers() {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
 
   const [profileView, setProfileView] = useState(null);
   const [showModal, setShowModal] = useState(false);
@@ -157,6 +158,15 @@ export default function ManageUsers() {
 
   const currentEmail = getLoggedInEmail().toLowerCase();
 
+  const query = search.trim().toLowerCase();
+  const filteredUsers = !query
+    ? users
+    : users.filter((u) => {
+        const name = String(u.name || u.email || "").toLowerCase();
+        const role = String(u.role || "").toLowerCase();
+        return name.includes(query) || role.includes(query);
+      });
+
   return (
     <Layout>
       <div style={pageCard}>
@@ -196,113 +206,130 @@ export default function ManageUsers() {
             </p>
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-              <thead>
-                <tr style={{ background: colors.primary, color: colors.white }}>
-                  <th style={{ padding: 12, textAlign: "left" }}>Email</th>
-                  <th style={{ padding: 12, textAlign: "left" }}>Role</th>
-                  <th style={{ padding: 12, textAlign: "left" }}>Status</th>
-                  <th style={{ padding: 12, textAlign: "left" }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.email} style={{ borderBottom: `1px solid ${colors.border}` }}>
-                    <td style={{ padding: 12 }}>
-                      <span
-                        style={{ color: colors.primary, cursor: "pointer", fontWeight: 500 }}
-                        onClick={() => openProfileView(u.email)}
-                      >
-                        {u.email}
-                      </span>
-                    </td>
+          <>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by Employee Name or Role"
+              style={formInput}
+              aria-label="Search by Employee Name or Role"
+            />
 
-                    <td style={{ padding: 12 }}>
-                      <select
-                        value={u.role}
-                        style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${colors.border}` }}
-                        onChange={(e) =>
-                          updateUserRole(u.email, e.target.value).then(loadUsers)
-                        }
-                      >
-                        <option value="USER">USER</option>
-                        <option value="ADMIN">ADMIN</option>
-                      </select>
-                    </td>
+            {filteredUsers.length === 0 ? (
+              <p style={{ color: colors.textMuted, margin: "8px 0 0" }}>
+                No employees found.
+              </p>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                  <thead>
+                    <tr style={{ background: colors.primary, color: colors.white }}>
+                      <th style={{ padding: 12, textAlign: "left" }}>Email</th>
+                      <th style={{ padding: 12, textAlign: "left" }}>Role</th>
+                      <th style={{ padding: 12, textAlign: "left" }}>Status</th>
+                      <th style={{ padding: 12, textAlign: "left" }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredUsers.map((u) => (
+                      <tr key={u.email} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                        <td style={{ padding: 12 }}>
+                          <span
+                            style={{ color: colors.primary, cursor: "pointer", fontWeight: 500 }}
+                            onClick={() => openProfileView(u.email)}
+                          >
+                            {u.email}
+                          </span>
+                        </td>
 
-                    <td style={{ padding: 12 }}>
-                      <span
-                        style={{
-                          padding: "4px 10px",
-                          borderRadius: 20,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          background: u.status === "ACTIVE" ? colors.successBg : "#ffebee",
-                          color: u.status === "ACTIVE" ? colors.success : colors.error,
-                        }}
-                      >
-                        {u.status}
-                      </span>
-                    </td>
-
-                    <td style={{ padding: 12 }}>
-                      {u.status === "ACTIVE" ? (
-                        <>
-                          <button
-                            style={{
-                              background: colors.error,
-                              color: colors.white,
-                              border: "none",
-                              padding: "6px 12px",
-                              borderRadius: 6,
-                              marginRight: 6,
-                              cursor: "pointer",
-                            }}
-                            onClick={() =>
-                              updateUserStatus(u.email, "block").then(loadUsers)
+                        <td style={{ padding: 12 }}>
+                          <select
+                            value={u.role}
+                            style={{ padding: "6px 8px", borderRadius: 6, border: `1px solid ${colors.border}` }}
+                            onChange={(e) =>
+                              updateUserRole(u.email, e.target.value).then(loadUsers)
                             }
                           >
-                            Block
-                          </button>
-                          <button
-                            style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
-                            onClick={() => openEditUser(u.email)}
+                            <option value="USER">USER</option>
+                            <option value="ADMIN">ADMIN</option>
+                          </select>
+                        </td>
+
+                        <td style={{ padding: 12 }}>
+                          <span
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: 20,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              background: u.status === "ACTIVE" ? colors.successBg : "#ffebee",
+                              color: u.status === "ACTIVE" ? colors.success : colors.error,
+                            }}
                           >
-                            Edit Profile
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
-                          onClick={() =>
-                            updateUserStatus(u.email, "activate").then(loadUsers)
-                          }
-                        >
-                          Activate
-                        </button>
-                      )}
-                      {u.email.toLowerCase() !== currentEmail && (
-                        <button
-                          style={{
-                            background: "#b71c1c",
-                            color: colors.white,
-                            border: "none",
-                            padding: "6px 12px",
-                            borderRadius: 6,
-                            cursor: "pointer",
-                          }}
-                          onClick={() => handleDeleteUser(u.email)}
-                        >
-                          Delete
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                            {u.status}
+                          </span>
+                        </td>
+
+                        <td style={{ padding: 12 }}>
+                          {u.status === "ACTIVE" ? (
+                            <>
+                              <button
+                                style={{
+                                  background: colors.error,
+                                  color: colors.white,
+                                  border: "none",
+                                  padding: "6px 12px",
+                                  borderRadius: 6,
+                                  marginRight: 6,
+                                  cursor: "pointer",
+                                }}
+                                onClick={() =>
+                                  updateUserStatus(u.email, "block").then(loadUsers)
+                                }
+                              >
+                                Block
+                              </button>
+                              <button
+                                style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
+                                onClick={() => openEditUser(u.email)}
+                              >
+                                Edit Profile
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
+                              onClick={() =>
+                                updateUserStatus(u.email, "activate").then(loadUsers)
+                              }
+                            >
+                              Activate
+                            </button>
+                          )}
+                          {u.email.toLowerCase() !== currentEmail && (
+                            <button
+                              style={{
+                                background: "#b71c1c",
+                                color: colors.white,
+                                border: "none",
+                                padding: "6px 12px",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                              }}
+                              onClick={() => handleDeleteUser(u.email)}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
 
