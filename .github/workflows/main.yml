@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - feature/*
+      - dev
 
 env:
   FRONTEND_DOMAIN: login.mydgv.com
