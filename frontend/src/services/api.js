@@ -2,16 +2,74 @@ const API =
   process.env.REACT_APP_API_URL ||
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
+function parseJwtPayload(token) {
+  try {
+    const payload = token.split(".")[1];
+    return JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+}
+
+/** Returns true if JWT is missing or past exp (with 30s skew). */
+export function isTokenExpired(token = localStorage.getItem("token")) {
+  if (!token) return true;
+  const payload = parseJwtPayload(token);
+  if (!payload?.exp) return false;
+  return Date.now() >= payload.exp * 1000 - 30_000;
+}
+
+function clearSessionAndRedirectToLogin() {
+  try {
+    localStorage.removeItem("token");
+    localStorage.removeItem("role");
+    localStorage.removeItem("actualRole");
+  } catch {
+    /* ignore */
+  }
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.replace("/login");
+  }
+}
+
 export const api = async (path, method = "GET", body) => {
   const token = localStorage.getItem("token");
   const headers = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : method === "POST" || method === "PUT" ? "{}" : null,
-  });
+  // Session expired — stop calling APIs and send user to login
+  if (token && isTokenExpired(token)) {
+    clearSessionAndRedirectToLogin();
+    throw new Error("Session expired. Please sign in again.");
+  }
+
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method,
+      headers,
+      body:
+        body !== undefined
+          ? JSON.stringify(body)
+          : method === "POST" || method === "PUT"
+            ? "{}"
+            : null,
+    });
+  } catch (networkErr) {
+    // Browser reports CORS/network/offline as TypeError: Failed to fetch
+    const err = new Error(
+      "Unable to reach the server. Check your connection and try again."
+    );
+    err.cause = networkErr;
+    err.isNetworkError = true;
+    console.warn("API network error:", path, networkErr);
+    throw err;
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    clearSessionAndRedirectToLogin();
+    throw new Error("Session expired. Please sign in again.");
+  }
 
   if (!res.ok) {
     const text = await res.text();

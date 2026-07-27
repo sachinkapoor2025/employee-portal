@@ -183,7 +183,7 @@ export default function ManageUsers() {
         </div>
 
         {error && (
-          <div style={{ padding: 12, background: "#ffebee", color: colors.error, borderRadius: 8, marginBottom: 16 }}>
+          <div style={{ padding: 12, background: "var(--dgv-danger-bg)", color: colors.error, borderRadius: 8, marginBottom: 16 }}>
             {error}
           </div>
         )}
@@ -258,14 +258,11 @@ export default function ManageUsers() {
 
                         <td style={{ padding: 12 }}>
                           <span
-                            style={{
-                              padding: "4px 10px",
-                              borderRadius: 20,
-                              fontSize: 12,
-                              fontWeight: 600,
-                              background: u.status === "ACTIVE" ? colors.successBg : "#ffebee",
-                              color: u.status === "ACTIVE" ? colors.success : colors.error,
-                            }}
+                            className={`dgv-badge ${
+                              u.status === "ACTIVE"
+                                ? "dgv-badge--success"
+                                : "dgv-badge--danger"
+                            }`}
                           >
                             {u.status}
                           </span>
@@ -275,15 +272,9 @@ export default function ManageUsers() {
                           {u.status === "ACTIVE" ? (
                             <>
                               <button
-                                style={{
-                                  background: colors.error,
-                                  color: colors.white,
-                                  border: "none",
-                                  padding: "6px 12px",
-                                  borderRadius: 6,
-                                  marginRight: 6,
-                                  cursor: "pointer",
-                                }}
+                                type="button"
+                                className="dgv-btn dgv-btn--danger"
+                                style={{ padding: "6px 12px", marginRight: 6 }}
                                 onClick={() =>
                                   updateUserStatus(u.email, "block").then(loadUsers)
                                 }
@@ -299,7 +290,9 @@ export default function ManageUsers() {
                             </>
                           ) : (
                             <button
-                              style={{ ...buttonPrimary, padding: "6px 12px", marginRight: 6 }}
+                              type="button"
+                              className="dgv-btn dgv-btn--success"
+                              style={{ padding: "6px 12px", marginRight: 6 }}
                               onClick={() =>
                                 updateUserStatus(u.email, "activate").then(loadUsers)
                               }
@@ -309,14 +302,9 @@ export default function ManageUsers() {
                           )}
                           {u.email.toLowerCase() !== currentEmail && (
                             <button
-                              style={{
-                                background: "#b71c1c",
-                                color: colors.white,
-                                border: "none",
-                                padding: "6px 12px",
-                                borderRadius: 6,
-                                cursor: "pointer",
-                              }}
+                              type="button"
+                              className="dgv-btn dgv-btn--danger"
+                              style={{ padding: "6px 12px" }}
                               onClick={() => handleDeleteUser(u.email)}
                             >
                               Delete
@@ -442,11 +430,14 @@ const overlayStyle = {
 };
 
 const modalStyle = {
-  background: colors.white,
+  background: "var(--dgv-card)",
+  color: "var(--dgv-text)",
   padding: 24,
   borderRadius: 12,
   maxHeight: "90vh",
   overflowY: "auto",
+  border: "1px solid var(--dgv-border)",
+  boxShadow: "var(--dgv-shadow-lg)",
 };
 
 const ProfileRow = ({ label, value }) => (

@@ -1,9 +1,20 @@
+import AmbientBackground from "../components/AmbientBackground";
+
 export default function Blocked() {
   return (
-    <div style={{ textAlign: "center", marginTop: "100px" }}>
-      <h1>🚫 Account Blocked</h1>
-      <p>Your account has been blocked by the administrator.</p>
-      <p>Please contact admin for further assistance.</p>
+    <div className="dgv-auth-shell">
+      <AmbientBackground />
+      <div className="dgv-auth-card">
+        <h1 className="dgv-page-title" style={{ fontSize: 24 }}>
+          Account Blocked
+        </h1>
+        <p style={{ color: "var(--dgv-text-secondary)" }}>
+          Your account has been blocked by the administrator.
+        </p>
+        <p style={{ color: "var(--dgv-text-muted)" }}>
+          Please contact admin for further assistance.
+        </p>
+      </div>
     </div>
   );
 }
