@@ -74,7 +74,16 @@ export const api = async (path, method = "GET", body) => {
   if (!res.ok) {
     const text = await res.text();
     console.error("API error:", res.status, text);
-    throw new Error("API request failed");
+    let message = "API request failed";
+    try {
+      const data = JSON.parse(text);
+      if (typeof data === "string" && data.trim()) message = data;
+      else if (data?.error) message = data.error;
+      else if (data?.message) message = data.message;
+    } catch {
+      if (text?.trim()) message = text.trim();
+    }
+    throw new Error(message);
   }
 
   return res.json();

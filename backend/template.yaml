@@ -588,6 +588,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-UserProfileFunction"
       Handler: lambda/UserProfileFunction/app.handler
+      Timeout: 30
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:

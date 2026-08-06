@@ -110,24 +110,41 @@ export default function ManageUsers() {
     setForm({ ...form, [e.target.name]: e.target.value });
 
   const saveProfile = async () => {
-    if (!form.email || !form.skill) {
+    const email = (form.email || "").trim().toLowerCase();
+
+    if (!email || !form.skill) {
       alert("Email and Skill are required");
+      return;
+    }
+
+    if (!email.endsWith("@mydgv.com")) {
+      alert("Only @mydgv.com email addresses are allowed.");
       return;
     }
 
     setSaving(true);
 
     try {
-      await saveUserProfile({
+      const result = await saveUserProfile({
         mode,
-        email: form.email,
-        profile: form,
+        email,
+        role: "USER",
+        profile: { ...form, email },
       });
+
+      if (result?.temporaryPassword) {
+        alert(
+          `User created successfully.\n\nTemporary password:\n${result.temporaryPassword}\n\nShare this with the employee (no invite email is sent).`
+        );
+      } else if (result?.warning) {
+        alert(result.warning);
+      }
+
       setShowModal(false);
       await loadUsers();
     } catch (err) {
       console.error(err);
-      alert("Failed to save user. Please try again.");
+      alert(err?.message || "Failed to save user. Please try again.");
     } finally {
       setSaving(false);
     }
