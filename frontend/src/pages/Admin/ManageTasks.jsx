@@ -104,7 +104,7 @@ export default function ManageTasks() {
             <div key={col.key} style={{ background: colors.background, borderRadius: 10, padding: 10, minWidth: 180 }}>
               <h4 style={{ margin: "0 0 10px", fontSize: 13, color: colors.textMuted }}>{col.label}</h4>
               {byStatus(col.key).map((task) => (
-                <div key={task.taskId} style={{ background: "#fff", borderRadius: 8, padding: 10, marginBottom: 8, boxShadow: "0 1px 4px rgba(0,0,0,0.08)" }}>
+                <div key={task.taskId} style={{ background: "var(--dgv-surface-solid)", borderRadius: 8, padding: 10, marginBottom: 8, boxShadow: "var(--dgv-shadow)", border: `1px solid ${colors.border}`, color: colors.text, transition: "transform 0.3s ease, box-shadow 0.3s ease" }}>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{task.title}</div>
                   <div style={{ fontSize: 12, color: colors.textMuted, margin: "4px 0" }}>{task.assignee || "Unassigned"}</div>
                   <select
@@ -152,11 +152,11 @@ export default function ManageTasks() {
 }
 
 const Modal = ({ title, children, onClose }) => (
-  <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000 }}>
-    <div style={{ background: "#fff", padding: 24, borderRadius: 12, width: 400, maxWidth: "90vw" }}>
+  <div style={{ position: "fixed", inset: 0, background: "var(--dgv-overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000 }}>
+    <div style={{ background: "var(--dgv-card)", color: "var(--dgv-text)", padding: 24, borderRadius: 12, width: 400, maxWidth: "90vw", border: "1px solid var(--dgv-border)", boxShadow: "var(--dgv-shadow-lg)" }}>
       <h3>{title}</h3>
       {children}
-      <button onClick={onClose} style={{ marginTop: 12 }}>Cancel</button>
+      <button onClick={onClose} style={{ marginTop: 12, color: "var(--dgv-text)", background: "transparent", border: "1px solid var(--dgv-border)", borderRadius: 8, padding: "8px 12px", cursor: "pointer" }}>Cancel</button>
     </div>
   </div>
 );

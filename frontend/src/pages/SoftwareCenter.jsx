@@ -340,11 +340,12 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
   return (
     <div
       style={{
-        background: inactive ? "#f5f5f5" : colors.background,
+        background: inactive ? "var(--dgv-surface-solid)" : "var(--dgv-card)",
         borderRadius: 12,
         padding: 16,
         border: `1px solid ${colors.border}`,
-        opacity: inactive ? 0.7 : 1,
+        opacity: inactive ? 0.75 : 1,
+        color: "var(--dgv-text)",
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -352,8 +353,8 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
           <div style={{ fontWeight: 700, fontSize: 16 }}>{item.name}</div>
           {item.vendor && <div style={{ fontSize: 12, color: colors.textMuted }}>{item.vendor}</div>}
         </div>
-        <span style={{ background: colors.successBg, color: colors.success, fontSize: 11, padding: "2px 8px", borderRadius: 12, fontWeight: 600 }}>
-          Verified
+        <span className={`dgv-badge ${inactive ? "dgv-badge--neutral" : "dgv-badge--success"}`}>
+          {inactive ? "Hidden" : "Verified"}
         </span>
       </div>
 
@@ -400,7 +401,8 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
                 padding: "8px",
                 borderRadius: 6,
                 border: `1px solid ${colors.border}`,
-                background: "#fff",
+                background: "var(--dgv-surface-solid)",
+                color: "var(--dgv-text)",
                 cursor: "pointer",
               }}
               onClick={onToggle}
@@ -436,7 +438,7 @@ function SoftwareCard({ item, isAdminView, onUpdateVersion, onToggle, onDelete }
 const overlay = {
   position: "fixed",
   inset: 0,
-  background: "rgba(0,0,0,0.5)",
+  background: "var(--dgv-overlay)",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -445,11 +447,14 @@ const overlay = {
 };
 
 const modal = {
-  background: "#fff",
+  background: "var(--dgv-card)",
+  color: "var(--dgv-text)",
   padding: 24,
   borderRadius: 12,
   maxWidth: 480,
   width: "100%",
   maxHeight: "90vh",
   overflowY: "auto",
+  border: "1px solid var(--dgv-border)",
+  boxShadow: "var(--dgv-shadow-lg)",
 };

@@ -1,5 +1,13 @@
 import { useState } from "react";
 import Layout from "../components/Layout";
+import {
+  pageCard,
+  pageTitle,
+  formLabel,
+  formInput,
+  buttonPrimary,
+  colors,
+} from "../theme";
 
 export default function Exit() {
   const [reason, setReason] = useState("");
@@ -41,47 +49,39 @@ export default function Exit() {
 
   return (
     <Layout>
-      <div
-        style={{
-          background: "rgba(255,255,255,0.95)",
-          padding: 24,
-          borderRadius: 12,
-          maxWidth: 600,
-        }}
-      >
-        <h2>Exit Organization</h2>
+      <div style={{ ...pageCard, maxWidth: 600 }}>
+        <h2 style={pageTitle}>Exit Organization</h2>
 
-        <label>Last Working Day</label>
+        <label style={formLabel}>Last Working Day</label>
         <input
           type="date"
           value={lastWorkingDay}
           onChange={(e) => setLastWorkingDay(e.target.value)}
-          style={{ width: "100%", padding: 8, marginBottom: 12 }}
+          style={formInput}
         />
 
-        <label>Resignation Reason</label>
+        <label style={formLabel}>Resignation Reason</label>
         <textarea
           rows={5}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          style={{ width: "100%", padding: 8 }}
+          style={{ ...formInput, resize: "vertical", minHeight: 120 }}
         />
 
         <button
           onClick={submitResignation}
           disabled={loading}
           style={{
-            marginTop: 16,
-            padding: "10px 20px",
-            background: "#d32f2f",
-            color: "#fff",
-            border: "none",
-            borderRadius: 6,
-            cursor: "pointer",
+            ...buttonPrimary,
+            background: "var(--dgv-danger)",
+            marginTop: 8,
           }}
         >
           {loading ? "Submitting..." : "Submit Resignation"}
         </button>
+        <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 12 }}>
+          Submitting a resignation notifies HR / admin for review.
+        </p>
       </div>
     </Layout>
   );

@@ -1,11 +1,12 @@
 import Layout from "../components/Layout";
+import { pageCard, pageTitle, colors } from "../theme";
 
 export default function Payroll() {
   return (
     <Layout>
-      <div style={{ backgroundColor: "rgba(255,255,255,0.9)", padding: "24px", borderRadius: "12px" }}>
-        <h2>Payroll & Documents</h2>
-        <ul>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>Payroll & Documents</h2>
+        <ul style={{ color: colors.textSecondary || colors.textMuted, lineHeight: 1.8 }}>
           <li>Jan Payslip</li>
           <li>Feb Payslip</li>
         </ul>

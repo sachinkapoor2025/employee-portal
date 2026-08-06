@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import { fetchUserTrainings, fetchTrainingVideoUrl } from "../services/api";
+import { pageCard, pageTitle, colors, buttonPrimary } from "../theme";
 
 function normalizeLevel(level = "") {
   const value = level.toUpperCase();
@@ -114,14 +115,14 @@ export default function Training() {
   // ======================
   return (
     <Layout>
-      <div style={{ background: "#fff", padding: 24, borderRadius: 12 }}>
-        <h2>Training Videos</h2>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>Training Videos</h2>
 
-        {loading && <p>Loading trainings...</p>}
-        {error && <p style={{ color: "red" }}>{error}</p>}
+        {loading && <p style={{ color: colors.textMuted }}>Loading trainings...</p>}
+        {error && <p style={{ color: colors.error }}>{error}</p>}
 
         {!loading && !error && videos.length === 0 && (
-          <p>
+          <p style={{ color: colors.textMuted }}>
             No training videos are assigned yet. Ask your admin to set your skill
             in Manage Users and add training materials for that skill.
           </p>
@@ -131,31 +132,29 @@ export default function Training() {
           (level) =>
             grouped[level] && (
               <div key={level}>
-                <h3>{level} Training</h3>
+                <h3 style={{ color: colors.text }}>{level} Training</h3>
 
                 {grouped[level].map((video) => (
                   <div
                     key={video.id}
                     style={{
-                      border: "1px solid #ddd",
-                      borderRadius: 8,
+                      border: `1px solid ${colors.border}`,
+                      borderRadius: 12,
                       padding: 16,
                       marginBottom: 12,
+                      background: "var(--dgv-surface-solid)",
+                      color: colors.text,
+                      transition: "transform 0.3s ease, box-shadow 0.3s ease",
                     }}
                   >
                     <div style={{ fontWeight: 600 }}>{video.title}</div>
-                    <div>Status: {video.status}</div>
+                    <div style={{ color: colors.textMuted }}>Status: {video.status}</div>
 
                     <button
                       onClick={() => handleStart(video)}
                       style={{
+                        ...buttonPrimary,
                         marginTop: 8,
-                        padding: "8px 16px",
-                        background: "#1976d2",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: 4,
-                        cursor: "pointer",
                       }}
                     >
                       {video.status === "Completed" ? "Watch Again" : "Start"}
@@ -210,14 +209,7 @@ export default function Training() {
               <button
                 disabled={!videoCompleted}
                 onClick={handleMarkComplete}
-                style={{
-                  padding: "8px 16px",
-                  background: videoCompleted ? "#4caf50" : "#ccc",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 4,
-                  cursor: videoCompleted ? "pointer" : "not-allowed",
-                }}
+                className="dgv-btn dgv-btn--success"
               >
                 Mark Complete
               </button>

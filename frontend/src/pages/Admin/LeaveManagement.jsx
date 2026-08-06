@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../../components/Layout";
 import { fetchAllLeave, reviewLeave } from "../../services/api";
-import { colors, pageCard, pageTitle, buttonPrimary } from "../../theme";
+import { colors, pageCard, pageTitle } from "../../theme";
 
 export default function LeaveManagement() {
   const [leaves, setLeaves] = useState([]);
@@ -21,30 +21,57 @@ export default function LeaveManagement() {
     <Layout>
       <div style={pageCard}>
         <h2 style={pageTitle}>Leave Requests</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div className="dgv-table-wrap">
+        <table className="dgv-table">
           <thead>
-            <tr style={{ background: colors.primary, color: "#fff" }}>
-              <th style={{ padding: 10, textAlign: "left" }}>Employee</th>
-              <th style={{ padding: 10, textAlign: "left" }}>Type</th>
-              <th style={{ padding: 10, textAlign: "left" }}>From</th>
-              <th style={{ padding: 10, textAlign: "left" }}>To</th>
-              <th style={{ padding: 10, textAlign: "left" }}>Status</th>
-              <th style={{ padding: 10, textAlign: "left" }}>Actions</th>
+            <tr>
+              <th>Employee</th>
+              <th>Type</th>
+              <th>From</th>
+              <th>To</th>
+              <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {leaves.map((l) => (
-              <tr key={l.leaveId} style={{ borderBottom: `1px solid ${colors.border}` }}>
-                <td style={{ padding: 10 }}>{l.email}</td>
-                <td style={{ padding: 10 }}>{l.type}</td>
-                <td style={{ padding: 10 }}>{l.fromDate}</td>
-                <td style={{ padding: 10 }}>{l.toDate}</td>
-                <td style={{ padding: 10 }}>{l.status}</td>
-                <td style={{ padding: 10 }}>
+              <tr key={l.leaveId}>
+                <td>{l.email}</td>
+                <td>{l.type}</td>
+                <td>{l.fromDate}</td>
+                <td>{l.toDate}</td>
+                <td>
+                  <span
+                    className={`dgv-badge ${
+                      l.status === "APPROVED"
+                        ? "dgv-badge--success"
+                        : l.status === "REJECTED"
+                          ? "dgv-badge--danger"
+                          : "dgv-badge--info"
+                    }`}
+                  >
+                    {l.status}
+                  </span>
+                </td>
+                <td>
                   {l.status === "PENDING" && (
                     <>
-                      <button style={{ ...buttonPrimary, padding: "4px 10px", marginRight: 6, background: colors.success }} onClick={() => review(l.leaveId, "APPROVED")}>Approve</button>
-                      <button style={{ ...buttonPrimary, padding: "4px 10px", background: colors.error }} onClick={() => review(l.leaveId, "REJECTED")}>Reject</button>
+                      <button
+                        type="button"
+                        className="dgv-btn dgv-btn--success"
+                        style={{ padding: "4px 10px", marginRight: 6 }}
+                        onClick={() => review(l.leaveId, "APPROVED")}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="dgv-btn dgv-btn--danger"
+                        style={{ padding: "4px 10px" }}
+                        onClick={() => review(l.leaveId, "REJECTED")}
+                      >
+                        Reject
+                      </button>
                     </>
                   )}
                 </td>
@@ -52,6 +79,7 @@ export default function LeaveManagement() {
             ))}
           </tbody>
         </table>
+        </div>
         {leaves.length === 0 && <p style={{ color: colors.textMuted }}>No leave requests.</p>}
       </div>
     </Layout>

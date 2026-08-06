@@ -1,22 +1,42 @@
 import { useEffect, useState } from "react";
 import { api } from "../services/api";
 import Layout from "../components/Layout";
+import { pageCard, pageTitle, colors } from "../theme";
 
 export default function Performance() {
   const [data, setData] = useState({});
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api("/performance").then(setData);
+    let cancelled = false;
+    api("/performance")
+      .then((res) => {
+        if (!cancelled) setData(res || {});
+      })
+      .catch((err) => {
+        console.warn("Performance load failed:", err);
+        if (!cancelled) {
+          setError(
+            err?.message || "Unable to load performance data right now."
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
     <Layout>
-      <div style={{ backgroundColor: "rgba(255,255,255,0.9)", padding: "24px", borderRadius: "12px" }}>
-        <h2>Performance</h2>
-        <p>Charged Hours: {data.chargedHours}</p>
-        <p>Completed Hours: {data.completedHours}</p>
-        <p>Rating: {data.rating}</p>
-        <p>Training Points: {data.trainingPoints}</p>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>Performance</h2>
+        {error ? (
+          <div className="dgv-alert dgv-alert--error">{error}</div>
+        ) : null}
+        <p style={{ color: colors.text }}>Charged Hours: {data.chargedHours}</p>
+        <p style={{ color: colors.text }}>Completed Hours: {data.completedHours}</p>
+        <p style={{ color: colors.text }}>Rating: {data.rating}</p>
+        <p style={{ color: colors.text }}>Training Points: {data.trainingPoints}</p>
       </div>
     </Layout>
   );

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "../components/Layout";
+import { pageCard, pageTitle, colors } from "../theme";
 
 /* ======================
    BUTTON COLORS
@@ -9,14 +10,14 @@ const API_URL =
   process.env.REACT_APP_API_URL ||
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
-const STATUS_COLORS = {
-  Working: "#22c55e", // green
-  Leave: "#ef4444", // red
-  Holiday: "#f97316", // orange
-  WeeklyOff: "#9ca3af", // grey
-};
-
 const BLUE_BTN = "#2563eb";
+
+const STATUS_CLASS = {
+  Working: "dgv-status-badge--working",
+  Holiday: "dgv-status-badge--holiday",
+  Leave: "dgv-status-badge--leave",
+  WeeklyOff: "dgv-status-badge--weeklyoff",
+};
 
 export default function Attendance() {
   const [currentWeekStart, setCurrentWeekStart] = useState(() =>
@@ -201,8 +202,8 @@ export default function Attendance() {
 
   return (
     <Layout>
-      <div style={{ background: "#fff", padding: 24, borderRadius: 12 }}>
-        <h2>Attendance</h2>
+      <div style={pageCard}>
+        <h2 style={pageTitle}>Attendance</h2>
 
         {/* WEEK NAVIGATION */}
         <button
@@ -215,6 +216,7 @@ export default function Attendance() {
             borderRadius: 8,
             cursor: "pointer",
             fontWeight: 500,
+            transition: "transform 0.3s ease, opacity 0.3s ease",
           }}
         >
           Previous Week
@@ -231,13 +233,15 @@ export default function Attendance() {
             borderRadius: 8,
             cursor: "pointer",
             fontWeight: 500,
+            transition: "transform 0.3s ease, opacity 0.3s ease",
           }}
         >
           Next Week
         </button>
 
         {/* TABLE */}
-        <table style={{ width: "100%", marginTop: 20 }}>
+        <div className="dgv-table-wrap" style={{ marginTop: 20 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", color: colors.text }}>
           <thead>
             <tr>
               <th>Date</th>
@@ -266,25 +270,15 @@ export default function Attendance() {
                         return (
                           <button
                             key={status}
+                            type="button"
                             disabled={!editable}
                             onClick={() =>
                               editable && updateAttendance(dateStr, { status })
                             }
-                            style={{
-                              marginRight: 6,
-                              marginBottom: 6,
-                              padding: "6px 12px",
-                              borderRadius: 20,
-                              border: "none",
-                              cursor: editable ? "pointer" : "not-allowed",
-                              background: isActive
-                                ? STATUS_COLORS[status]
-                                : "#e5e7eb",
-                              color: isActive ? "#fff" : "#111",
-                              fontWeight: 500,
-                              opacity: editable ? 1 : 0.4,
-                              transition: "all 0.2s ease",
-                            }}
+                            className={`dgv-status-badge ${STATUS_CLASS[status]} ${
+                              isActive ? "is-active" : ""
+                            }`}
+                            aria-pressed={isActive}
                           >
                             {status}
                           </button>
@@ -307,6 +301,10 @@ export default function Attendance() {
                           width: 60,
                           marginLeft: 8,
                           padding: 4,
+                          borderRadius: 6,
+                          border: `1px solid ${colors.border}`,
+                          background: "var(--dgv-surface-solid)",
+                          color: "var(--dgv-text)",
                         }}
                       />
                     )}
@@ -316,6 +314,7 @@ export default function Attendance() {
             })}
           </tbody>
         </table>
+        </div>
 
         {/* SUBMIT */}
         <button
@@ -330,6 +329,7 @@ export default function Attendance() {
             cursor: "pointer",
             fontSize: 15,
             fontWeight: 600,
+            transition: "transform 0.3s ease, opacity 0.3s ease",
           }}
         >
           Submit Attendance

@@ -1,11 +1,15 @@
 import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Moon, Sun, Building2 } from "lucide-react";
 import { login } from "../services/auth";
-import { colors, buttonPrimary } from "../theme";
+import { useTheme } from "../theme/ThemeProvider";
+import AmbientBackground from "../components/AmbientBackground";
+import Button from "../components/ui/Button";
 
 export default function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  const { theme, toggleTheme } = useTheme();
   const adminDenied = params.get("adminDenied") === "1";
   const domainDenied = params.get("domainDenied") === "1";
 
@@ -22,69 +26,73 @@ export default function Login() {
     }
   }, [navigate, adminDenied, domainDenied]);
 
-  const btnStyle = {
-    ...buttonPrimary,
-    width: "100%",
-    padding: "12px 28px",
-    fontSize: 16,
-    marginBottom: 12,
-  };
-
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundImage: "url('/images/dgv_bg.png')",
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }}
-    >
-      <div
-        style={{
-          background: "rgba(255,255,255,0.95)",
-          padding: "40px 48px",
-          borderRadius: 12,
-          textAlign: "center",
-          boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
-          minWidth: 320,
-        }}
+    <div className="dgv-auth-shell">
+      <AmbientBackground />
+
+      <button
+        type="button"
+        className="dgv-icon-btn"
+        onClick={toggleTheme}
+        aria-label="Toggle theme"
+        style={{ position: "absolute", top: 20, right: 20, zIndex: 2 }}
       >
-        <h1 style={{ margin: "0 0 8px", color: colors.primary }}>DGV Employee Portal</h1>
-        <p style={{ margin: "0 0 8px", color: colors.textMuted }}>
+        {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
+
+      <div className="dgv-auth-card">
+        <div
+          style={{
+            width: 52,
+            height: 52,
+            margin: "0 auto 16px",
+            borderRadius: 14,
+            display: "grid",
+            placeItems: "center",
+            background: "linear-gradient(135deg, var(--dgv-accent), var(--dgv-accent-2))",
+            color: "#fff",
+          }}
+        >
+          <Building2 size={26} />
+        </div>
+
+        <h1 className="dgv-page-title" style={{ fontSize: 24 }}>
+          DGV Employee Portal
+        </h1>
+        <p className="dgv-page-subtitle" style={{ marginBottom: 8 }}>
           Sign in with your <strong>@mydgv.com</strong> account
         </p>
-        <p style={{ margin: "0 0 24px", color: colors.textMuted, fontSize: 14 }}>
-          Choose employee or admin portal
-        </p>
+        <p className="dgv-page-subtitle">Choose employee or admin portal</p>
 
         {adminDenied && (
-          <p style={{ color: colors.error, marginBottom: 16, fontSize: 14 }}>
+          <div className="dgv-alert dgv-alert--error">
             You are not in the Admin group. Sign in as Employee or contact your administrator.
-          </p>
+          </div>
         )}
 
         {domainDenied && (
-          <p style={{ color: colors.error, marginBottom: 16, fontSize: 14 }}>
+          <div className="dgv-alert dgv-alert--error">
             Only @mydgv.com email addresses can access this portal.
-          </p>
+          </div>
         )}
 
-        <button onClick={() => login("employee")} style={btnStyle}>
+        <Button
+          variant="primary"
+          onClick={() => login("employee")}
+          style={{ width: "100%", marginBottom: 12, padding: "12px 28px", fontSize: 16 }}
+        >
           Sign in as Employee
-        </button>
+        </Button>
 
-        <button
+        <Button
+          variant="outline"
           onClick={() => login("admin")}
-          style={{ ...btnStyle, marginBottom: 0 }}
+          style={{ width: "100%", padding: "12px 28px", fontSize: 16 }}
         >
           Sign in as Admin
-        </button>
+        </Button>
 
-        <p style={{ margin: "16px 0 0", fontSize: 12, color: "#888" }}>
+        <p style={{ margin: "16px 0 0", fontSize: 12, color: "var(--dgv-text-muted)" }}>
           Public sign-up is disabled. Admins create accounts from Manage Users.
         </p>
       </div>

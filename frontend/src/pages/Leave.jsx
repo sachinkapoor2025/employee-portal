@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import { fetchMyLeave, applyLeave } from "../services/api";
 import {
-  colors,
   pageCard,
   pageTitle,
   formLabel,
@@ -51,26 +50,40 @@ export default function Leave() {
         {msg && <div style={alertSuccess}>{msg}</div>}
 
         <h3 style={{ marginTop: 24 }}>My Requests</h3>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div className="dgv-table-wrap">
+        <table className="dgv-table">
           <thead>
-            <tr style={{ background: colors.primary, color: "#fff" }}>
-              <th style={{ padding: 8, textAlign: "left" }}>From</th>
-              <th style={{ padding: 8, textAlign: "left" }}>To</th>
-              <th style={{ padding: 8, textAlign: "left" }}>Type</th>
-              <th style={{ padding: 8, textAlign: "left" }}>Status</th>
+            <tr>
+              <th>From</th>
+              <th>To</th>
+              <th>Type</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {leaves.map((l) => (
-              <tr key={l.leaveId} style={{ borderBottom: `1px solid ${colors.border}` }}>
-                <td style={{ padding: 8 }}>{l.fromDate}</td>
-                <td style={{ padding: 8 }}>{l.toDate}</td>
-                <td style={{ padding: 8 }}>{l.type}</td>
-                <td style={{ padding: 8 }}>{l.status}</td>
+              <tr key={l.leaveId}>
+                <td>{l.fromDate}</td>
+                <td>{l.toDate}</td>
+                <td>{l.type}</td>
+                <td>
+                  <span
+                    className={`dgv-badge ${
+                      l.status === "APPROVED"
+                        ? "dgv-badge--success"
+                        : l.status === "REJECTED"
+                          ? "dgv-badge--danger"
+                          : "dgv-badge--info"
+                    }`}
+                  >
+                    {l.status}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </Layout>
   );

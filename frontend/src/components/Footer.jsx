@@ -1,35 +1,15 @@
-import { colors, companyDetails } from "../theme";
+import { companyDetails } from "../theme";
 
 export default function Footer() {
   return (
-    <footer
-      style={{
-        width: "100%",
-        padding: "16px 20px 24px",
-        background: "transparent",
-        textAlign: "center",
-        fontSize: 13,
-        color: colors.text,
-        lineHeight: 1.6,
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 700,
-          color: colors.primary,
-          marginBottom: 6,
-          textShadow: "0 1px 4px rgba(255,255,255,0.95)",
-        }}
-      >
-        Divit Global Ventures (DGV)
-      </div>
+    <footer className="dgv-footer">
+      <div className="dgv-footer__brand">Divit Global Ventures (DGV)</div>
       <div
         style={{
           display: "flex",
           flexWrap: "wrap",
           justifyContent: "center",
           gap: "6px 20px",
-          textShadow: "0 1px 4px rgba(255,255,255,0.95)",
         }}
       >
         <span>
@@ -38,7 +18,7 @@ export default function Footer() {
             href={`https://${companyDetails.website}`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ color: colors.primary, textDecoration: "none", fontWeight: 600 }}
+            style={{ color: "var(--dgv-accent)", textDecoration: "none", fontWeight: 600 }}
           >
             {companyDetails.website}
           </a>
@@ -46,15 +26,8 @@ export default function Footer() {
         <span>Phone: {companyDetails.phone}</span>
         <span>GST Number: {companyDetails.gst}</span>
       </div>
-      <div
-        style={{
-          marginTop: 6,
-          fontSize: 12,
-          color: colors.textMuted,
-          textShadow: "0 1px 4px rgba(255,255,255,0.95)",
-        }}
-      >
-        © 2025 DGV Portal. All rights reserved.
+      <div style={{ marginTop: 6, fontSize: 12 }}>
+        © {new Date().getFullYear()} DGV Portal. All rights reserved.
       </div>
     </footer>
   );
