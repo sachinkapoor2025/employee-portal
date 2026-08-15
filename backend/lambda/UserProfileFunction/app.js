@@ -1,3 +1,4 @@
+const { getUser } = require("../common/auth");
 const {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -5,7 +6,12 @@ const {
   AdminRemoveUserFromGroupCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
+const {
+  normalizeRole,
+  cognitoGroupForRole,
+  isValidAssignableRole,
+} = require("../common/roles");
 
 const cognito = new CognitoIdentityProviderClient({
   region: process.env.AWS_REGION,
@@ -20,7 +26,43 @@ function isAllowedEmail(email) {
   return email && email.toLowerCase().endsWith(ALLOWED_DOMAIN);
 }
 
-/** Meets Cognito policy: upper, lower, number, symbol, min 8 */
+function isS3ObjectKey(key) {
+  const value = String(key || "").trim();
+  if (!value) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\")) return false;
+  if (/^https?:\/\//i.test(value) || value.includes("..")) return false;
+  return true;
+}
+
+function s3KeyFromFileUrl(fileUrl) {
+  if (!fileUrl || typeof fileUrl !== "string") return "";
+  const raw = String(fileUrl).split("?")[0];
+  const idx = raw.indexOf("/profiles/");
+  if (idx >= 0) {
+    try {
+      return decodeURIComponent(raw.slice(idx + 1).replace(/\+/g, "%20"));
+    } catch {
+      return raw.slice(idx + 1);
+    }
+  }
+  try {
+    const u = new URL(raw.replace(/ /g, "%20"));
+    let path = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+    const host = u.hostname.toLowerCase();
+    const pathStyle =
+      host === "s3.amazonaws.com" ||
+      /^s3[.-][a-z0-9-]+\.amazonaws\.com$/.test(host);
+    if (pathStyle) {
+      const parts = path.split("/");
+      parts.shift();
+      path = parts.join("/");
+    }
+    return isS3ObjectKey(path) ? path : "";
+  } catch {
+    return "";
+  }
+}
+
 function generateTempPassword() {
   const rand = Math.random().toString(36).slice(2, 10);
   return `DgV#${rand}A1!`;
@@ -30,8 +72,6 @@ async function createCognitoUser(email, name) {
   const temporaryPassword = generateTempPassword();
 
   try {
-    // Do NOT rely on Cognito invitation email (SES often not configured).
-    // Create with temp password; admin shares it with the employee.
     await cognito.send(
       new AdminCreateUserCommand({
         UserPoolId: process.env.USER_POOL_ID,
@@ -55,8 +95,8 @@ async function createCognitoUser(email, name) {
 }
 
 async function syncCognitoGroup(email, role) {
-  const group = role === "ADMIN" ? "Admin" : "Employee";
-  const other = role === "ADMIN" ? "Employee" : "Admin";
+  const group = cognitoGroupForRole(role);
+  const other = group === "Admin" ? "Employee" : "Admin";
 
   try {
     await cognito.send(
@@ -67,7 +107,7 @@ async function syncCognitoGroup(email, role) {
       })
     );
   } catch {
-    // user may not be in the other group
+    /* ignore */
   }
 
   await cognito.send(
@@ -105,14 +145,29 @@ exports.handler = async (event) => {
       !process.env.USER_ACCESS_TABLE ||
       !process.env.USER_PROFILE_TABLE
     ) {
-      console.error("Missing env vars for UserProfileFunction");
       return response(500, {
         error: "Server misconfigured (missing Cognito/table settings)",
       });
     }
 
-    const userRole = role === "ADMIN" ? "ADMIN" : "USER";
+    const userRole = isValidAssignableRole(role)
+      ? normalizeRole(role)
+      : normalizeRole("EMPLOYEE");
     let createMeta = null;
+
+    const user = getUser(event);
+    if (!user.email) {
+      return response(401, { error: "Unauthorized" });
+    }
+
+    if (!user.isAdmin) {
+      if (mode !== "EDIT") {
+        return response(403, { error: "Admin required" });
+      }
+      if (normalizedEmail !== user.email) {
+        return response(403, { error: "You can only edit your own profile" });
+      }
+    }
 
     if (mode === "CREATE") {
       try {
@@ -155,27 +210,79 @@ exports.handler = async (event) => {
       );
     }
 
-    if (mode === "EDIT" && role) {
+    if (mode === "EDIT" && user.isAdmin && role && isValidAssignableRole(role)) {
       await syncCognitoGroup(normalizedEmail, userRole);
+      await ddb.send(
+        new UpdateCommand({
+          TableName: process.env.USER_ACCESS_TABLE,
+          Key: { PK: normalizedEmail, SK: normalizedEmail },
+          UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
+          ExpressionAttributeNames: { "#role": "role" },
+          ExpressionAttributeValues: {
+            ":role": userRole,
+            ":updatedAt": new Date().toISOString(),
+          },
+        })
+      );
     }
 
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.USER_PROFILE_TABLE,
-        Item: {
-          PK: `USER#${normalizedEmail}`,
-          SK: "PROFILE",
-          ...(profile || {}),
-          email: normalizedEmail,
-          skill: profile?.skill
-            ? String(profile.skill).trim().toUpperCase()
-            : profile?.skill,
-          updatedAt: new Date().toISOString(),
-        },
-      })
-    );
+    const profileData = { ...(profile || {}) };
+    delete profileData.PK;
+    delete profileData.SK;
+    delete profileData.profileImageUrl;
+    delete profileData.imageStorageUrl;
+    if (profileData.imageUrl && String(profileData.imageUrl).includes("X-Amz-")) {
+      profileData.imageUrl = String(profileData.imageUrl).split("?")[0];
+    }
+    if (isS3ObjectKey(profileData.imageUrl) && !profileData.imageS3Key) {
+      profileData.imageS3Key = String(profileData.imageUrl).trim();
+    }
+    if (!profileData.imageS3Key && profileData.imageUrl) {
+      const fromUrl = s3KeyFromFileUrl(profileData.imageUrl);
+      if (fromUrl) profileData.imageS3Key = fromUrl;
+    }
 
-    const result = { message: "User saved successfully" };
+    let existingProfile = {};
+    try {
+      const existing = await ddb.send(
+        new GetCommand({
+          TableName: process.env.USER_PROFILE_TABLE,
+          Key: { PK: `USER#${normalizedEmail}`, SK: "PROFILE" },
+        })
+      );
+      existingProfile = existing.Item || {};
+    } catch {
+      existingProfile = {};
+    }
+    if (profileData.resignations == null && Array.isArray(existingProfile.resignations)) {
+      profileData.resignations = existingProfile.resignations;
+    }
+
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: process.env.USER_PROFILE_TABLE,
+          Item: {
+            PK: `USER#${normalizedEmail}`,
+            SK: "PROFILE",
+            ...profileData,
+            email: normalizedEmail,
+            department: profileData?.department
+              ? String(profileData.department).trim()
+              : "",
+            skill: profileData?.skill
+              ? String(profileData.skill).trim().toUpperCase()
+              : profileData?.skill,
+            updatedAt: new Date().toISOString(),
+          },
+        })
+      );
+    } catch (err) {
+      console.error("DYNAMODB_PROFILE_UPDATE_FAILED", err?.name);
+      throw err;
+    }
+
+    const result = { message: "User saved successfully", role: userRole };
 
     if (createMeta?.temporaryPassword) {
       result.warning =

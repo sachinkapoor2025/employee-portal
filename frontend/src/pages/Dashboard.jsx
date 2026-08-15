@@ -1,47 +1,54 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Clock,
   ListTodo,
   CalendarDays,
   Megaphone,
   ArrowRight,
+  Clock,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
 import { StatCard } from "../components/ui/Card";
 import {
   fetchAnnouncements,
-  fetchMyActivityToday,
   fetchTasks,
   fetchMyLeave,
+  fetchMyActivityToday,
 } from "../services/api";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../theme";
 
 export default function Dashboard() {
   const [announcements, setAnnouncements] = useState([]);
-  const [activity, setActivity] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [leave, setLeave] = useState([]);
+  const [portalMinutes, setPortalMinutes] = useState(0);
   const navigate = useNavigate();
 
   useEffect(() => {
     Promise.all([
       fetchAnnouncements(),
-      fetchMyActivityToday(),
       fetchTasks({ mine: "true" }),
       fetchMyLeave(),
+      fetchMyActivityToday().catch(() => null),
     ])
-      .then(([a, act, t, l]) => {
-        setAnnouncements(a.slice(0, 3));
-        setActivity(act);
-        setTasks(t.filter((x) => x.status !== "DONE").slice(0, 5));
-        setLeave(l.filter((x) => x.status === "PENDING"));
+      .then(([a, t, l, activity]) => {
+        setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
+        setTasks(
+          Array.isArray(t) ? t.filter((x) => x.status !== "DONE").slice(0, 5) : []
+        );
+        setLeave(
+          Array.isArray(l)
+            ? l.filter(
+                (x) => x.status === "PENDING" || x.status === "PENDING_APPROVAL"
+              )
+            : []
+        );
+        const mins = Number(activity?.summary?.totalMinutes);
+        setPortalMinutes(Number.isFinite(mins) ? mins : 0);
       })
       .catch(console.error);
   }, []);
-
-  const mins = activity?.summary?.totalMinutes || 0;
 
   return (
     <Layout>
@@ -59,7 +66,7 @@ export default function Dashboard() {
         >
           <StatCard
             label="Portal Time Today"
-            value={`${mins} min`}
+            value={`${portalMinutes} min`}
             icon={<Clock size={20} />}
           />
           <StatCard
@@ -74,8 +81,17 @@ export default function Dashboard() {
           />
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
-          <Button onClick={() => navigate("/attendance")}>Mark Attendance</Button>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
+            marginBottom: 24,
+          }}
+        >
+          <Button onClick={() => navigate("/attendance")}>
+            Mark Attendance
+          </Button>
           <Button variant="secondary" onClick={() => navigate("/work")}>
             My Tasks
           </Button>
@@ -89,7 +105,14 @@ export default function Dashboard() {
 
         {announcements.length > 0 && (
           <>
-            <h3 style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 0 }}>
+            <h3
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 0,
+              }}
+            >
               <Megaphone size={18} color="var(--dgv-accent)" />
               Announcements
             </h3>
@@ -105,7 +128,13 @@ export default function Dashboard() {
                 }}
               >
                 <strong>{a.title}</strong>
-                <p style={{ margin: "6px 0 0", fontSize: 14, color: colors.textMuted }}>
+                <p
+                  style={{
+                    margin: "6px 0 0",
+                    fontSize: 14,
+                    color: colors.textMuted,
+                  }}
+                >
                   {a.message}
                 </p>
               </div>

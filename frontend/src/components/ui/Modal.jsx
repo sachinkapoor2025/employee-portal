@@ -1,7 +1,9 @@
+import { createPortal } from "react-dom";
+
 export default function Modal({ open, onClose, title, children, maxWidth = 520 }) {
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="dgv-modal-overlay"
       role="dialog"
@@ -17,6 +19,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 520 }
         ) : null}
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,5 +1,10 @@
 const { getUser, isAllowedEmail } = require("../common/auth");
 const {
+  normalizeRole,
+  accessGateForRole,
+  isAdminPortalRole,
+} = require("../common/roles");
+const {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
@@ -19,37 +24,47 @@ const corsHeaders = {
 
 function resolveAccess(user, record) {
   if (!isAllowedEmail(user.email)) {
-    return "DENIED";
+    return { access: "DENIED", role: null };
   }
 
   if (!record) {
-    return user.isAdmin ? "ADMIN" : "USER";
+    const role = user.isAdmin ? "ADMIN" : "EMPLOYEE";
+    return { access: accessGateForRole(role), role };
   }
 
   const status = record.status?.S;
-  if (status === "PENDING") return "PENDING";
-  if (status !== "ACTIVE") return "BLOCKED";
+  if (status === "PENDING") {
+    return { access: "PENDING", role: normalizeRole(record.role?.S) };
+  }
+  if (status !== "ACTIVE") {
+    return { access: "BLOCKED", role: normalizeRole(record.role?.S) };
+  }
 
-  return user.isAdmin ? "ADMIN" : "USER";
+  let role = normalizeRole(record.role?.S || (user.isAdmin ? "ADMIN" : "EMPLOYEE"));
+  if (user.isAdmin && !isAdminPortalRole(role)) {
+    role = "ADMIN";
+  }
+  if (!user.isAdmin && isAdminPortalRole(role)) {
+    role = "EMPLOYEE";
+  }
+
+  return { access: accessGateForRole(role), role };
 }
 
 exports.handler = async (event) => {
-  console.log("Incoming event:", JSON.stringify(event));
-
   const user = getUser(event);
   const email = user.email;
 
   if (!email) {
-    console.error("Email missing from token");
     return serverError();
   }
 
   if (!isAllowedEmail(email)) {
-    console.warn("Blocked non-company email:", email);
-    return ok({ access: "DENIED", message: "Only @mydgv.com accounts are allowed" });
+    return ok({
+      access: "DENIED",
+      message: "Only @mydgv.com accounts are allowed",
+    });
   }
-
-  console.log("Authenticated email:", email, "groups:", user.groups);
 
   const tableName = process.env.USER_ACCESS_TABLE;
 
@@ -63,8 +78,8 @@ exports.handler = async (event) => {
       );
 
       if (!result.Item) {
-        const access = resolveAccess(user, null);
-        if (access === "DENIED") return ok({ access: "DENIED" });
+        const resolved = resolveAccess(user, null);
+        if (resolved.access === "DENIED") return ok({ access: "DENIED" });
 
         await client.send(
           new PutItemCommand({
@@ -73,7 +88,7 @@ exports.handler = async (event) => {
               PK: { S: email },
               SK: { S: email },
               email: { S: email },
-              role: { S: user.isAdmin ? "ADMIN" : "USER" },
+              role: { S: resolved.role },
               status: { S: "ACTIVE" },
               createdAt: { S: new Date().toISOString() },
             },
@@ -81,11 +96,10 @@ exports.handler = async (event) => {
           })
         );
 
-        return ok({ access });
+        return ok(resolved);
       }
 
-      const access = resolveAccess(user, result.Item);
-      return ok({ access });
+      return ok(resolveAccess(user, result.Item));
     } catch (error) {
       console.error("Access check failed:", error);
       return serverError();
@@ -102,19 +116,20 @@ exports.handler = async (event) => {
       );
 
       if (existing.Item) {
-        const access = resolveAccess(user, existing.Item);
+        const resolved = resolveAccess(user, existing.Item);
 
-        if (access === "USER" || access === "ADMIN") {
+        if (resolved.access === "USER" || resolved.access === "ADMIN") {
           return ok({
             message: "You already have access. Redirecting to portal.",
-            access,
+            ...resolved,
           });
         }
 
-        if (access === "PENDING") {
+        if (resolved.access === "PENDING") {
           return ok({
             message: "Your access request is already pending approval.",
             access: "PENDING",
+            role: resolved.role,
           });
         }
 
@@ -127,13 +142,17 @@ exports.handler = async (event) => {
             ExpressionAttributeNames: { "#status": "status", "#role": "role" },
             ExpressionAttributeValues: {
               ":status": { S: "PENDING" },
-              ":role": { S: "USER" },
+              ":role": { S: "EMPLOYEE" },
               ":updatedAt": { S: new Date().toISOString() },
             },
           })
         );
 
-        return ok({ message: "Access request submitted", access: "PENDING" });
+        return ok({
+          message: "Access request submitted",
+          access: "PENDING",
+          role: "EMPLOYEE",
+        });
       }
 
       await client.send(
@@ -143,14 +162,18 @@ exports.handler = async (event) => {
             PK: { S: email },
             SK: { S: email },
             email: { S: email },
-            role: { S: "USER" },
+            role: { S: "EMPLOYEE" },
             status: { S: "PENDING" },
             createdAt: { S: new Date().toISOString() },
           },
         })
       );
 
-      return ok({ message: "Access request submitted", access: "PENDING" });
+      return ok({
+        message: "Access request submitted",
+        access: "PENDING",
+        role: "EMPLOYEE",
+      });
     } catch (error) {
       console.error("Request access failed:", error);
       return serverError();
@@ -164,14 +187,18 @@ exports.handler = async (event) => {
   };
 };
 
-const ok = (body) => ({
-  statusCode: 200,
-  headers: corsHeaders,
-  body: JSON.stringify(body),
-});
+function ok(body) {
+  return {
+    statusCode: 200,
+    headers: corsHeaders,
+    body: JSON.stringify(body),
+  };
+}
 
-const serverError = () => ({
-  statusCode: 500,
-  headers: corsHeaders,
-  body: JSON.stringify({ error: "Internal server error" }),
-});
+function serverError() {
+  return {
+    statusCode: 500,
+    headers: corsHeaders,
+    body: JSON.stringify({ error: "Internal server error" }),
+  };
+}

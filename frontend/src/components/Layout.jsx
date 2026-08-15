@@ -14,6 +14,7 @@ import {
   DoorOpen,
   Users,
   Activity,
+  ClipboardList,
   Megaphone,
   FileWarning,
   Menu,
@@ -25,6 +26,8 @@ import {
   Sun,
   Moon,
   ChevronRight,
+  FileText,
+  Video,
 } from "lucide-react";
 import {
   logout,
@@ -33,6 +36,7 @@ import {
   getViewRole,
   getLoggedInEmail,
 } from "../services/auth";
+import { fetchLeaveNotifications } from "../services/api";
 import { useTheme } from "../theme/ThemeProvider";
 import AmbientBackground from "./AmbientBackground";
 import Footer from "./Footer";
@@ -45,25 +49,67 @@ const EMPLOYEE_NAV = [
   { label: "Leave", path: "/leave", icon: CalendarDays },
   { label: "Software Center", path: "/software-center", icon: Package },
   { label: "Profile", path: "/profile", icon: User },
+  { label: "Documents", path: "/documents", icon: FileText },
+  { label: "Meetings", path: "/meetings", icon: Video },
   { label: "Performance", path: "/performance", icon: TrendingUp },
   { label: "Payroll", path: "/payroll", icon: Wallet },
   { label: "Exit", path: "/exit", icon: DoorOpen },
 ];
 
-const ADMIN_NAV = [
-  { label: "Dashboard", path: "/admin/dashboard", icon: LayoutDashboard },
-  { label: "Users", path: "/admin/users", icon: Users },
-  { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
-  { label: "Activity", path: "/admin/activity", icon: Activity },
-  { label: "Leave", path: "/admin/leave", icon: CalendarDays },
-  { label: "Announce", path: "/admin/announcements", icon: Megaphone },
-  { label: "Training", path: "/admin/add-training", icon: GraduationCap },
-  { label: "Software Center", path: "/software-center", icon: Package },
-  { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+/** Grouped Admin IA — existing features wired; new modules use coming-soon routes */
+const ADMIN_NAV_SECTIONS = [
+  {
+    title: "Overview",
+    items: [
+      { label: "Dashboard", path: "/admin/dashboard", icon: LayoutDashboard },
+    ],
+  },
+  {
+    title: "People",
+    items: [{ label: "Employees", path: "/admin/employees", icon: Users }],
+  },
+  {
+    title: "Work Management",
+    items: [
+      { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
+      {
+        label: "Attendance",
+        path: "/admin/attendance-activity",
+        icon: ClipboardList,
+      },
+      { label: "Leave", path: "/admin/leave", icon: CalendarDays },
+    ],
+  },
+  {
+    title: "Company",
+    items: [
+      { label: "Documents", path: "/admin/documents", icon: FileText },
+      { label: "Announcements", path: "/admin/announcements", icon: Megaphone },
+      { label: "Training", path: "/admin/add-training", icon: GraduationCap },
+      { label: "Meetings", path: "/admin/meetings", icon: Video },
+      { label: "Software Center", path: "/software-center", icon: Package },
+    ],
+  },
+  {
+    title: "Administration",
+    items: [
+      { label: "Activity", path: "/admin/activity", icon: Activity },
+      { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+    ],
+  },
 ];
+
+const ADMIN_NAV_FLAT = ADMIN_NAV_SECTIONS.flatMap((s) => s.items);
 
 function isActivePath(pathname, path) {
   if (path === "/") return pathname === "/";
+  if (path === "/admin/employees") {
+    return (
+      pathname === "/admin/employees" ||
+      pathname === "/admin/users" ||
+      pathname.startsWith("/admin/employees/")
+    );
+  }
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
@@ -88,14 +134,29 @@ export default function Layout({ children }) {
     typeof window !== "undefined" ? window.innerWidth <= 960 : false
   );
   const [search, setSearch] = useState("");
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
 
   const isAdminAccount = canAccessAdmin();
   const showEmployeeNav = viewRole === "USER" || !isAdminAccount;
-  const navItems = showEmployeeNav ? EMPLOYEE_NAV : ADMIN_NAV;
+  const navItems = showEmployeeNav ? EMPLOYEE_NAV : ADMIN_NAV_FLAT;
   const email = getLoggedInEmail();
 
   useEffect(() => {
     setMobileOpen(false);
+    setNotifyOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    fetchLeaveNotifications()
+      .then((items) =>
+        setNotifications(
+          Array.isArray(items)
+            ? items.filter((n) => n.notifyId || n.title)
+            : []
+        )
+      )
+      .catch(() => setNotifications([]));
   }, [location.pathname]);
 
   useEffect(() => {
@@ -151,28 +212,55 @@ export default function Layout({ children }) {
         </div>
 
         <nav className="dgv-sidebar__nav">
-          <div className="dgv-sidebar__section">
-            {showEmployeeNav ? "Employee" : "Admin"}
-          </div>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = isActivePath(location.pathname, item.path);
-            return (
-              <button
-                key={item.path + item.label}
-                type="button"
-                className={`dgv-nav-item ${active ? "is-active" : ""}`}
-                onClick={() => go(item.path)}
-                aria-current={active ? "page" : undefined}
-                title={item.label}
-              >
-                <span className="dgv-nav-item__icon">
-                  <Icon size={18} strokeWidth={2} />
-                </span>
-                <span className="dgv-nav-item__label">{item.label}</span>
-              </button>
-            );
-          })}
+          {showEmployeeNav ? (
+            <>
+              <div className="dgv-sidebar__section">Employee</div>
+              {EMPLOYEE_NAV.map((item) => {
+                const Icon = item.icon;
+                const active = isActivePath(location.pathname, item.path);
+                return (
+                  <button
+                    key={item.path + item.label}
+                    type="button"
+                    className={`dgv-nav-item ${active ? "is-active" : ""}`}
+                    onClick={() => go(item.path)}
+                    aria-current={active ? "page" : undefined}
+                    title={item.label}
+                  >
+                    <span className="dgv-nav-item__icon">
+                      <Icon size={18} strokeWidth={2} />
+                    </span>
+                    <span className="dgv-nav-item__label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </>
+          ) : (
+            ADMIN_NAV_SECTIONS.map((section) => (
+              <div key={section.title}>
+                <div className="dgv-sidebar__section">{section.title}</div>
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = isActivePath(location.pathname, item.path);
+                  return (
+                    <button
+                      key={item.path + item.label}
+                      type="button"
+                      className={`dgv-nav-item ${active ? "is-active" : ""}`}
+                      onClick={() => go(item.path)}
+                      aria-current={active ? "page" : undefined}
+                      title={item.label}
+                    >
+                      <span className="dgv-nav-item__icon">
+                        <Icon size={18} strokeWidth={2} />
+                      </span>
+                      <span className="dgv-nav-item__label">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
         </nav>
 
         <div className="dgv-sidebar__footer">
@@ -262,14 +350,78 @@ export default function Layout({ children }) {
           </label>
 
           <div className="dgv-navbar__actions">
-            <button
-              type="button"
-              className="dgv-icon-btn"
-              aria-label="Notifications"
-              title="Notifications"
-            >
-              <Bell size={18} />
-            </button>
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                className="dgv-icon-btn"
+                aria-label="Notifications"
+                title="Notifications"
+                onClick={() => setNotifyOpen((v) => !v)}
+              >
+                <Bell size={18} />
+                {notifications.length > 0 ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: -2,
+                      right: -2,
+                      minWidth: 16,
+                      height: 16,
+                      borderRadius: 999,
+                      background: "var(--dgv-danger)",
+                      color: "#fff",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      display: "grid",
+                      placeItems: "center",
+                      padding: "0 4px",
+                    }}
+                  >
+                    {notifications.length > 9 ? "9+" : notifications.length}
+                  </span>
+                ) : null}
+              </button>
+              {notifyOpen ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 48,
+                    right: 0,
+                    width: 320,
+                    maxHeight: 360,
+                    overflowY: "auto",
+                    background: "var(--dgv-card)",
+                    border: "1px solid var(--dgv-border)",
+                    borderRadius: 12,
+                    boxShadow: "var(--dgv-shadow-lg)",
+                    zIndex: 50,
+                    padding: 8,
+                  }}
+                >
+                  {notifications.length === 0 ? (
+                    <p style={{ margin: 12, fontSize: 13, color: "var(--dgv-text-muted)" }}>
+                      No notifications.
+                    </p>
+                  ) : (
+                    notifications.map((n) => (
+                      <div
+                        key={n.notifyId || n.SK}
+                        style={{
+                          padding: "10px 12px",
+                          borderBottom: "1px solid var(--dgv-border)",
+                          fontSize: 13,
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{n.title || "Leave update"}</div>
+                        <div style={{ color: "var(--dgv-text-muted)", marginTop: 4 }}>
+                          {n.message}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
 
             <button
               type="button"
