@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import { fetchTasks, updateTask, logTimeEntry } from "../services/api";
+import { formatTaskDuration } from "../utils/taskStatus";
 import {
   colors,
   pageCard,
@@ -75,6 +76,9 @@ export default function Work() {
               <p style={{ color: colors.textMuted, fontSize: 14 }}>{task.description}</p>
               <div style={{ fontSize: 13, marginBottom: 8 }}>
                 Priority: {task.priority} | Due: {task.dueDate || "—"}
+                {formatTaskDuration(task)
+                  ? ` | Duration: ${formatTaskDuration(task)}`
+                  : ""}
               </div>
               <select
                 value={task.status || "TODO"}

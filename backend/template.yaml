@@ -6,6 +6,10 @@ Parameters:
   FrontendDomainName:
     Type: String
     Default: login.mydgv.com
+  NotificationFromEmail:
+    Type: String
+    Default: noreply@mydgv.com
+    Description: SES-verified sender address for portal notification emails
 
 Globals:
   Function:
@@ -156,6 +160,26 @@ Resources:
         AllowHeaders: "'Authorization,Content-Type'"
         AllowOrigin: "'*'"
 
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        UNAUTHORIZED:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+
       Auth:
         DefaultAuthorizer: CognitoAuthorizer
         AddDefaultAuthorizerToCorsPreflight: false
@@ -200,11 +224,24 @@ Resources:
           AttributeType: S
         - AttributeName: SK
           AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
       KeySchema:
         - AttributeName: PK
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DateIndex
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   WorkTasksTable:
     Type: AWS::DynamoDB::Table
@@ -388,10 +425,19 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-AttendanceFunction"
       Handler: lambda/attendance/handler.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          ATTENDANCE_TABLE: !Ref AttendanceTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref AttendanceTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref WorkTasksTable
       Events:
         AttendancePostApi:
           Type: Api
@@ -403,6 +449,12 @@ Resources:
           Type: Api
           Properties:
             Path: /attendance
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminAttendanceActivityApi:
+          Type: Api
+          Properties:
+            Path: /admin/attendance-activity
             Method: GET
             RestApiId: !Ref ApiGateway
 
@@ -451,10 +503,19 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-PerformanceFunction"
       Handler: lambda/performance/handler.handler
+      Environment:
+        Variables:
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref PerformanceTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TrainingProgressTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
       Events:
         PerformanceApi:
           Type: Api
@@ -482,6 +543,9 @@ Resources:
             - Effect: Allow
               Action:
                 - cognito-idp:AdminDeleteUser
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+                - cognito-idp:AdminSetUserPassword
               Resource: !GetAtt CognitoUserPool.Arn
       Environment:
         Variables:
@@ -563,6 +627,26 @@ Resources:
             AllowedMethods: [PUT, GET, POST]
             AllowedHeaders: ["*"]
             MaxAge: 3000
+
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-employee-documents-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [PUT, GET, HEAD]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
   ImageUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -571,6 +655,8 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - S3WritePolicy:
+            BucketName: !Ref ProfileImagesBucket
+        - S3ReadPolicy:
             BucketName: !Ref ProfileImagesBucket
       Environment:
         Variables:
@@ -588,6 +674,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-UserProfileFunction"
       Handler: lambda/UserProfileFunction/app.handler
+      Timeout: 30
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -625,11 +712,14 @@ Resources:
             TableName: !Ref UserProfileTable
         - DynamoDBReadPolicy:
             TableName: !Ref UserAccessTable
+        - S3ReadPolicy:
+            BucketName: !Ref ProfileImagesBucket
       Environment:
         Variables:
           ACCESS_TABLE: !Ref UserAccessTable
           USER_POOL_ID: !Ref CognitoUserPool
           USER_PROFILE_TABLE: !Ref UserProfileTable
+          PROFILE_IMAGE_BUCKET: !Ref ProfileImagesBucket
       Events:
         UserProfileApi:
           Type: Api
@@ -736,15 +826,30 @@ Resources:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref ResignationsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
       Environment:
         Variables:
           RESIGNATIONS_TABLE: !Ref ResignationsTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Events:
-        ResignationApi:
+        ResignationPostApi:
           Type: Api
           Properties:
             Path: /resignation
             Method: POST
+            RestApiId: !Ref ApiGateway
+        ResignationGetApi:
+          Type: Api
+          Properties:
+            Path: /resignation
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ResignationPutApi:
+          Type: Api
+          Properties:
+            Path: /resignation
+            Method: PUT
             RestApiId: !Ref ApiGateway
 
   addTraining:
@@ -816,10 +921,20 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-ProjectsFunction"
       Handler: lambda/projects/handler.handler
+      Timeout: 30
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WorkTasksTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - S3CrudPolicy:
+            BucketName: !Ref ProfileImagesBucket
+      Environment:
+        Variables:
+          WORK_TABLE: !Ref WorkTasksTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+          TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
       Events:
         ProjectsGetApi:
           Type: Api
@@ -851,6 +966,60 @@ Resources:
             Path: /tasks
             Method: PUT
             RestApiId: !Ref ApiGateway
+        TasksDeleteApi:
+          Type: Api
+          Properties:
+            Path: /tasks
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        TaskByIdGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskCommentsGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskCommentsPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskActivityGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/activity
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskAttachmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/attachments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskAttachmentsPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/attachments
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskAttachmentUploadApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/attachment-upload-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskAttachmentDownloadApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/attachment-download-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
         TimeEntriesGetApi:
           Type: Api
           Properties:
@@ -869,10 +1038,22 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-LeaveFunction"
       Handler: lambda/leave/handler.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          COMPANY_TIMEZONE: Asia/Kolkata
+          LEAVE_APPROVAL_HOURS: "5"
+          LEAVE_APPROVER_EMAILS: priya@mydgv.com,sachin@mydgv.com
+          MEETING_JOIN_LEAD_MINUTES: "10"
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WorkTasksTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AttendanceTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
       Events:
         LeaveGetApi:
           Type: Api
@@ -891,6 +1072,137 @@ Resources:
           Properties:
             Path: /leave
             Method: PUT
+            RestApiId: !Ref ApiGateway
+        LeaveAutoApproveSchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-leave-auto-approve"
+            Description: Auto-approve pending leave after the 5-hour window
+            Enabled: true
+            Schedule: rate(5 minutes)
+            Input: '{"autoApprove":true,"source":"leave-auto-approve"}'
+
+  NotificationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-NotificationsFunction"
+      Handler: lambda/notifications/handler.handler
+      Timeout: 120
+      Environment:
+        Variables:
+          COMPANY_TIMEZONE: Asia/Kolkata
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+          TRAINING_TABLE: !Ref TrainingMaterialsTable
+          NOTIFICATION_FROM_EMAIL: !Ref NotificationFromEmail
+          NOTIFICATION_FROM_NAME: DGV Portal
+          PORTAL_URL: !Sub "https://${FrontendDomainName}"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref AttendanceTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref TrainingMaterialsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref TrainingProgressTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Events:
+        DailyNotificationSchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-daily-notifications"
+            Description: Attendance, document, and training email notifications (09:00 IST)
+            Enabled: true
+            Schedule: cron(30 3 * * ? *)
+            Input: '{"notifications":true,"source":"notifications"}'
+
+  DocumentsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-DocumentsFunction"
+      Handler: lambda/documents/handler.handler
+      Timeout: 20
+      Environment:
+        Variables:
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          DOCUMENT_MAX_BYTES: "10485760"
+          DOCUMENT_URL_TTL_SECONDS: "300"
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+          NOTIFICATION_FROM_EMAIL: !Ref NotificationFromEmail
+          NOTIFICATION_FROM_NAME: DGV Portal
+          PORTAL_URL: !Sub "https://${FrontendDomainName}"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Events:
+        DocumentsGetApi:
+          Type: Api
+          Properties:
+            Path: /documents
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsPostApi:
+          Type: Api
+          Properties:
+            Path: /documents
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPutApi:
+          Type: Api
+          Properties:
+            Path: /documents
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        DocumentsUploadUrlApi:
+          Type: Api
+          Properties:
+            Path: /documents/upload-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsViewUrlApi:
+          Type: Api
+          Properties:
+            Path: /documents/view-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsTypesGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/types
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsTypesPutApi:
+          Type: Api
+          Properties:
+            Path: /documents/types
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        AdminDocumentsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/documents
+            Method: GET
             RestApiId: !Ref ApiGateway
 
   AnnouncementsFunction:
@@ -921,6 +1233,78 @@ Resources:
             Path: /admin/announcements
             Method: DELETE
             RestApiId: !Ref ApiGateway
+
+  MeetingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-MeetingsFunction"
+      Handler: lambda/meetings/handler.handler
+      Timeout: 20
+      Environment:
+        Variables:
+          MEETING_JOIN_LEAD_MINUTES: "10"
+          COMPANY_TIMEZONE: "Asia/Kolkata"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+      Events:
+        MeetingsGetApi:
+          Type: Api
+          Properties:
+            Path: /meetings
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        MeetingGetByIdApi:
+          Type: Api
+          Properties:
+            Path: /meetings/{meetingId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        MeetingJoinApi:
+          Type: Api
+          Properties:
+            Path: /meetings/{meetingId}/join
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminMeetingsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/meetings
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminMeetingGetByIdApi:
+          Type: Api
+          Properties:
+            Path: /admin/meetings/{meetingId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminMeetingsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/meetings
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminMeetingsPutApi:
+          Type: Api
+          Properties:
+            Path: /admin/meetings
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        AdminMeetingCancelApi:
+          Type: Api
+          Properties:
+            Path: /admin/meetings/{meetingId}/cancel
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        MeetingReminderSchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-meeting-reminders"
+            Description: Send meeting reminders 24h / 30m / 10m before start
+            Enabled: true
+            Schedule: rate(5 minutes)
+            Input: '{"reminders":true,"source":"meeting-reminders"}'
 
   ConsentFunction:
     Type: AWS::Serverless::Function

@@ -11,6 +11,8 @@ const apiUrl =
 
 export const PORTAL_INTENT_KEY = "portalIntent";
 export const ACTUAL_ROLE_KEY = "actualRole";
+/** Granular role: SUPER_ADMIN | ADMIN | MANAGER | EMPLOYEE */
+export const PORTAL_ROLE_KEY = "portalRole";
 
 function parseEmailFromToken(token) {
   try {
@@ -28,6 +30,14 @@ export function getLoggedInEmail() {
 }
 
 export function canAccessAdmin() {
+  const portalRole = localStorage.getItem(PORTAL_ROLE_KEY);
+  if (
+    portalRole === "SUPER_ADMIN" ||
+    portalRole === "ADMIN" ||
+    portalRole === "MANAGER"
+  ) {
+    return true;
+  }
   return localStorage.getItem(ACTUAL_ROLE_KEY) === "ADMIN";
 }
 
@@ -68,6 +78,7 @@ export function applyAccessRedirect(data) {
 
   if (data.access === "ADMIN") {
     localStorage.setItem(ACTUAL_ROLE_KEY, "ADMIN");
+    if (data.role) localStorage.setItem(PORTAL_ROLE_KEY, data.role);
 
     if (intent === "admin") {
       localStorage.setItem("role", "ADMIN");
@@ -84,6 +95,7 @@ export function applyAccessRedirect(data) {
 
   if (data.access === "USER") {
     localStorage.setItem(ACTUAL_ROLE_KEY, "USER");
+    localStorage.setItem(PORTAL_ROLE_KEY, data.role || "EMPLOYEE");
 
     if (intent === "admin") {
       window.location.replace("/login?adminDenied=1");

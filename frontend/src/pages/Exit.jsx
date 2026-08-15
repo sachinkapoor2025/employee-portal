@@ -1,10 +1,68 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
+import {
+  pageCard,
+  pageTitle,
+  formLabel,
+  formInput,
+  buttonPrimary,
+  colors,
+} from "../theme";
+import { fetchMyResignations, submitResignation as submitResignationApi } from "../services/api";
+
+function formatDate(value) {
+  if (!value) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const d = new Date(`${value}T12:00:00`);
+    if (!Number.isFinite(d.getTime())) return value;
+    return d.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  }
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return String(value);
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function statusClass(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "APPROVED") return "dgv-badge dgv-badge--success";
+  if (s === "REJECTED") return "dgv-badge dgv-badge--danger";
+  return "dgv-badge dgv-badge--info";
+}
 
 export default function Exit() {
   const [reason, setReason] = useState("");
   const [lastWorkingDay, setLastWorkingDay] = useState("");
   const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const rows = await fetchMyResignations();
+      setHistory(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      console.warn("Failed to load resignation history:", err);
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
 
   const submitResignation = async () => {
     if (!reason || !lastWorkingDay) {
@@ -13,27 +71,14 @@ export default function Exit() {
     }
 
     setLoading(true);
-    const token = localStorage.getItem("token");
-
     try {
-      const res = await fetch(`${process.env.REACT_APP_API_URL}/resignation`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ reason, lastWorkingDay }),
-      });
-
-      if (res.ok) {
-        alert("Resignation submitted successfully");
-        setReason("");
-        setLastWorkingDay("");
-      } else {
-        alert("Failed to submit resignation");
-      }
+      await submitResignationApi({ reason, lastWorkingDay });
+      alert("Resignation submitted successfully");
+      setReason("");
+      setLastWorkingDay("");
+      await loadHistory();
     } catch (err) {
-      alert("Something went wrong");
+      alert(err.message || "Failed to submit resignation");
     }
 
     setLoading(false);
@@ -41,47 +86,88 @@ export default function Exit() {
 
   return (
     <Layout>
-      <div
-        style={{
-          background: "rgba(255,255,255,0.95)",
-          padding: 24,
-          borderRadius: 12,
-          maxWidth: 600,
-        }}
-      >
-        <h2>Exit Organization</h2>
+      <div style={{ ...pageCard, maxWidth: 600 }}>
+        <h2 style={pageTitle}>Exit Organization</h2>
 
-        <label>Last Working Day</label>
+        <label style={formLabel}>Last Working Day</label>
         <input
           type="date"
           value={lastWorkingDay}
           onChange={(e) => setLastWorkingDay(e.target.value)}
-          style={{ width: "100%", padding: 8, marginBottom: 12 }}
+          style={formInput}
         />
 
-        <label>Resignation Reason</label>
+        <label style={formLabel}>Resignation Reason</label>
         <textarea
           rows={5}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          style={{ width: "100%", padding: 8 }}
+          style={{ ...formInput, resize: "vertical", minHeight: 120 }}
         />
 
         <button
           onClick={submitResignation}
           disabled={loading}
           style={{
-            marginTop: 16,
-            padding: "10px 20px",
-            background: "#d32f2f",
-            color: "#fff",
-            border: "none",
-            borderRadius: 6,
-            cursor: "pointer",
+            ...buttonPrimary,
+            background: "var(--dgv-danger)",
+            marginTop: 8,
           }}
         >
           {loading ? "Submitting..." : "Submit Resignation"}
         </button>
+        <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 12 }}>
+          Submitting a resignation notifies HR / admin for review.
+        </p>
+
+        <h3 style={{ ...pageTitle, fontSize: 18, marginTop: 28 }}>
+          Resignation history
+        </h3>
+        {historyLoading ? (
+          <p style={{ color: colors.textMuted }}>Loading resignation history…</p>
+        ) : history.length === 0 ? (
+          <p style={{ color: colors.textMuted }}>
+            No resignation has been submitted yet.
+          </p>
+        ) : (
+          <div className="dgv-table-wrap">
+            <table className="dgv-table">
+              <thead>
+                <tr>
+                  <th>Submitted</th>
+                  <th>Last Working Day</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((row) => (
+                  <tr key={row.resignationId || row.createdAt}>
+                    <td>{formatDate(row.createdAt)}</td>
+                    <td>{formatDate(row.lastWorkingDay)}</td>
+                    <td>{row.reason || "—"}</td>
+                    <td>
+                      <span className={statusClass(row.status)}>
+                        {row.status || "SUBMITTED"}
+                      </span>
+                      {row.reviewedAt ? (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: colors.textMuted,
+                            marginTop: 4,
+                          }}
+                        >
+                          Reviewed {formatDate(row.reviewedAt)}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </Layout>
   );

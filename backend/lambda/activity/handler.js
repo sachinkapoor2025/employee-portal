@@ -153,7 +153,50 @@ exports.handler = async (event) => {
     if (path.endsWith("/admin/activity") && event.httpMethod === "GET") {
       if (!user.isAdmin) return json(403, { error: "Admin required" });
 
-      const date = event.queryStringParameters?.date || todayKey();
+      const qs = event.queryStringParameters || {};
+      const filterEmail = String(qs.email || "").trim().toLowerCase();
+      const date = qs.date || todayKey();
+
+      if (filterEmail) {
+        const prefix = qs.date ? `EVENT#${qs.date}` : "EVENT#";
+        const eventsRes = await ddb.send(
+          new QueryCommand({
+            TableName: process.env.ACTIVITY_TABLE,
+            KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+            ExpressionAttributeValues: {
+              ":pk": `USER#${filterEmail}`,
+              ":prefix": prefix,
+            },
+            ScanIndexForward: false,
+            Limit: 100,
+          })
+        );
+        const events = eventsRes.Items || [];
+        const summary = await ddb.send(
+          new GetCommand({
+            TableName: process.env.ACTIVITY_TABLE,
+            Key: {
+              PK: `SUMMARY#${filterEmail}`,
+              SK: `DAY#${date}`,
+            },
+          })
+        );
+        const ipCache = {};
+        const detailed = [];
+        for (const ev of events) {
+          detailed.push({
+            ...ev,
+            location: await locationFromEvent(ev, ipCache),
+          });
+        }
+        return json(200, {
+          date,
+          email: filterEmail,
+          name: await fetchProfileName(filterEmail),
+          summary: summary.Item || { totalMinutes: 0, eventCount: 0 },
+          events: detailed,
+        });
+      }
 
       const dayEvents = await ddb.send(
         new QueryCommand({
@@ -244,7 +287,9 @@ exports.handler = async (event) => {
       const openTasks = (tasks.Items || []).filter(
         (t) => t.status !== "DONE" && t.status !== "Done"
       );
-      const pendingLeave = (leaves.Items || []).filter((l) => l.status === "PENDING");
+      const pendingLeave = (leaves.Items || []).filter(
+        (l) => l.status === "PENDING" || l.status === "PENDING_APPROVAL"
+      );
 
       const ipCache = {};
       const recentActivity = await Promise.all(

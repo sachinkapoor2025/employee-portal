@@ -1,21 +1,174 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  LayoutDashboard,
+  CalendarCheck,
+  GraduationCap,
+  ListTodo,
+  CalendarDays,
+  Package,
+  User,
+  TrendingUp,
+  Wallet,
+  LogOut,
+  DoorOpen,
+  Users,
+  Activity,
+  ClipboardList,
+  Megaphone,
+  FileWarning,
+  Menu,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Search,
+  Bell,
+  Sun,
+  Moon,
+  ChevronRight,
+  FileText,
+  Video,
+} from "lucide-react";
 import {
   logout,
   canAccessAdmin,
   switchPortalView,
   getViewRole,
+  getLoggedInEmail,
 } from "../services/auth";
-import { colors, navButton } from "../theme";
+import { fetchLeaveNotifications } from "../services/api";
+import { useTheme } from "../theme/ThemeProvider";
+import AmbientBackground from "./AmbientBackground";
 import Footer from "./Footer";
+
+const EMPLOYEE_NAV = [
+  { label: "Dashboard", path: "/", icon: LayoutDashboard },
+  { label: "Attendance", path: "/attendance", icon: CalendarCheck },
+  { label: "Training", path: "/training", icon: GraduationCap },
+  { label: "My Tasks", path: "/work", icon: ListTodo },
+  { label: "Leave", path: "/leave", icon: CalendarDays },
+  { label: "Software Center", path: "/software-center", icon: Package },
+  { label: "Profile", path: "/profile", icon: User },
+  { label: "Documents", path: "/documents", icon: FileText },
+  { label: "Meetings", path: "/meetings", icon: Video },
+  { label: "Performance", path: "/performance", icon: TrendingUp },
+  { label: "Payroll", path: "/payroll", icon: Wallet },
+  { label: "Exit", path: "/exit", icon: DoorOpen },
+];
+
+/** Grouped Admin IA — existing features wired; new modules use coming-soon routes */
+const ADMIN_NAV_SECTIONS = [
+  {
+    title: "Overview",
+    items: [
+      { label: "Dashboard", path: "/admin/dashboard", icon: LayoutDashboard },
+    ],
+  },
+  {
+    title: "People",
+    items: [{ label: "Employees", path: "/admin/employees", icon: Users }],
+  },
+  {
+    title: "Work Management",
+    items: [
+      { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
+      {
+        label: "Attendance",
+        path: "/admin/attendance-activity",
+        icon: ClipboardList,
+      },
+      { label: "Leave", path: "/admin/leave", icon: CalendarDays },
+    ],
+  },
+  {
+    title: "Company",
+    items: [
+      { label: "Documents", path: "/admin/documents", icon: FileText },
+      { label: "Announcements", path: "/admin/announcements", icon: Megaphone },
+      { label: "Training", path: "/admin/add-training", icon: GraduationCap },
+      { label: "Meetings", path: "/admin/meetings", icon: Video },
+      { label: "Software Center", path: "/software-center", icon: Package },
+    ],
+  },
+  {
+    title: "Administration",
+    items: [
+      { label: "Activity", path: "/admin/activity", icon: Activity },
+      { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+    ],
+  },
+];
+
+const ADMIN_NAV_FLAT = ADMIN_NAV_SECTIONS.flatMap((s) => s.items);
+
+function isActivePath(pathname, path) {
+  if (path === "/") return pathname === "/";
+  if (path === "/admin/employees") {
+    return (
+      pathname === "/admin/employees" ||
+      pathname === "/admin/users" ||
+      pathname.startsWith("/admin/employees/")
+    );
+  }
+  return pathname === path || pathname.startsWith(`${path}/`);
+}
+
+function initialsFromEmail(email) {
+  if (!email) return "DG";
+  const local = email.split("@")[0] || "DG";
+  const parts = local.split(/[._-]/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+  }
+  return local.slice(0, 2).toUpperCase();
+}
 
 export default function Layout({ children }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { theme, toggleTheme } = useTheme();
   const [viewRole, setViewRole] = useState(getViewRole());
-  const isAdminAccount = canAccessAdmin();
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= 960 : false
+  );
+  const [search, setSearch] = useState("");
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
 
-  const activeBtn = { ...navButton, opacity: 1 };
-  const inactiveBtn = { ...navButton, opacity: 0.55 };
+  const isAdminAccount = canAccessAdmin();
+  const showEmployeeNav = viewRole === "USER" || !isAdminAccount;
+  const navItems = showEmployeeNav ? EMPLOYEE_NAV : ADMIN_NAV_FLAT;
+  const email = getLoggedInEmail();
+
+  useEffect(() => {
+    setMobileOpen(false);
+    setNotifyOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    fetchLeaveNotifications()
+      .then((items) =>
+        setNotifications(
+          Array.isArray(items)
+            ? items.filter((n) => n.notifyId || n.title)
+            : []
+        )
+      )
+      .catch(() => setNotifications([]));
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const onResize = () => {
+      const mobile = window.innerWidth <= 960;
+      setIsMobile(mobile);
+      if (!mobile) setMobileOpen(false);
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const handleSwitch = (view) => {
     if (!switchPortalView(view)) return;
@@ -24,99 +177,296 @@ export default function Layout({ children }) {
     navigate(nextRole === "ADMIN" ? "/admin/dashboard" : "/");
   };
 
+  const go = (path) => {
+    navigate(path);
+    setMobileOpen(false);
+  };
+
+  const shellClass = [
+    "dgv-shell",
+    collapsed ? "sidebar-collapsed" : "",
+    mobileOpen ? "sidebar-mobile-open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        padding: "20px 20px 0",
-        fontFamily: "Arial, sans-serif",
-        backgroundImage: "url('/images/dgv_bg.png')",
-        backgroundSize: "cover",
-        backgroundPosition: "center top",
-        backgroundRepeat: "no-repeat",
-        backgroundAttachment: "fixed",
-      }}
-    >
-      <nav
-        style={{
-          backgroundColor: "rgba(255,255,255,0.9)",
-          padding: "10px",
-          borderRadius: "8px",
-          marginBottom: "20px",
-          textAlign: "center",
-          flexShrink: 0,
-        }}
-      >
-        {isAdminAccount && (
-          <div
-            style={{
-              marginBottom: 8,
-              padding: "8px 12px",
-              background: colors.primaryLight,
-              borderRadius: 8,
-              display: "inline-block",
+    <div className={shellClass}>
+      <AmbientBackground />
+
+      <div
+        className="dgv-sidebar-backdrop"
+        onClick={() => setMobileOpen(false)}
+        aria-hidden={!mobileOpen}
+      />
+
+      <aside className="dgv-sidebar" aria-label="Main navigation">
+        <div className="dgv-sidebar__brand">
+          <div className="dgv-sidebar__logo" aria-hidden="true">
+            DGV
+          </div>
+          <div>
+            <div className="dgv-sidebar__title">DGV Portal</div>
+            <div className="dgv-sidebar__subtitle">Employee workspace</div>
+          </div>
+        </div>
+
+        <nav className="dgv-sidebar__nav">
+          {showEmployeeNav ? (
+            <>
+              <div className="dgv-sidebar__section">Employee</div>
+              {EMPLOYEE_NAV.map((item) => {
+                const Icon = item.icon;
+                const active = isActivePath(location.pathname, item.path);
+                return (
+                  <button
+                    key={item.path + item.label}
+                    type="button"
+                    className={`dgv-nav-item ${active ? "is-active" : ""}`}
+                    onClick={() => go(item.path)}
+                    aria-current={active ? "page" : undefined}
+                    title={item.label}
+                  >
+                    <span className="dgv-nav-item__icon">
+                      <Icon size={18} strokeWidth={2} />
+                    </span>
+                    <span className="dgv-nav-item__label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </>
+          ) : (
+            ADMIN_NAV_SECTIONS.map((section) => (
+              <div key={section.title}>
+                <div className="dgv-sidebar__section">{section.title}</div>
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = isActivePath(location.pathname, item.path);
+                  return (
+                    <button
+                      key={item.path + item.label}
+                      type="button"
+                      className={`dgv-nav-item ${active ? "is-active" : ""}`}
+                      onClick={() => go(item.path)}
+                      aria-current={active ? "page" : undefined}
+                      title={item.label}
+                    >
+                      <span className="dgv-nav-item__icon">
+                        <Icon size={18} strokeWidth={2} />
+                      </span>
+                      <span className="dgv-nav-item__label">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </nav>
+
+        <div className="dgv-sidebar__footer">
+          <button
+            type="button"
+            className="dgv-nav-item"
+            onClick={logout}
+            title="Logout"
+          >
+            <span className="dgv-nav-item__icon">
+              <LogOut size={18} strokeWidth={2} />
+            </span>
+            <span className="dgv-nav-item__label">Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      <div className="dgv-main-wrap">
+        <header className="dgv-navbar">
+          <button
+            type="button"
+            className="dgv-icon-btn"
+            aria-label={
+              isMobile
+                ? mobileOpen
+                  ? "Close menu"
+                  : "Open menu"
+                : collapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+            }
+            onClick={() => {
+              if (isMobile) setMobileOpen((v) => !v);
+              else setCollapsed((v) => !v);
             }}
           >
-            <span style={{ marginRight: 10, fontWeight: 600, color: colors.text }}>
-              Portal view:
-            </span>
+            {isMobile ? (
+              mobileOpen ? <X size={18} /> : <Menu size={18} />
+            ) : collapsed ? (
+              <PanelLeftOpen size={18} />
+            ) : (
+              <PanelLeftClose size={18} />
+            )}
+          </button>
+
+          {isAdminAccount && (
+            <div className="dgv-portal-toggle" role="group" aria-label="Portal view">
+              <button
+                type="button"
+                className={viewRole === "USER" ? "is-active" : ""}
+                onClick={() => handleSwitch("employee")}
+              >
+                Employee
+              </button>
+              <button
+                type="button"
+                className={viewRole === "ADMIN" ? "is-active" : ""}
+                onClick={() => handleSwitch("admin")}
+              >
+                Admin
+              </button>
+            </div>
+          )}
+
+          <label className="dgv-navbar__search">
+            <Search size={16} aria-hidden="true" />
+            <input
+              type="search"
+              placeholder="Search pages..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || !search.trim()) return;
+                const q = search.trim().toLowerCase();
+                const match = navItems.find(
+                  (n) =>
+                    n.label.toLowerCase().includes(q) ||
+                    n.path.toLowerCase().includes(q)
+                );
+                if (match) {
+                  go(match.path);
+                  setSearch("");
+                }
+              }}
+              aria-label="Search pages"
+            />
+          </label>
+
+          <div className="dgv-navbar__actions">
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                className="dgv-icon-btn"
+                aria-label="Notifications"
+                title="Notifications"
+                onClick={() => setNotifyOpen((v) => !v)}
+              >
+                <Bell size={18} />
+                {notifications.length > 0 ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: -2,
+                      right: -2,
+                      minWidth: 16,
+                      height: 16,
+                      borderRadius: 999,
+                      background: "var(--dgv-danger)",
+                      color: "#fff",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      display: "grid",
+                      placeItems: "center",
+                      padding: "0 4px",
+                    }}
+                  >
+                    {notifications.length > 9 ? "9+" : notifications.length}
+                  </span>
+                ) : null}
+              </button>
+              {notifyOpen ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 48,
+                    right: 0,
+                    width: 320,
+                    maxHeight: 360,
+                    overflowY: "auto",
+                    background: "var(--dgv-card)",
+                    border: "1px solid var(--dgv-border)",
+                    borderRadius: 12,
+                    boxShadow: "var(--dgv-shadow-lg)",
+                    zIndex: 50,
+                    padding: 8,
+                  }}
+                >
+                  {notifications.length === 0 ? (
+                    <p style={{ margin: 12, fontSize: 13, color: "var(--dgv-text-muted)" }}>
+                      No notifications.
+                    </p>
+                  ) : (
+                    notifications.map((n) => (
+                      <div
+                        key={n.notifyId || n.SK}
+                        style={{
+                          padding: "10px 12px",
+                          borderBottom: "1px solid var(--dgv-border)",
+                          fontSize: 13,
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{n.title || "Leave update"}</div>
+                        <div style={{ color: "var(--dgv-text-muted)", marginTop: 4 }}>
+                          {n.message}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
+
             <button
-              style={viewRole === "USER" ? activeBtn : inactiveBtn}
-              onClick={() => handleSwitch("employee")}
+              type="button"
+              className="dgv-icon-btn"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title="Toggle theme"
             >
-              Employee
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
+
             <button
-              style={viewRole === "ADMIN" ? activeBtn : inactiveBtn}
-              onClick={() => handleSwitch("admin")}
+              type="button"
+              className="dgv-avatar"
+              title={email || "Profile"}
+              aria-label="Open profile"
+              onClick={() => go("/profile")}
             >
-              Admin
+              {initialsFromEmail(email)}
             </button>
           </div>
-        )}
+        </header>
 
-        {(viewRole === "USER" || !isAdminAccount) && (
-          <>
-            <button style={navButton} onClick={() => navigate("/")}>Dashboard</button>
-            <button style={navButton} onClick={() => navigate("/attendance")}>Attendance</button>
-            <button style={navButton} onClick={() => navigate("/training")}>Training</button>
-            <button style={navButton} onClick={() => navigate("/work")}>My Tasks</button>
-            <button style={navButton} onClick={() => navigate("/leave")}>Leave</button>
-            <button style={navButton} onClick={() => navigate("/software-center")}>Software Center</button>
-            <button style={navButton} onClick={() => navigate("/profile")}>Profile</button>
-            <button style={navButton} onClick={() => navigate("/performance")}>Performance</button>
-            <button style={navButton} onClick={() => navigate("/payroll")}>Payroll</button>
-            <button style={navButton} onClick={() => navigate("/exit")}>Exit</button>
-          </>
-        )}
+        <main className="dgv-content">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 14,
+              fontSize: 12,
+              color: "var(--dgv-text-muted)",
+              fontWeight: 500,
+            }}
+          >
+            <span>Portal</span>
+            <ChevronRight size={12} />
+            <span style={{ color: "var(--dgv-text-secondary)" }}>
+              {navItems.find((n) => isActivePath(location.pathname, n.path))?.label ||
+                "Workspace"}
+            </span>
+          </div>
+          {children}
+        </main>
 
-        {viewRole === "ADMIN" && isAdminAccount && (
-          <>
-            <button style={navButton} onClick={() => navigate("/admin/dashboard")}>Dashboard</button>
-            <button style={navButton} onClick={() => navigate("/admin/users")}>Users</button>
-            <button style={navButton} onClick={() => navigate("/admin/tasks")}>Tasks</button>
-            <button style={navButton} onClick={() => navigate("/admin/activity")}>Activity</button>
-            <button style={navButton} onClick={() => navigate("/admin/leave")}>Leave</button>
-            <button style={navButton} onClick={() => navigate("/admin/announcements")}>Announce</button>
-            <button style={navButton} onClick={() => navigate("/admin/add-training")}>Training</button>
-            <button style={navButton} onClick={() => navigate("/software-center")}>Software Center</button>
-            <button style={navButton} onClick={() => navigate("/admin/resignations")}>Resignations</button>
-          </>
-        )}
-
-        <button style={navButton} onClick={logout}>Logout</button>
-      </nav>
-
-      <main style={{ flex: "1 0 auto", width: "100%", maxWidth: 1200, margin: "0 auto" }}>
-        {children}
-      </main>
-
-      {/* Spacer clears background tagline ("Your gateway to company resources") */}
-      <div style={{ flex: "1 1 180px", minHeight: 120, maxHeight: 280 }} aria-hidden="true" />
-
-      <div style={{ flexShrink: 0, width: "100%", marginTop: "auto" }}>
         <Footer />
       </div>
     </div>

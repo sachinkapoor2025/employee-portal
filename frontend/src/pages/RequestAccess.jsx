@@ -6,6 +6,8 @@ import {
   applyAccessRedirect,
   getLoggedInEmail,
 } from "../services/auth";
+import AmbientBackground from "../components/AmbientBackground";
+import Button from "../components/ui/Button";
 
 export default function RequestAccess() {
   const [params] = useSearchParams();
@@ -55,43 +57,61 @@ export default function RequestAccess() {
 
   if (loading && !msg) {
     return (
-      <div style={{ textAlign: "center", marginTop: 80 }}>
-        <h2>Checking access...</h2>
+      <div className="dgv-auth-shell">
+        <AmbientBackground />
+        <div className="dgv-auth-card">
+          <h2 className="dgv-page-title" style={{ fontSize: 22 }}>
+            Checking access...
+          </h2>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ textAlign: "center", marginTop: 80, padding: 24 }}>
-      <h2>Request Portal Access</h2>
+    <div className="dgv-auth-shell">
+      <AmbientBackground />
+      <div className="dgv-auth-card">
+        <h2 className="dgv-page-title" style={{ fontSize: 22 }}>
+          Request Portal Access
+        </h2>
 
-      {email && (
-        <p style={{ color: "#555" }}>
-          Signed in as <strong>{email}</strong>
-        </p>
-      )}
-
-      {status === "pending" ? (
-        <>
-          <p>Your request is under review. An admin will approve your access.</p>
-          <p style={{ color: "#666", fontSize: 14 }}>
-            Once approved, log out and sign in again to enter the portal.
+        {email && (
+          <p className="dgv-page-subtitle">
+            Signed in as <strong>{email}</strong>
           </p>
-        </>
-      ) : (
-        <>
-          <p>You do not have portal access yet.</p>
-          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            Click below to submit an access request. No email entry needed — we use
-            your company login email automatically.
-          </p>
-          <button onClick={handleRequest} disabled={loading}>
-            {loading ? "Submitting..." : "Request Access"}
-          </button>
-        </>
-      )}
+        )}
 
-      {msg && <p style={{ marginTop: 16, color: "#1976d2" }}>{msg}</p>}
+        {status === "pending" ? (
+          <>
+            <p style={{ color: "var(--dgv-text-secondary)" }}>
+              Your request is under review. An admin will approve your access.
+            </p>
+            <p style={{ color: "var(--dgv-text-muted)", fontSize: 14 }}>
+              Once approved, log out and sign in again to enter the portal.
+            </p>
+          </>
+        ) : (
+          <>
+            <p style={{ color: "var(--dgv-text-secondary)" }}>
+              You do not have portal access yet.
+            </p>
+            <p style={{ color: "var(--dgv-text-muted)", fontSize: 14, marginBottom: 16 }}>
+              Click below to submit an access request. No email entry needed — we use
+              your company login email automatically.
+            </p>
+            <Button onClick={handleRequest} disabled={loading} loading={loading} style={{ width: "100%" }}>
+              Request Access
+            </Button>
+          </>
+        )}
+
+        {msg && (
+          <div className="dgv-alert dgv-alert--info" style={{ marginTop: 16 }}>
+            {msg}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
