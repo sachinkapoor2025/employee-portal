@@ -36,6 +36,7 @@ import AttendanceActivity from "./pages/Admin/AttendanceActivity";
 import EmployeeTracking from "./pages/Admin/EmployeeTracking";
 import EmployeeTrackingHub from "./pages/Admin/EmployeeTrackingHub";
 import ComingSoon from "./pages/Admin/ComingSoon";
+import AdminSettings from "./pages/Admin/AdminSettings";
 import Leave from "./pages/Leave";
 import SoftwareCenter from "./pages/SoftwareCenter";
 import ConsentGate from "./components/ConsentGate";
@@ -124,6 +125,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Work />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/work/:taskId"
+          element={
+            <RequireAuth>
+              <TaskDetails />
             </RequireAuth>
           }
         />
@@ -319,7 +328,7 @@ export default function App() {
           path="/admin/settings"
           element={
             <RequireAuth adminOnly>
-              <ComingSoon title="Settings" phase="Phase 5" />
+              <AdminSettings />
             </RequireAuth>
           }
         />

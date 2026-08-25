@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -28,6 +28,7 @@ import {
   ChevronRight,
   FileText,
   Video,
+  Settings,
 } from "lucide-react";
 import {
   logout,
@@ -36,7 +37,14 @@ import {
   getViewRole,
   getLoggedInEmail,
 } from "../services/auth";
-import { fetchLeaveNotifications } from "../services/api";
+import { fetchLeaveNotifications, markNotificationRead } from "../services/api";
+import {
+  isZoneNotification,
+  isRedZoneNotification,
+  notificationTaskPath,
+  relativeTime,
+  unreadCount,
+} from "../utils/notifications";
 import { useTheme } from "../theme/ThemeProvider";
 import AmbientBackground from "./AmbientBackground";
 import Footer from "./Footer";
@@ -95,6 +103,7 @@ const ADMIN_NAV_SECTIONS = [
     items: [
       { label: "Activity", path: "/admin/activity", icon: Activity },
       { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+      { label: "Settings", path: "/admin/settings", icon: Settings },
     ],
   },
 ];
@@ -147,7 +156,7 @@ export default function Layout({ children }) {
     setNotifyOpen(false);
   }, [location.pathname]);
 
-  useEffect(() => {
+  const loadNotifications = useCallback(() => {
     fetchLeaveNotifications()
       .then((items) =>
         setNotifications(
@@ -157,7 +166,37 @@ export default function Layout({ children }) {
         )
       )
       .catch(() => setNotifications([]));
-  }, [location.pathname]);
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+    const timer = setInterval(loadNotifications, 60000);
+    return () => clearInterval(timer);
+  }, [loadNotifications, location.pathname]);
+
+  const openNotification = async (item) => {
+    if (item?.SK && item.read !== true) {
+      try {
+        await markNotificationRead(item.SK);
+        setNotifications((prev) =>
+          prev.map((n) =>
+            n.SK === item.SK
+              ? { ...n, read: true, readAt: new Date().toISOString() }
+              : n
+          )
+        );
+      } catch {
+        /* keep local navigation even if mark-read fails */
+      }
+    }
+    const path = notificationTaskPath(item, showEmployeeNav);
+    if (path) {
+      setNotifyOpen(false);
+      navigate(path);
+    }
+  };
+
+  const unread = unreadCount(notifications);
 
   useEffect(() => {
     const onResize = () => {
@@ -359,7 +398,7 @@ export default function Layout({ children }) {
                 onClick={() => setNotifyOpen((v) => !v)}
               >
                 <Bell size={18} />
-                {notifications.length > 0 ? (
+                {unread > 0 ? (
                   <span
                     style={{
                       position: "absolute",
@@ -377,7 +416,7 @@ export default function Layout({ children }) {
                       padding: "0 4px",
                     }}
                   >
-                    {notifications.length > 9 ? "9+" : notifications.length}
+                    {unread > 9 ? "9+" : unread}
                   </span>
                 ) : null}
               </button>
@@ -403,21 +442,61 @@ export default function Layout({ children }) {
                       No notifications.
                     </p>
                   ) : (
-                    notifications.map((n) => (
-                      <div
-                        key={n.notifyId || n.SK}
-                        style={{
-                          padding: "10px 12px",
-                          borderBottom: "1px solid var(--dgv-border)",
-                          fontSize: 13,
-                        }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{n.title || "Leave update"}</div>
-                        <div style={{ color: "var(--dgv-text-muted)", marginTop: 4 }}>
-                          {n.message}
-                        </div>
-                      </div>
-                    ))
+                    notifications.map((n) => {
+                      const zone = isZoneNotification(n);
+                      const red = isRedZoneNotification(n);
+                      const unreadItem = n.read !== true;
+                      return (
+                        <button
+                          type="button"
+                          key={n.notifyId || n.SK}
+                          onClick={() => openNotification(n)}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "10px 12px",
+                            border: "none",
+                            borderBottom: "1px solid var(--dgv-border)",
+                            borderLeft: zone
+                              ? `4px solid ${red ? "#dc2626" : "#ea580c"}`
+                              : "4px solid transparent",
+                            background: unreadItem
+                              ? red
+                                ? "rgba(220,38,38,0.12)"
+                                : "var(--dgv-accent-soft)"
+                              : "transparent",
+                            fontSize: 13,
+                            cursor: n.taskId || zone ? "pointer" : "default",
+                            color: "var(--dgv-text)",
+                          }}
+                        >
+                          <div style={{ fontWeight: unreadItem ? 800 : 700 }}>
+                            {n.title || "Notification"}
+                          </div>
+                          <div
+                            style={{
+                              color: "var(--dgv-text-muted)",
+                              marginTop: 4,
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {n.message}
+                          </div>
+                          {n.createdAt ? (
+                            <div
+                              style={{
+                                marginTop: 6,
+                                fontSize: 11,
+                                color: "var(--dgv-text-muted)",
+                              }}
+                            >
+                              {relativeTime(n.createdAt)}
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               ) : null}

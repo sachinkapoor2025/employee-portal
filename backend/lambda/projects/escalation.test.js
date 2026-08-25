@@ -14,6 +14,8 @@ const {
   resetEscalationForNewDeadline,
   normalizeEmailList,
   normalizePriority,
+  creatorDisplayName,
+  displayNameFromEmail,
 } = require("./escalation");
 
 const DEADLINE = "2026-08-25T11:30:00.000Z"; // 17:00 IST
@@ -267,5 +269,68 @@ assert.ok(matchesPriorityFilter({ priority: "URGENT" }, "CRITICAL"));
 assert.ok(assignmentMatchesZone({ status: "TODO", zone: "GREEN" }, "GREEN"));
 assert.ok(!assignmentMatchesZone({ status: "DONE", zone: "GREEN" }, "GREEN"));
 assert.ok(assignmentMatchesZone({ status: "DONE", zone: "GREEN" }, "COMPLETED"));
+
+const { validateCreatePayload } = require("./escalation");
+const validCreate = validateCreatePayload({
+  title: "  Prepare Monthly Report  ",
+  assignees: ["rahul@mydgv.com", "amit@mydgv.com"],
+  priority: "HIGH",
+  startDate: "2026-08-25T04:30:00.000Z",
+  dueDate: "2026-08-25T11:30:00.000Z",
+  category: "HR",
+});
+assert.strictEqual(validCreate.ok, true);
+assert.strictEqual(validCreate.title, "Prepare Monthly Report");
+assert.strictEqual(validCreate.emails.length, 2);
+assert.strictEqual(validCreate.category, "HR");
+
+const missing = validateCreatePayload({ title: "  " });
+assert.strictEqual(missing.ok, false);
+assert.ok(missing.errors.title);
+assert.ok(missing.errors.assignees);
+assert.ok(missing.errors.priority);
+assert.ok(missing.errors.startDate);
+assert.ok(missing.errors.dueDate);
+
+const badDates = validateCreatePayload({
+  title: "Late deadline",
+  assignees: ["rahul@mydgv.com"],
+  priority: "MEDIUM",
+  startDate: "2026-08-25T11:30:00.000Z",
+  dueDate: "2026-08-25T09:30:00.000Z",
+});
+assert.strictEqual(badDates.ok, false);
+assert.ok(String(badDates.errors.dueDate).includes("after"));
+
+const { validateAttachment } = require("./escalation");
+assert.strictEqual(
+  validateAttachment({ fileName: "notes.exe", fileSize: 100 }),
+  "Invalid file type. Allowed: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX."
+);
+assert.strictEqual(
+  validateAttachment({ fileName: "brief.pdf", fileSize: 2048 }),
+  null
+);
+
+assert.strictEqual(displayNameFromEmail("nitesh.kumar@mydgv.com"), "Nitesh Kumar");
+assert.strictEqual(
+  creatorDisplayName({ createdBy: "nitesh.kumar@mydgv.com" }),
+  "Nitesh Kumar"
+);
+assert.strictEqual(
+  creatorDisplayName({
+    createdBy: "nitesh.kumar@mydgv.com",
+    createdByName: "Nitesh Kumar",
+  }),
+  "Nitesh Kumar"
+);
+assert.strictEqual(
+  decorateTask({
+    createdBy: "nitesh.kumar@mydgv.com",
+    createdByName: "Nitesh Kumar",
+    status: "TODO",
+  }).createdByName,
+  "Nitesh Kumar"
+);
 
 console.log("escalation tests passed");

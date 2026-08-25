@@ -34,11 +34,129 @@ const PRIORITY_LABELS = {
   CRITICAL: "Critical",
 };
 
+const TASK_CATEGORIES = [
+  "Development",
+  "Design",
+  "HR",
+  "Sales",
+  "Marketing",
+  "Support",
+  "Meeting",
+  "Administrative",
+  "Other",
+];
+
+const TITLE_MAX = 200;
+const DESCRIPTION_MAX = 5000;
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_EXTS = {
+  ".pdf": true,
+  ".jpg": true,
+  ".jpeg": true,
+  ".png": true,
+  ".doc": true,
+  ".docx": true,
+  ".xls": true,
+  ".xlsx": true,
+};
+
+function validateAttachment({ fileName, fileSize } = {}) {
+  const name = String(fileName || "");
+  const i = name.lastIndexOf(".");
+  const ext = i >= 0 ? name.slice(i).toLowerCase() : "";
+  if (!ATTACHMENT_EXTS[ext]) {
+    return "Invalid file type. Allowed: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX.";
+  }
+  if (fileSize != null && fileSize !== "") {
+    const size = Number(fileSize);
+    if (!Number.isFinite(size) || size <= 0) return "Empty file.";
+    if (size > ATTACHMENT_MAX_BYTES) return "File size exceeds the allowed limit.";
+  }
+  return null;
+}
+
 function normalizePriority(value) {
   const p = String(value || "").toUpperCase();
   if (p === "CRITICAL") return "CRITICAL";
   if (PRIORITIES.includes(p)) return p;
   return "MEDIUM";
+}
+
+function normalizeCategory(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const found = TASK_CATEGORIES.find(
+    (c) => c.toLowerCase() === raw.toLowerCase()
+  );
+  return found || "";
+}
+
+function parseInstantMs(value, endOfDay = false) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const time = endOfDay ? "23:59:59" : "00:00:00";
+    const ms = Date.parse(`${raw}T${time}${companyOffset()}`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function validateCreatePayload(body = {}) {
+  const errors = {};
+  const title = String(body.title || "").trim();
+  if (!title) errors.title = "Task title is required.";
+  else if (title.length > TITLE_MAX) {
+    errors.title = `Title must be ${TITLE_MAX} characters or fewer.`;
+  }
+
+  const description = String(body.description || "");
+  if (description.length > DESCRIPTION_MAX) {
+    errors.description = `Description must be ${DESCRIPTION_MAX} characters or fewer.`;
+  }
+
+  const emails = normalizeEmailList(body.assignees, body.assignee);
+  if (!emails.length) {
+    errors.assignees = "Please select at least one assignee.";
+  }
+
+  const rawPriority = String(body.priority || "").trim().toUpperCase();
+  if (!rawPriority) errors.priority = "Please select a priority.";
+  else if (!PRIORITIES.includes(rawPriority) && rawPriority !== "CRITICAL") {
+    errors.priority = "Please select a priority.";
+  }
+
+  const categoryRaw = String(body.category || "").trim();
+  const category = normalizeCategory(categoryRaw);
+  if (categoryRaw && !category) {
+    errors.category = "Please select a valid category.";
+  }
+
+  const startMs = parseInstantMs(body.startDate, false);
+  if (!body.startDate || !Number.isFinite(startMs)) {
+    errors.startDate = "Start date and time are required.";
+  }
+
+  const dueMs = parseDeadlineMs(body.dueDate);
+  if (!body.dueDate || !Number.isFinite(dueMs)) {
+    errors.dueDate = "Deadline date and time are required.";
+  } else if (Number.isFinite(startMs) && dueMs < startMs) {
+    errors.dueDate = "Deadline must be after the start date and time.";
+  }
+
+  return {
+    ok: Object.keys(errors).length === 0,
+    errors,
+    title,
+    description,
+    emails,
+    priority: rawPriority ? normalizePriority(rawPriority) : "MEDIUM",
+    category,
+    startDate: body.startDate || null,
+    dueDate: body.dueDate || null,
+  };
 }
 
 function priorityLabel(value) {
@@ -343,6 +461,32 @@ function decorateAssignment(assignment, dueDate, nowMs) {
   };
 }
 
+function displayNameFromEmail(email) {
+  const local = String(email || "").split("@")[0] || "";
+  const name = local
+    .split(/[._-]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+  return name || String(email || "").trim();
+}
+
+function pickPersonName(...candidates) {
+  for (const value of candidates) {
+    const name = String(value || "").trim();
+    if (name && !name.includes("@")) return name;
+  }
+  return "";
+}
+
+function creatorDisplayName(task = {}) {
+  return (
+    pickPersonName(task.createdByName) ||
+    displayNameFromEmail(task.createdBy) ||
+    String(task.createdBy || "").trim()
+  );
+}
+
 function decorateTask(task, nowMs = Date.now(), viewerEmail) {
   const assignments = synthesizeAssignments(task).map((a) =>
     decorateAssignment(a, task.dueDate, nowMs)
@@ -366,6 +510,7 @@ function decorateTask(task, nowMs = Date.now(), viewerEmail) {
       ? mine.timing
       : formatTiming({ dueDate: task.dueDate, zone, status: task.status, nowMs }),
     priorityLabel: priorityLabel(task.priority),
+    createdByName: creatorDisplayName(task),
   };
 }
 
@@ -409,7 +554,10 @@ function matchesSearch(task, q) {
   const hay = [
     task.title,
     task.description,
+    task.category,
     task.assignee,
+    task.createdBy,
+    task.createdByName,
     ...(Array.isArray(task.assignees) ? task.assignees : []),
     ...(Array.isArray(task.assignments)
       ? task.assignments.map((a) => a.email)
@@ -488,7 +636,11 @@ module.exports = {
   ZONES,
   ZONE_RANK,
   PRIORITIES,
+  TASK_CATEGORIES,
+  TITLE_MAX,
+  DESCRIPTION_MAX,
   parseDeadlineMs,
+  parseInstantMs,
   zoneAt,
   maxZone,
   isComplete,
@@ -497,6 +649,9 @@ module.exports = {
   normalizeEmail,
   normalizeEmailList,
   normalizePriority,
+  normalizeCategory,
+  validateCreatePayload,
+  validateAttachment,
   priorityLabel,
   formatDuration,
   formatTiming,
@@ -519,4 +674,7 @@ module.exports = {
   visibleAssignments,
   zoneCounts,
   applyZoneFilter,
+  displayNameFromEmail,
+  pickPersonName,
+  creatorDisplayName,
 };

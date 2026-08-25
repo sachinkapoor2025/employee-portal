@@ -12,6 +12,7 @@ import {
   emptyZoneMessage,
   taskMatchesSearch,
 } from "../utils/taskStatus";
+import { displayNameFromEmail } from "../utils/meetings";
 import ZoneBadge from "../components/ZoneBadge";
 import ZoneFilter from "../components/ZoneFilter";
 import {
@@ -209,6 +210,16 @@ export default function Work() {
                 }}
               >
                 <div style={{ fontWeight: 700 }}>{task.title}</div>
+                {task.category ? (
+                  <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                    Category: {task.category}
+                  </div>
+                ) : null}
+                {task.createdByName || task.createdBy ? (
+                  <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                    Author: {task.createdByName || displayNameFromEmail(task.createdBy)}
+                  </div>
+                ) : null}
                 <p style={{ color: colors.textMuted, fontSize: 14 }}>{task.description}</p>
                 <div
                   style={{

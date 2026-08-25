@@ -6,6 +6,7 @@ import {
   Megaphone,
   ArrowRight,
   Clock,
+  Bell,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
@@ -15,49 +16,87 @@ import {
   fetchTasks,
   fetchMyLeave,
   fetchMyActivityToday,
+  fetchLeaveNotifications,
+  markNotificationRead,
 } from "../services/api";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../theme";
 import ZoneBadge from "../components/ZoneBadge";
 import { getTaskZone } from "../utils/taskStatus";
+import { displayNameFromEmail } from "../utils/meetings";
+import {
+  isZoneNotification,
+  isRedZoneNotification,
+  relativeTime,
+} from "../utils/notifications";
 
 export default function Dashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [leave, setLeave] = useState([]);
   const [portalMinutes, setPortalMinutes] = useState(0);
+  const [zoneNotes, setZoneNotes] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
-    Promise.all([
-      fetchAnnouncements(),
-      fetchTasks({ mine: "true" }),
-      fetchMyLeave(),
-      fetchMyActivityToday().catch(() => null),
-    ])
-      .then(([a, t, l, activity]) => {
-        setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
-        setTasks(
-          Array.isArray(t)
-            ? t
-                .filter((x) => {
-                  const status = x.myAssignment?.status || x.status;
-                  return status !== "DONE" && status !== "CANCELLED";
-                })
-                .slice(0, 5)
-            : []
-        );
-        setLeave(
-          Array.isArray(l)
-            ? l.filter(
-                (x) => x.status === "PENDING" || x.status === "PENDING_APPROVAL"
-              )
-            : []
-        );
-        const mins = Number(activity?.summary?.totalMinutes);
-        setPortalMinutes(Number.isFinite(mins) ? mins : 0);
-      })
-      .catch(console.error);
+    const load = () => {
+      Promise.all([
+        fetchAnnouncements(),
+        fetchTasks({ mine: "true" }),
+        fetchMyLeave(),
+        fetchMyActivityToday().catch(() => null),
+        fetchLeaveNotifications().catch(() => []),
+      ])
+        .then(([a, t, l, activity, notes]) => {
+          setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
+          setTasks(
+            Array.isArray(t)
+              ? t
+                  .filter((x) => {
+                    const status = x.myAssignment?.status || x.status;
+                    return status !== "DONE" && status !== "CANCELLED";
+                  })
+                  .slice(0, 5)
+              : []
+          );
+          setLeave(
+            Array.isArray(l)
+              ? l.filter(
+                  (x) => x.status === "PENDING" || x.status === "PENDING_APPROVAL"
+                )
+              : []
+          );
+          const mins = Number(activity?.summary?.totalMinutes);
+          setPortalMinutes(Number.isFinite(mins) ? mins : 0);
+          setZoneNotes(
+            (Array.isArray(notes) ? notes : [])
+              .filter(isZoneNotification)
+              .slice(0, 8)
+          );
+        })
+        .catch(console.error);
+    };
+    load();
+    const timer = setInterval(load, 60000);
+    return () => clearInterval(timer);
   }, []);
+
+  const openZoneNote = async (item) => {
+    if (item?.SK && item.read !== true) {
+      try {
+        await markNotificationRead(item.SK);
+        setZoneNotes((prev) =>
+          prev.map((n) =>
+            n.SK === item.SK
+              ? { ...n, read: true, readAt: new Date().toISOString() }
+              : n
+          )
+        );
+      } catch {
+        /* still navigate */
+      }
+    }
+    if (item?.taskId) navigate(`/work/${encodeURIComponent(item.taskId)}`);
+  };
 
   return (
     <Layout>
@@ -112,6 +151,85 @@ export default function Dashboard() {
           </Button>
         </div>
 
+        {zoneNotes.length > 0 ? (
+          <>
+            <h3
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 0,
+              }}
+            >
+              <Bell size={18} color="var(--dgv-accent)" />
+              Notifications
+            </h3>
+            {zoneNotes.map((n) => {
+              const red = isRedZoneNotification(n);
+              const unreadItem = n.read !== true;
+              return (
+                <button
+                  type="button"
+                  key={n.notifyId || n.SK}
+                  onClick={() => openZoneNote(n)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    background: unreadItem
+                      ? red
+                        ? "rgba(220,38,38,0.12)"
+                        : "rgba(234,88,12,0.12)"
+                      : "var(--dgv-surface-solid)",
+                    border: `1px solid ${
+                      red ? "rgba(220,38,38,0.45)" : "rgba(234,88,12,0.4)"
+                    }`,
+                    borderLeft: `5px solid ${red ? "#dc2626" : "#ea580c"}`,
+                    borderRadius: 12,
+                    padding: 14,
+                    marginBottom: 10,
+                    cursor: "pointer",
+                    color: colors.text,
+                  }}
+                >
+                  <div style={{ fontWeight: 800 }}>
+                    {red ? "🚨 Red Zone" : "⚠️ Orange Zone"}
+                    {unreadItem ? " · New" : ""}
+                  </div>
+                  <div style={{ fontWeight: 700, marginTop: 4 }}>
+                    {n.title || (red ? "Task moved to Red Zone" : "Task moved to Orange Zone")}
+                  </div>
+                  <p
+                    style={{
+                      margin: "6px 0 0",
+                      fontSize: 14,
+                      color: colors.textMuted,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {n.message}
+                  </p>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 12,
+                      color: colors.textMuted,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
+                  >
+                    <span>{relativeTime(n.createdAt)}</span>
+                    <span style={{ color: "var(--dgv-accent)", fontWeight: 700 }}>
+                      Open Task →
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+
         {announcements.length > 0 && (
           <>
             <h3
@@ -146,6 +264,17 @@ export default function Dashboard() {
                 >
                   {a.message}
                 </p>
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: 12,
+                    color: colors.textMuted,
+                  }}
+                >
+                  {a.createdByName || a.createdBy
+                    ? `By ${a.createdByName || displayNameFromEmail(a.createdBy)}`
+                    : null}
+                </div>
               </div>
             ))}
           </>
@@ -161,6 +290,15 @@ export default function Dashboard() {
           tasks.map((t) => (
             <div
               key={t.taskId}
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/work/${encodeURIComponent(t.taskId)}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  navigate(`/work/${encodeURIComponent(t.taskId)}`);
+                }
+              }}
               style={{
                 border: `1px solid ${colors.border}`,
                 borderRadius: 12,
@@ -171,6 +309,7 @@ export default function Dashboard() {
                 justifyContent: "space-between",
                 gap: 12,
                 background: "var(--dgv-surface-solid)",
+                cursor: "pointer",
               }}
             >
               <div>

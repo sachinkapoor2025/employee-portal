@@ -179,6 +179,45 @@ export function joinDueParts(date, time) {
   return d.toISOString();
 }
 
+export const TASK_CATEGORIES = [
+  "Development",
+  "Design",
+  "HR",
+  "Sales",
+  "Marketing",
+  "Support",
+  "Meeting",
+  "Administrative",
+  "Other",
+];
+
+export const TITLE_MAX = 200;
+export const DESCRIPTION_MAX = 5000;
+export const TASK_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const TASK_ATTACHMENT_EXTS = [
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+];
+
+export function validateTaskAttachmentFile(file) {
+  if (!file) return "";
+  const name = String(file.name || "").toLowerCase();
+  const ok = TASK_ATTACHMENT_EXTS.some((ext) => name.endsWith(ext));
+  if (!ok) {
+    return "Invalid file type. Allowed: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX.";
+  }
+  if (file.size > TASK_ATTACHMENT_MAX_BYTES) {
+    return "File must be 10 MB or smaller.";
+  }
+  return "";
+}
+
 export const TASK_PRIORITIES = [
   { value: "LOW", label: "Low" },
   { value: "MEDIUM", label: "Medium" },
@@ -384,6 +423,8 @@ export function taskMatchesSearch(task, q) {
     task.title,
     task.description,
     task.assignee,
+    task.createdBy,
+    task.createdByName,
     ...(Array.isArray(task.assignees) ? task.assignees : []),
   ];
   return hay.some((v) => String(v || "").toLowerCase().includes(needle));

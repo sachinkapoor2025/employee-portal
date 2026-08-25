@@ -132,6 +132,20 @@ async function dispatchNotification(ddb, {
     html,
   });
 
+  if (!baseItem.inAppWritten) {
+    try {
+      await writeInAppNotification(ddb, normalized, {
+        type,
+        title,
+        message,
+        ...extra,
+      });
+      baseItem.inAppWritten = true;
+    } catch (err) {
+      console.error("IN_APP_NOTIFY_FAILED", err?.name);
+    }
+  }
+
   if (!result.ok) {
     await saveReminder(ddb, {
       ...baseItem,
@@ -152,20 +166,6 @@ async function dispatchNotification(ddb, {
       })
     );
     return { skipped: false, status: "FAILED", error: result.error, attempts };
-  }
-
-  if (!baseItem.inAppWritten) {
-    try {
-      await writeInAppNotification(ddb, normalized, {
-        type,
-        title,
-        message,
-        ...extra,
-      });
-      baseItem.inAppWritten = true;
-    } catch (err) {
-      console.error("IN_APP_NOTIFY_FAILED", err?.name);
-    }
   }
 
   await saveReminder(ddb, {

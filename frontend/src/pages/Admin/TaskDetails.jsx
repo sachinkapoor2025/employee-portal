@@ -20,6 +20,7 @@ import {
 import {
   TASK_STATUSES,
   TASK_PRIORITIES,
+  TASK_CATEGORIES,
   displayTaskId,
   formatTaskDate,
   formatTaskDateTime,
@@ -80,6 +81,7 @@ export default function TaskDetails() {
   const { taskId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const employeeView = location.pathname.startsWith("/work");
   const [task, setTask] = useState(location.state?.task || null);
   const [activity, setActivity] = useState([]);
   const [users, setUsers] = useState([]);
@@ -99,6 +101,7 @@ export default function TaskDetails() {
     status: "TODO",
     priority: "MEDIUM",
     assignmentEmail: "",
+    category: "",
   });
 
   const enrichTask = useCallback(async (t, userList) => {
@@ -122,8 +125,9 @@ export default function TaskDetails() {
       }
     }
 
-    let createdByName = "";
-    if (t.createdBy) {
+    let createdByName = String(t.createdByName || "").trim();
+    if (createdByName && createdByName.includes("@")) createdByName = "";
+    if (!createdByName && t.createdBy) {
       const fromList = personLabel(userList, t.createdBy);
       if (fromList.name && fromList.name !== t.createdBy.split("@")[0]) {
         createdByName = fromList.name;
@@ -176,6 +180,7 @@ export default function TaskDetails() {
             ? "CRITICAL"
             : enriched.priority || "MEDIUM",
         assignmentEmail: assigneeEmails[0] || "",
+        category: enriched.category || "",
       });
 
       const a = await fetchTaskActivity(taskId).catch(() => []);
@@ -227,6 +232,7 @@ export default function TaskDetails() {
           ? "CRITICAL"
           : task.priority || "MEDIUM",
       assignmentEmail: getTaskAssignees(task)[0]?.email || "",
+      category: task.category || "",
     });
     setModal("edit");
   };
@@ -266,7 +272,12 @@ export default function TaskDetails() {
       alert("Task name is required");
       return;
     }
+    const nextStart = joinDueParts(editForm.startDate, editForm.startTime);
     const nextDue = joinDueParts(editForm.dueDate, editForm.dueTime);
+    if (nextStart && nextDue && new Date(nextDue).getTime() < new Date(nextStart).getTime()) {
+      alert("Deadline must be after the start date and time.");
+      return;
+    }
     if (nextDue !== (task.dueDate || null)) {
       const ok = window.confirm(
         "Changing the deadline will recalculate Green/Orange/Red for incomplete assignees. Continue?"
@@ -282,7 +293,8 @@ export default function TaskDetails() {
         assignee: editForm.assignees[0] || "",
         status: editForm.status,
         priority: editForm.priority,
-        startDate: joinDueParts(editForm.startDate, editForm.startTime),
+        category: editForm.category || "",
+        startDate: nextStart,
         dueDate: nextDue,
       });
       setModal(null);
@@ -366,7 +378,7 @@ export default function TaskDetails() {
       return profile?.name || info.name;
     })
     .join(", ");
-  const creator = creatorName || personLabel(users, task.createdBy).name;
+  const creator = task.createdByName || creatorName || personLabel(users, task.createdBy).name;
   const zone = getTaskZone(task);
   const timing = getTaskTiming(task);
   const timeline = [...activity].sort((a, b) => {
@@ -402,11 +414,12 @@ export default function TaskDetails() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => navigate("/admin/tasks")}
+              onClick={() => navigate(employeeView ? "/work" : "/admin/tasks")}
             >
-              Back to Tasks
+              {employeeView ? "Back to My Tasks" : "Back to Tasks"}
             </Button>
           </div>
+          {employeeView ? null : (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <Button type="button" onClick={openEdit}>
               Edit Task
@@ -418,6 +431,7 @@ export default function TaskDetails() {
               Reassign
             </Button>
           </div>
+          )}
         </div>
 
         <section style={sectionBox}>
@@ -441,11 +455,15 @@ export default function TaskDetails() {
           <h3 style={sectionTitle}>TASK INFORMATION</h3>
           <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
           <InfoRow
-            label="Created By"
+            label="Author"
             value={
-              task.createdBy
-                ? `${creator}${
-                    creator !== task.createdBy ? `\n${task.createdBy}` : ""
+              creator || task.createdByName || task.createdBy
+                ? `${creator || task.createdByName || task.createdBy}${
+                    task.createdBy &&
+                    creator &&
+                    creator !== task.createdBy
+                      ? `\n${task.createdBy}`
+                      : ""
                   }`
                 : "—"
             }
@@ -459,6 +477,7 @@ export default function TaskDetails() {
             }
           />
           <InfoRow label="Priority" value={priorityLabel(task.priority)} />
+          <InfoRow label="Category" value={task.category || "—"} />
           <InfoRow label="Created Date" value={formatTaskDate(task.createdAt)} />
           <InfoRow label="Created Time" value={formatTaskTime(task.createdAt)} />
           <InfoRow
@@ -654,6 +673,21 @@ export default function TaskDetails() {
             {TASK_PRIORITIES.map((p) => (
               <option key={p.value} value={p.value}>
                 {p.label}
+              </option>
+            ))}
+          </select>
+          <label style={formLabel}>Category</label>
+          <select
+            style={formSelect}
+            value={editForm.category || ""}
+            onChange={(e) =>
+              setEditForm({ ...editForm, category: e.target.value })
+            }
+          >
+            <option value="">Select category</option>
+            {TASK_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
               </option>
             ))}
           </select>

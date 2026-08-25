@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
 import { fetchProjects, fetchTaskList, createProject, createTask, fetchUsers } from "../../services/api";
+import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
+import { displayNameFromEmail } from "../../utils/meetings";
 import {
   colors,
   pageCard,
@@ -28,12 +30,15 @@ import {
   countZones,
   emptyZoneMessage,
   taskMatchesSearch,
-  taskMatchesPriority,
   taskAssignedToClient,
   TASK_PRIORITIES,
+  TASK_CATEGORIES,
+  TITLE_MAX,
+  DESCRIPTION_MAX,
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
 import ZoneFilter from "../../components/ZoneFilter";
+import RedZoneWeeklySettings from "./RedZoneWeeklySettings";
 
 function StatusBadge({ task }) {
   const style = statusBadgeStyle(task);
@@ -67,10 +72,183 @@ function StatusBadge({ task }) {
   );
 }
 
+const COLUMN_PREVIEW_LIMIT = 4;
+const AUTHOR_MAX = 80;
+
+function currentAuthorName(users) {
+  const email = getLoggedInEmail();
+  const fromJwt = getLoggedInDisplayName();
+  if (fromJwt) return fromJwt;
+  const row = (users || []).find(
+    (u) => String(u.email).toLowerCase() === String(email).toLowerCase()
+  );
+  const profileName = String(row?.name || "").trim();
+  if (profileName && !profileName.includes("@")) return profileName;
+  return displayNameFromEmail(email);
+}
+
+function taskAuthorLabel(task, users) {
+  const stored = String(task?.createdByName || "").trim();
+  if (stored && !stored.includes("@")) return stored;
+  if (task?.createdBy) return personLabel(users, task.createdBy).name;
+  return "";
+}
+
+function TaskCard({ task, users, onOpen }) {
+  const shown = task.matchedAssignments || getTaskAssignees(task);
+  const people = shown.map((a) => personLabel(users, a.email));
+  const author = taskAuthorLabel(task, users);
+  const zoneKey =
+    shown.length === 1
+      ? shown[0].zone || getTaskZone(task)
+      : getTaskZone(task);
+  const timing =
+    shown.length === 1
+      ? shown[0].timing || getTaskTiming(task)
+      : getTaskTiming(task);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(task)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen(task);
+        }
+      }}
+      style={{
+        background: "var(--dgv-surface-solid)",
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 8,
+        boxShadow: "var(--dgv-shadow)",
+        border: `1px solid ${
+          zoneKey === "RED"
+            ? "rgba(239,68,68,0.45)"
+            : zoneKey === "ORANGE"
+            ? "rgba(249,115,22,0.45)"
+            : colors.border
+        }`,
+        color: colors.text,
+        cursor: "pointer",
+        transition: "transform 0.2s ease, box-shadow 0.2s ease",
+      }}
+    >
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>
+        {task.title}
+      </div>
+      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
+        Assigned to:
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+        {people.length ? people.map((p) => p.name).join(", ") : "Unassigned"}
+      </div>
+      {task.category ? (
+        <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+          Category:{" "}
+          <span style={{ color: colors.text, fontWeight: 600 }}>
+            {task.category}
+          </span>
+        </div>
+      ) : null}
+      {author ? (
+        <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+          Author:{" "}
+          <span style={{ color: colors.text, fontWeight: 600 }}>
+            {author}
+          </span>
+        </div>
+      ) : null}
+      {shown.length > 1 ? (
+        <div style={{ marginBottom: 8 }}>
+          {shown.map((a) => (
+            <div
+              key={a.email}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                marginBottom: 4,
+                fontSize: 12,
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>
+                {personLabel(users, a.email).name}
+              </span>
+              <ZoneBadge zone={a.zone} status={a.status} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <ZoneBadge
+            zone={zoneKey}
+            status={shown[0]?.status || task.status}
+          />
+          <StatusBadge task={task} />
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+        Priority:{" "}
+        <span style={{ color: colors.text, fontWeight: 600 }}>
+          {priorityLabel(task.priority)}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: colors.textMuted }}>
+        Due:{" "}
+        <span
+          style={{
+            color:
+              zoneKey === "RED" || zoneKey === "ORANGE"
+                ? "var(--dgv-danger)"
+                : colors.text,
+            fontWeight: 600,
+          }}
+        >
+          {task.dueDate ? formatTaskDateTime(task.dueDate) : "—"}
+        </span>
+      </div>
+      {timing ? (
+        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+          {timing}
+        </div>
+      ) : null}
+      {formatTaskDuration(task) ? (
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 6 }}>
+          Duration:{" "}
+          <span style={{ color: colors.text, fontWeight: 600 }}>
+            {formatTaskDuration(task)}
+          </span>
+        </div>
+      ) : null}
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 11,
+          color: "var(--dgv-accent)",
+          fontWeight: 600,
+        }}
+      >
+        Click to view details →
+      </div>
+    </div>
+  );
+}
+
 const FILTER_KEYS = {
   zone: "dgv.tasks.zone",
   search: "dgv.tasks.search",
-  priority: "dgv.tasks.priority",
   employee: "dgv.tasks.employee",
 };
 
@@ -102,9 +280,6 @@ export default function ManageTasks() {
   const [searchInput, setSearchInput] = useState(() =>
     readFilter(FILTER_KEYS.search, "")
   );
-  const [priorityFilter, setPriorityFilter] = useState(() =>
-    readFilter(FILTER_KEYS.priority, "")
-  );
   const [employeeFilter, setEmployeeFilter] = useState(() =>
     readFilter(FILTER_KEYS.employee, "")
   );
@@ -125,19 +300,19 @@ export default function ManageTasks() {
   const [taskForm, setTaskForm] = useState({
     title: "",
     description: "",
+    category: "",
     assignees: [],
     priority: "MEDIUM",
-    status: "TODO",
     startDate: "",
     startTime: "",
     dueDate: "",
     dueTime: "",
-    durationType: "",
-    durationHours: "",
-    durationDays: "",
-    durationStart: "",
-    durationEnd: "",
   });
+  const [assigneeQuery, setAssigneeQuery] = useState("");
+  const [showAllAssignees, setShowAllAssignees] = useState(false);
+  const [showAllResults, setShowAllResults] = useState(false);
+  const [formErrors, setFormErrors] = useState({});
+  const [savingTask, setSavingTask] = useState(false);
 
   const load = useCallback(async () => {
     const [p, list, u] = await Promise.all([
@@ -145,7 +320,6 @@ export default function ManageTasks() {
       fetchTaskList({
         ...(projectId ? { projectId } : {}),
         ...(search.trim() ? { q: search.trim() } : {}),
-        ...(priorityFilter ? { priority: priorityFilter } : {}),
         ...(employeeFilter ? { assignee: employeeFilter } : {}),
         ...(zone && zone !== "ALL" ? { zone } : {}),
       }),
@@ -157,7 +331,6 @@ export default function ManageTasks() {
     const scoped = raw.filter(
       (t) =>
         taskMatchesSearch(t, search) &&
-        taskMatchesPriority(t, priorityFilter) &&
         taskAssignedToClient(t, employeeFilter)
     );
     const filtered = applyClientZoneFilter(
@@ -172,7 +345,7 @@ export default function ManageTasks() {
     );
     setUsers(Array.isArray(u) ? u : []);
     if (!projectId && p.length) setProjectId(p[0].projectId);
-  }, [projectId, zone, search, priorityFilter, employeeFilter]);
+  }, [projectId, zone, search, employeeFilter]);
 
   useEffect(() => {
     load().catch(console.error);
@@ -190,9 +363,6 @@ export default function ManageTasks() {
     writeFilter(FILTER_KEYS.search, search);
   }, [search]);
   useEffect(() => {
-    writeFilter(FILTER_KEYS.priority, priorityFilter);
-  }, [priorityFilter]);
-  useEffect(() => {
     writeFilter(FILTER_KEYS.employee, employeeFilter);
   }, [employeeFilter]);
 
@@ -203,51 +373,85 @@ export default function ManageTasks() {
     load();
   };
 
+  const emptyTaskForm = {
+    title: "",
+    description: "",
+    category: "",
+    authorName: currentAuthorName(users),
+    assignees: [],
+    priority: "MEDIUM",
+    startDate: "",
+    startTime: "",
+    dueDate: "",
+    dueTime: "",
+  };
+
   const saveTask = async () => {
+    const errors = {};
+    const title = taskForm.title.trim();
     if (!projectId) {
-      alert("Select a project before creating a task.");
+      errors.form = "Select a project before creating a task.";
+    }
+    if (!title) errors.title = "Task title is required.";
+    else if (title.length > TITLE_MAX) {
+      errors.title = `Title must be ${TITLE_MAX} characters or fewer.`;
+    }
+    if ((taskForm.description || "").length > DESCRIPTION_MAX) {
+      errors.description = `Description must be ${DESCRIPTION_MAX} characters or fewer.`;
+    }
+    const authorName = (taskForm.authorName || "").trim();
+    if (!authorName) errors.authorName = "Author name is required.";
+    else if (authorName.length > AUTHOR_MAX) {
+      errors.authorName = `Author name must be ${AUTHOR_MAX} characters or fewer.`;
+    }
+    if (!taskForm.assignees.length) {
+      errors.assignees = "Please select at least one assignee.";
+    }
+    if (!taskForm.priority) errors.priority = "Please select a priority.";
+    if (!taskForm.startDate || !taskForm.startTime) {
+      errors.startDate = "Start date and time are required.";
+    }
+    if (!taskForm.dueDate || !taskForm.dueTime) {
+      errors.dueDate = "Deadline date and time are required.";
+    }
+    const startIso = joinDueParts(taskForm.startDate, taskForm.startTime);
+    const dueIso = joinDueParts(taskForm.dueDate, taskForm.dueTime);
+    if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
+      errors.dueDate = "Deadline must be after the start date and time.";
+    }
+    if (Object.keys(errors).length) {
+      setFormErrors(errors);
       return;
     }
-    if (!taskForm.title?.trim()) {
-      alert("Task title is required");
-      return;
+
+    setSavingTask(true);
+    setFormErrors({});
+    try {
+      await createTask({
+        title,
+        description: taskForm.description || "",
+        category: taskForm.category || "",
+        authorName,
+        createdByName: authorName,
+        assignees: taskForm.assignees,
+        assignee: taskForm.assignees[0] || "",
+        priority: taskForm.priority,
+        projectId,
+        startDate: startIso,
+        dueDate: dueIso,
+      });
+      setShowTask(false);
+      setTaskForm(emptyTaskForm);
+      setAssigneeQuery("");
+      setShowAllAssignees(false);
+      load();
+    } catch (err) {
+      setFormErrors({
+        form: err.message || "Unable to create task. Please try again.",
+      });
+    } finally {
+      setSavingTask(false);
     }
-    await createTask({
-      title: taskForm.title,
-      description: taskForm.description,
-      assignees: taskForm.assignees,
-      assignee: taskForm.assignees[0] || "",
-      priority: taskForm.priority,
-      projectId,
-      status: taskForm.status || "TODO",
-      startDate: joinDueParts(taskForm.startDate, taskForm.startTime),
-      dueDate: joinDueParts(taskForm.dueDate, taskForm.dueTime),
-      durationType: taskForm.durationType || null,
-      durationHours: taskForm.durationHours
-        ? Number(taskForm.durationHours)
-        : null,
-      durationDays: taskForm.durationDays ? Number(taskForm.durationDays) : null,
-      durationStart: taskForm.durationStart || null,
-      durationEnd: taskForm.durationEnd || null,
-    });
-    setShowTask(false);
-    setTaskForm({
-      title: "",
-      description: "",
-      assignees: [],
-      priority: "MEDIUM",
-      status: "TODO",
-      startDate: "",
-      startTime: "",
-      dueDate: "",
-      dueTime: "",
-      durationType: "",
-      durationHours: "",
-      durationDays: "",
-      durationStart: "",
-      durationEnd: "",
-    });
-    load();
   };
 
   const toggleAssignee = (email) => {
@@ -262,6 +466,16 @@ export default function ManageTasks() {
     });
   };
 
+  const assigneeMatches = users.filter((u) => {
+    const q = assigneeQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      String(u.name || "").toLowerCase().includes(q) ||
+      String(u.email || "").toLowerCase().includes(q)
+    );
+  });
+  const showAssigneeList = showAllAssignees || !!assigneeQuery.trim();
+
   const byStatus = (status) => {
     if (zone === "COMPLETED") {
       return status === "DONE" ? tasks : [];
@@ -269,17 +483,24 @@ export default function ManageTasks() {
     return tasks.filter((t) => (t.status || "TODO").toUpperCase() === status);
   };
 
+  const columnGroups = KANBAN_COLUMNS.map((col) => {
+    const items = byStatus(col.key);
+    return {
+      ...col,
+      items,
+      preview: items.slice(0, COLUMN_PREVIEW_LIMIT),
+      overflow: items.slice(COLUMN_PREVIEW_LIMIT),
+    };
+  });
+  const overflowGroups = columnGroups.filter((g) => g.overflow.length > 0);
+
   const filtersActive =
-    zone !== "ALL" ||
-    !!searchInput.trim() ||
-    !!priorityFilter ||
-    !!employeeFilter;
+    zone !== "ALL" || !!searchInput.trim() || !!employeeFilter;
 
   const clearFilters = () => {
     setZone("ALL");
     setSearch("");
     setSearchInput("");
-    setPriorityFilter("");
     setEmployeeFilter("");
   };
 
@@ -312,7 +533,13 @@ export default function ManageTasks() {
             <button
               type="button"
               style={buttonPrimary}
-              onClick={() => setShowTask(true)}
+              onClick={() => {
+                setTaskForm(emptyTaskForm);
+                setFormErrors({});
+                setAssigneeQuery("");
+                setShowAllAssignees(false);
+                setShowTask(true);
+              }}
             >
               + Task
             </button>
@@ -349,21 +576,6 @@ export default function ManageTasks() {
             alignItems: "flex-end",
           }}
         >
-          <div style={{ minWidth: 180, flex: "1 1 180px" }}>
-            <label style={formLabel}>Priority</label>
-            <select
-              style={formSelect}
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value)}
-            >
-              <option value="">All priorities</option>
-              {TASK_PRIORITIES.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
           <div style={{ minWidth: 220, flex: "1 1 220px" }}>
             <label style={formLabel}>Employee</label>
             <select
@@ -415,6 +627,7 @@ export default function ManageTasks() {
             {emptyZoneMessage(zone)}
           </p>
         ) : (
+        <>
         <div
           style={{
             display: "grid",
@@ -424,7 +637,7 @@ export default function ManageTasks() {
             overflowX: "auto",
           }}
         >
-          {KANBAN_COLUMNS.map((col) => (
+          {columnGroups.map((col) => (
             <div
               key={col.key}
               style={{
@@ -441,133 +654,112 @@ export default function ManageTasks() {
                   color: colors.textMuted,
                 }}
               >
-                {col.label}
+                {col.label} ({col.items.length})
               </h4>
-              {byStatus(col.key).map((task) => {
-                const shown =
-                  task.matchedAssignments || getTaskAssignees(task);
-                const people = shown.map((a) => personLabel(users, a.email));
-                const zoneKey =
-                  shown.length === 1
-                    ? shown[0].zone || getTaskZone(task)
-                    : getTaskZone(task);
-                const timing =
-                  shown.length === 1
-                    ? shown[0].timing || getTaskTiming(task)
-                    : getTaskTiming(task);
-                return (
-                  <div
-                    key={task.taskId}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openTask(task)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        openTask(task);
-                      }
-                    }}
-                    style={{
-                      background: "var(--dgv-surface-solid)",
-                      borderRadius: 8,
-                      padding: 12,
-                      marginBottom: 8,
-                      boxShadow: "var(--dgv-shadow)",
-                      border: `1px solid ${
-                        zoneKey === "RED"
-                          ? "rgba(239,68,68,0.45)"
-                          : zoneKey === "ORANGE"
-                          ? "rgba(249,115,22,0.45)"
-                          : colors.border
-                      }`,
-                      color: colors.text,
-                      cursor: "pointer",
-                      transition: "transform 0.2s ease, box-shadow 0.2s ease",
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>
-                      {task.title}
-                    </div>
-
-                    <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
-                      Assigned to:
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-                      {people.length
-                        ? people.map((p) => p.name).join(", ")
-                        : "Unassigned"}
-                    </div>
-
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        marginBottom: 8,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <ZoneBadge
-                        zone={zoneKey}
-                        status={
-                          shown.length === 1 ? shown[0].status : task.status
-                        }
-                      />
-                      <StatusBadge task={task} />
-                    </div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
-                      Priority:{" "}
-                      <span style={{ color: colors.text, fontWeight: 600 }}>
-                        {priorityLabel(task.priority)}
-                      </span>
-                    </div>
-
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>
-                      Due:{" "}
-                      <span
-                        style={{
-                          color:
-                            zoneKey === "RED" || zoneKey === "ORANGE"
-                              ? "var(--dgv-danger)"
-                              : colors.text,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {task.dueDate ? formatTaskDateTime(task.dueDate) : "—"}
-                      </span>
-                    </div>
-                    {timing ? (
-                      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
-                        {timing}
-                      </div>
-                    ) : null}
-                    {formatTaskDuration(task) ? (
-                      <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 6 }}>
-                        Duration:{" "}
-                        <span style={{ color: colors.text, fontWeight: 600 }}>
-                          {formatTaskDuration(task)}
-                        </span>
-                      </div>
-                    ) : null}
-
-                    <div
-                      style={{
-                        marginTop: 10,
-                        fontSize: 11,
-                        color: "var(--dgv-accent)",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Click to view details →
-                    </div>
-                  </div>
-                );
-              })}
+              {col.preview.map((task) => (
+                <TaskCard
+                  key={task.taskId}
+                  task={task}
+                  users={users}
+                  onOpen={openTask}
+                />
+              ))}
+              {col.overflow.length ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAllResults(true)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    border: "none",
+                    background: "transparent",
+                    fontSize: 12,
+                    color: "var(--dgv-accent)",
+                    fontWeight: 600,
+                    padding: "4px 2px 2px",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  +{col.overflow.length} more in All Results
+                </button>
+              ) : null}
             </div>
           ))}
         </div>
+        {overflowGroups.length ? (
+          <div style={{ marginTop: 20 }}>
+            <button
+              type="button"
+              onClick={() => setShowAllResults((v) => !v)}
+              style={{
+                ...buttonPrimary,
+                background: "transparent",
+                color: colors.text,
+                border: `1px solid ${colors.border}`,
+                boxShadow: "none",
+              }}
+            >
+              {showAllResults ? "Hide all results" : "Show all results"}
+            </button>
+          </div>
+        ) : null}
+        {showAllResults && overflowGroups.length ? (
+          <div style={{ marginTop: 28 }}>
+            <h3
+              style={{
+                margin: "0 0 8px",
+                fontSize: 18,
+                fontWeight: 700,
+              }}
+            >
+              All Results
+            </h3>
+            <p
+              style={{
+                margin: "0 0 14px",
+                fontSize: 13,
+                color: colors.textMuted,
+              }}
+            >
+              Tasks beyond the top {COLUMN_PREVIEW_LIMIT} in each column.
+            </p>
+            {overflowGroups.map((col) => (
+              <div key={`all-${col.key}`} style={{ marginBottom: 18 }}>
+                <h4
+                  style={{
+                    margin: "0 0 10px",
+                    fontSize: 13,
+                    color: colors.textMuted,
+                  }}
+                >
+                  {col.label} ({col.overflow.length})
+                </h4>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  {col.overflow.map((task) => (
+                    <TaskCard
+                      key={task.taskId}
+                      task={task}
+                      users={users}
+                      onOpen={openTask}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        </>
         )}
       </div>
+
+      <RedZoneWeeklySettings />
 
       {showProject && (
         <Modal title="New Project" onClose={() => setShowProject(false)}>
@@ -595,54 +787,175 @@ export default function ManageTasks() {
       )}
 
       {showTask && (
-        <Modal title="New Task" onClose={() => setShowTask(false)}>
+        <Modal title="New Task" onClose={() => !savingTask && setShowTask(false)}>
+          {formErrors.form ? (
+            <div className="dgv-alert dgv-alert--error" style={{ marginBottom: 12 }}>
+              {formErrors.form}
+            </div>
+          ) : null}
           <Field
-            label="Title"
+            label="Title *"
             value={taskForm.title}
+            error={formErrors.title}
+            maxLength={TITLE_MAX}
             onChange={(v) => setTaskForm({ ...taskForm, title: v })}
           />
           <Field
-            label="Description"
-            value={taskForm.description}
-            onChange={(v) => setTaskForm({ ...taskForm, description: v })}
+            label="Author *"
+            value={taskForm.authorName}
+            error={formErrors.authorName}
+            maxLength={AUTHOR_MAX}
+            onChange={(v) => setTaskForm({ ...taskForm, authorName: v })}
           />
-          <label style={formLabel}>Assignees</label>
-          <div
+          <label style={formLabel}>Description</label>
+          <textarea
+            style={{ ...formInput, minHeight: 90, resize: "vertical" }}
+            value={taskForm.description}
+            maxLength={DESCRIPTION_MAX}
+            onChange={(e) =>
+              setTaskForm({ ...taskForm, description: e.target.value })
+            }
+          />
+          {formErrors.description ? (
+            <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -10, marginBottom: 12 }}>
+              {formErrors.description}
+            </div>
+          ) : null}
+          <label style={formLabel}>Category</label>
+          <select
+            style={formSelect}
+            value={taskForm.category}
+            onChange={(e) =>
+              setTaskForm({ ...taskForm, category: e.target.value })
+            }
+          >
+            <option value="">Select category</option>
+            {TASK_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label style={formLabel}>Assignees *</label>
+          <input
             style={{
-              maxHeight: 160,
-              overflowY: "auto",
-              border: `1px solid ${colors.border}`,
-              borderRadius: 10,
-              padding: 8,
-              marginBottom: 16,
+              ...formInput,
+              marginBottom: 8,
+            }}
+            placeholder="Search employees by name or email"
+            value={assigneeQuery}
+            onChange={(e) => {
+              setAssigneeQuery(e.target.value);
+              if (e.target.value.trim()) setShowAllAssignees(false);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setShowAllAssignees((open) => !open);
+              if (showAllAssignees) setAssigneeQuery("");
+            }}
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              marginBottom: 10,
+              cursor: "pointer",
+              color: "var(--dgv-accent)",
+              fontSize: 12,
+              fontWeight: 600,
             }}
           >
-            {users.length === 0 ? (
-              <div style={{ fontSize: 13, color: colors.textMuted }}>No users loaded</div>
-            ) : (
-              users.map((u) => (
-                <label
-                  key={u.email}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 13,
-                    padding: "4px 2px",
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={taskForm.assignees.includes(u.email)}
-                    onChange={() => toggleAssignee(u.email)}
-                  />
-                  {u.name ? `${u.name} (${u.email})` : u.email}
-                </label>
-              ))
-            )}
-          </div>
-          <label style={formLabel}>Priority</label>
+            {showAllAssignees ? "Hide employee list" : "Show all employees"}
+          </button>
+          {taskForm.assignees.length ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {taskForm.assignees.map((email) => {
+                const person = personLabel(users, email);
+                return (
+                  <span
+                    key={email}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 8px",
+                      borderRadius: 999,
+                      background: "var(--dgv-accent-soft)",
+                      border: `1px solid ${colors.border}`,
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {person.name}
+                    <button
+                      type="button"
+                      onClick={() => toggleAssignee(email)}
+                      aria-label={`Remove ${person.name}`}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        color: colors.text,
+                        fontWeight: 700,
+                        padding: 0,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+          {showAssigneeList ? (
+            <div
+              style={{
+                maxHeight: 160,
+                overflowY: "auto",
+                border: `1px solid ${colors.border}`,
+                borderRadius: 10,
+                padding: 8,
+                marginBottom: 16,
+              }}
+            >
+              {users.length === 0 ? (
+                <div style={{ fontSize: 13, color: colors.textMuted }}>No users loaded</div>
+              ) : assigneeMatches.length === 0 ? (
+                <div style={{ fontSize: 13, color: colors.textMuted }}>
+                  No employees found
+                </div>
+              ) : (
+                assigneeMatches.map((u) => (
+                  <label
+                    key={u.email}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 13,
+                      padding: "4px 2px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={taskForm.assignees.includes(u.email)}
+                      onChange={() => toggleAssignee(u.email)}
+                    />
+                    {u.name ? `${u.name} (${u.email})` : u.email}
+                  </label>
+                ))
+              )}
+            </div>
+          ) : null}
+          {formErrors.assignees ? (
+            <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginBottom: 12 }}>
+              {formErrors.assignees}
+            </div>
+          ) : null}
+          <label style={formLabel}>Priority *</label>
           <select
             style={formSelect}
             value={
@@ -659,99 +972,38 @@ export default function ManageTasks() {
             ))}
           </select>
           <Field
-            label="Start date"
+            label="Start Date *"
             type="date"
             value={taskForm.startDate}
+            error={formErrors.startDate}
             onChange={(v) => setTaskForm({ ...taskForm, startDate: v })}
           />
           <Field
-            label="Start time"
+            label="Start Time *"
             type="time"
             value={taskForm.startTime}
             onChange={(v) => setTaskForm({ ...taskForm, startTime: v })}
           />
           <Field
-            label="Deadline date"
+            label="Deadline Date *"
             type="date"
             value={taskForm.dueDate}
+            error={formErrors.dueDate}
             onChange={(v) => setTaskForm({ ...taskForm, dueDate: v })}
           />
           <Field
-            label="Deadline time"
+            label="Deadline Time *"
             type="time"
             value={taskForm.dueTime}
             onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
           />
-          <label style={formLabel}>Status</label>
-          <select
-            style={formSelect}
-            value={taskForm.status}
-            onChange={(e) =>
-              setTaskForm({ ...taskForm, status: e.target.value })
-            }
+          <button
+            type="button"
+            style={{ ...buttonPrimary, marginTop: 4 }}
+            onClick={saveTask}
+            disabled={savingTask}
           >
-            {KANBAN_COLUMNS.map((col) => (
-              <option key={col.key} value={col.key}>
-                {col.label}
-              </option>
-            ))}
-          </select>
-          <label style={formLabel}>Duration</label>
-          <select
-            style={formSelect}
-            value={taskForm.durationType}
-            onChange={(e) =>
-              setTaskForm({
-                ...taskForm,
-                durationType: e.target.value,
-                durationHours: "",
-                durationDays: "",
-                durationStart: "",
-                durationEnd: "",
-              })
-            }
-          >
-            <option value="">None</option>
-            <option value="HOURS">Hours</option>
-            <option value="DAYS">Days</option>
-            <option value="DATES">Dates</option>
-          </select>
-          {taskForm.durationType === "HOURS" ? (
-            <Field
-              label="Hours"
-              type="number"
-              value={taskForm.durationHours}
-              onChange={(v) => setTaskForm({ ...taskForm, durationHours: v })}
-            />
-          ) : null}
-          {taskForm.durationType === "DAYS" ? (
-            <Field
-              label="Days"
-              type="number"
-              value={taskForm.durationDays}
-              onChange={(v) => setTaskForm({ ...taskForm, durationDays: v })}
-            />
-          ) : null}
-          {taskForm.durationType === "DATES" ? (
-            <>
-              <Field
-                label="Start Date"
-                type="date"
-                value={taskForm.durationStart}
-                onChange={(v) =>
-                  setTaskForm({ ...taskForm, durationStart: v })
-                }
-              />
-              <Field
-                label="End Date"
-                type="date"
-                value={taskForm.durationEnd}
-                onChange={(v) => setTaskForm({ ...taskForm, durationEnd: v })}
-              />
-            </>
-          ) : null}
-          <button type="button" style={buttonPrimary} onClick={saveTask}>
-            Create Task
+            {savingTask ? "Creating..." : "Create Task"}
           </button>
         </Modal>
       )}
@@ -800,16 +1052,27 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-function Field({ label, value, onChange, type = "text" }) {
+function Field({ label, value, onChange, type = "text", error, maxLength }) {
   return (
     <>
       <label style={formLabel}>{label}</label>
       <input
-        style={formInput}
+        style={{
+          ...formInput,
+          border: error
+            ? "1px solid var(--dgv-danger)"
+            : formInput.border,
+        }}
         type={type}
         value={value}
+        maxLength={maxLength}
         onChange={(e) => onChange(e.target.value)}
       />
+      {error ? (
+        <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -10, marginBottom: 12 }}>
+          {error}
+        </div>
+      ) : null}
     </>
   );
 }

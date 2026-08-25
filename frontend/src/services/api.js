@@ -235,6 +235,12 @@ export const updateTask = (data) => api("/tasks", "PUT", data);
 export const archiveTask = (taskId) =>
   api("/tasks", "DELETE", { taskId });
 
+export const fetchRedZoneWeekly = () => api("/tasks/redzone-report", "GET");
+export const saveRedZoneWeekly = (data) =>
+  api("/tasks/redzone-report", "PUT", data);
+export const runRedZoneWeekly = () =>
+  api("/tasks/redzone-report", "POST", { action: "run" });
+
 export const fetchTaskById = async (taskId) => {
   try {
     return await api(`/tasks/${encodeURIComponent(taskId)}`, "GET");
@@ -257,10 +263,11 @@ export const fetchTaskActivity = (taskId) =>
   api(`/tasks/${encodeURIComponent(taskId)}/activity`, "GET");
 export const fetchTaskAttachments = (taskId) =>
   api(`/tasks/${encodeURIComponent(taskId)}/attachments`, "GET");
-export const getTaskAttachmentUploadUrl = (taskId, fileName, contentType) =>
+export const getTaskAttachmentUploadUrl = (taskId, fileName, contentType, fileSize) =>
   api(`/tasks/${encodeURIComponent(taskId)}/attachment-upload-url`, "POST", {
     fileName,
     contentType,
+    fileSize,
   });
 export const registerTaskAttachment = (taskId, payload) =>
   api(`/tasks/${encodeURIComponent(taskId)}/attachments`, "POST", payload);
@@ -280,6 +287,8 @@ export const fetchMyLeave = () => api("/leave", "GET");
 export const fetchAllLeave = () => api("/leave?all=true", "GET");
 export const fetchLeaveNotifications = () =>
   api("/leave?notifications=true", "GET");
+export const markNotificationRead = (sk) =>
+  api("/leave", "PUT", { action: "readNotification", sk });
 export const applyLeave = (data) => api("/leave", "POST", data);
 export const reviewLeave = (leaveId, status, rejectionReason) =>
   api("/leave", "PUT", { leaveId, status, rejectionReason });
@@ -494,14 +503,34 @@ export const reviewResignation = async (resignationId, status, email) => {
 
 /* ================= ANNOUNCEMENTS ================= */
 
-export const fetchAnnouncements = async () => {
-  const items = await api("/announcements", "GET");
+function filterPortalAnnouncements(items) {
   return (Array.isArray(items) ? items : []).filter(
     (a) => !isMeetingAnnouncement(a)
   );
+}
+
+export const fetchAnnouncements = async () => {
+  const items = await api("/announcements", "GET");
+  return filterPortalAnnouncements(items);
+};
+
+/**
+ * Admin history. Uses apiOptional because GET /admin/announcements is a
+ * newer method: API Gateway 403 (missing route) or "Admin required" must
+ * not clear the session the way api() does for 401/403.
+ */
+export const fetchAnnouncementHistory = async () => {
+  try {
+    const items = await apiOptional("/admin/announcements", "GET");
+    return filterPortalAnnouncements(items);
+  } catch {
+    return fetchAnnouncements();
+  }
 };
 export const createAnnouncement = (data) =>
   api("/admin/announcements", "POST", data);
+export const updateAnnouncement = (data) =>
+  apiOptional("/admin/announcements", "PUT", data);
 export const deleteAnnouncement = (announceId) =>
   api("/admin/announcements", "DELETE", { announceId });
 
