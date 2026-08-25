@@ -17,6 +17,8 @@ import {
   fetchMyActivityToday,
 } from "../services/api";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../theme";
+import ZoneBadge from "../components/ZoneBadge";
+import { getTaskZone } from "../utils/taskStatus";
 
 export default function Dashboard() {
   const [announcements, setAnnouncements] = useState([]);
@@ -35,7 +37,14 @@ export default function Dashboard() {
       .then(([a, t, l, activity]) => {
         setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
         setTasks(
-          Array.isArray(t) ? t.filter((x) => x.status !== "DONE").slice(0, 5) : []
+          Array.isArray(t)
+            ? t
+                .filter((x) => {
+                  const status = x.myAssignment?.status || x.status;
+                  return status !== "DONE" && status !== "CANCELLED";
+                })
+                .slice(0, 5)
+            : []
         );
         setLeave(
           Array.isArray(l)
@@ -170,7 +179,13 @@ export default function Dashboard() {
                   className="dgv-badge dgv-badge--info"
                   style={{ marginLeft: 10 }}
                 >
-                  {t.status}
+                  {t.myAssignment?.status || t.status}
+                </span>
+                <span style={{ marginLeft: 8, display: "inline-flex", verticalAlign: "middle" }}>
+                  <ZoneBadge
+                    zone={t.myAssignment?.zone || getTaskZone(t)}
+                    status={t.myAssignment?.status || t.status}
+                  />
                 </span>
               </div>
               <ArrowRight size={16} color="var(--dgv-text-muted)" />

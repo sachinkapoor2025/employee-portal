@@ -14,6 +14,7 @@ const {
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
+const escalation = require("./escalation");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -28,7 +29,7 @@ const STATUSES = [
   "DONE",
   "CANCELLED",
 ];
-const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
+const PRIORITIES = escalation.PRIORITIES;
 const DURATION_TYPES = ["HOURS", "DAYS", "DATES"];
 
 function parseDuration(body = {}) {
@@ -108,16 +109,18 @@ function taskPathMatch(path) {
 }
 
 function isOverdue(task) {
-  if (!task?.dueDate) return false;
-  const status = String(task.status || "").toUpperCase();
-  // Do not overwrite DONE/CANCELLED; overdue is a display flag only.
-  if (status === "DONE" || status === "CANCELLED") return false;
-  const raw = String(task.dueDate);
-  const due = /^\d{4}-\d{2}-\d{2}$/.test(raw)
-    ? new Date(`${raw}T23:59:59`)
-    : new Date(raw);
-  if (!Number.isFinite(due.getTime())) return false;
-  return Date.now() > due.getTime();
+  return !!escalation.decorateTask(task, Date.now()).overdue;
+}
+
+function isScheduleEvent(event) {
+  if (!event || event.httpMethod) return false;
+  if (event.taskEscalation === true || event.source === "task-escalation") {
+    return true;
+  }
+  if (event.source === "aws.events" || event["detail-type"] === "Scheduled Event") {
+    return true;
+  }
+  return false;
 }
 
 async function getTask(taskId) {
@@ -148,9 +151,22 @@ async function putTaskCopies(task) {
   }
 }
 
-async function appendActivity(taskId, action, detail, actorEmail) {
-  const now = new Date().toISOString();
+async function appendActivity(taskId, action, detail, actorEmail, extra = {}) {
+  return appendActivityAt(
+    taskId,
+    action,
+    detail,
+    actorEmail,
+    extra.timestamp || new Date().toISOString(),
+    extra
+  );
+}
+
+async function appendActivityAt(taskId, action, detail, actorEmail, timestamp, extra = {}) {
+  const now = timestamp || new Date().toISOString();
   const id = randomUUID();
+  const { timestamp: _ignored, ...rest } = extra || {};
+  void _ignored;
   const item = {
     PK: `TASK#${taskId}`,
     SK: `ACTIVITY#${now}#${id}`,
@@ -160,11 +176,192 @@ async function appendActivity(taskId, action, detail, actorEmail) {
     detail: detail || "",
     actorEmail: actorEmail || "",
     timestamp: now,
+    ...rest,
   };
   await ddb.send(
     new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
   );
   return item;
+}
+
+async function loadAssignmentItems(taskId) {
+  if (!taskId) return [];
+  return listByPrefix(`TASK#${taskId}`, "ASSIGNMENT#");
+}
+
+async function writeAssignment(taskId, assignment) {
+  const email = escalation.normalizeEmail(assignment.email);
+  if (!email) return null;
+  const item = {
+    PK: `TASK#${taskId}`,
+    SK: `ASSIGNMENT#${email}`,
+    type: "ASSIGNMENT",
+    taskId,
+    email,
+    status: assignment.status || "TODO",
+    assignedAt: assignment.assignedAt || new Date().toISOString(),
+    assignedBy: assignment.assignedBy || "",
+    completedAt: assignment.completedAt || null,
+    completedDate: assignment.completedDate || null,
+    completedZone: assignment.completedZone || null,
+    highestZone: assignment.highestZone || null,
+    recordedZone: assignment.recordedZone || null,
+    zoneReachedAt: assignment.zoneReachedAt || null,
+    removed: !!assignment.removed,
+  };
+  await ddb.send(
+    new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
+  );
+  return item;
+}
+
+async function resolveAssignments(task) {
+  const stored = await loadAssignmentItems(task.taskId);
+  if (stored.length) return stored;
+  return escalation.synthesizeAssignments(task);
+}
+
+function snapshotTask(task, assignments) {
+  const emails = (assignments || [])
+    .filter((a) => a && !a.removed)
+    .map((a) => escalation.normalizeEmail(a.email));
+  return {
+    ...task,
+    assignees: emails,
+    assignee: emails[0] || task.assignee || "",
+    assignments: (assignments || []).map((a) => ({
+      email: escalation.normalizeEmail(a.email),
+      status: a.status || "TODO",
+      assignedAt: a.assignedAt || null,
+      assignedBy: a.assignedBy || "",
+      completedAt: a.completedAt || null,
+      completedDate: a.completedDate || null,
+      completedZone: a.completedZone || null,
+      highestZone: a.highestZone || null,
+      recordedZone: a.recordedZone || null,
+      zoneReachedAt: a.zoneReachedAt || null,
+      removed: !!a.removed,
+    })),
+    status: escalation.deriveParentStatus(assignments, task.status),
+  };
+}
+
+async function persistAssignmentsAndTask(task, assignments) {
+  for (const a of assignments) {
+    await writeAssignment(task.taskId, a);
+  }
+  const merged = snapshotTask(task, assignments);
+  merged.updatedAt = new Date().toISOString();
+  await putTaskCopies(merged);
+  return merged;
+}
+
+async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}) {
+  if (!email || !type || !dedupKey) return;
+  try {
+    const { dispatchNotification } = require("../common/notify");
+    await dispatchNotification(ddb, {
+      email,
+      type,
+      title,
+      subject: title,
+      message,
+      reason: type,
+      dedupKey,
+      extra,
+    });
+  } catch (err) {
+    console.error("Task notification failed", err);
+  }
+}
+
+async function persistEscalations(task, nowMs = Date.now()) {
+  const assignments = await resolveAssignments(task);
+  let changed = false;
+  const next = [];
+  for (const a of assignments) {
+    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
+      next.push(a);
+      continue;
+    }
+    const result = escalation.detectTransitions(a, task.dueDate, nowMs);
+    if (
+      result.events.length ||
+      result.assignment.recordedZone !== a.recordedZone
+    ) {
+      changed = true;
+    }
+    next.push(result.assignment);
+    for (const ev of result.events) {
+      await appendActivityAt(
+        task.taskId,
+        ev.action,
+        `${ev.detail} (${a.email})`,
+        "system",
+        ev.timestamp,
+        { assignmentEmail: a.email }
+      );
+      const orange = ev.action === "zone_orange";
+      await notifyTaskEvent(
+        a.email,
+        orange ? "TASK_ORANGE" : "TASK_RED",
+        orange
+          ? `Task moved to Orange: ${task.title}`
+          : `Task moved to Red: ${task.title}`,
+        orange
+          ? `"${task.title}" has passed its deadline and is now in the Orange zone (24 hours).`
+          : `"${task.title}" has been escalated to the Red zone.`,
+        `${task.taskId}#${a.email}#${ev.action}#${task.dueDate || ""}`,
+        { taskId: task.taskId, zone: orange ? "ORANGE" : "RED" }
+      );
+    }
+    if (
+      escalation.approachingDeadline(task.dueDate, nowMs) &&
+      escalation.isOpenStatus(a.status)
+    ) {
+      await notifyTaskEvent(
+        a.email,
+        "TASK_DUE_SOON",
+        `Task due soon: ${task.title}`,
+        `"${task.title}" is approaching its deadline.`,
+        `${task.taskId}#${a.email}#due-soon#${task.dueDate || ""}`,
+        { taskId: task.taskId }
+      );
+    }
+  }
+  if (changed) {
+    return persistAssignmentsAndTask(task, next);
+  }
+  return snapshotTask(task, next);
+}
+
+async function queryAllTasks() {
+  const items = [];
+  let lastKey;
+  do {
+    const res = await ddb.send(
+      new QueryCommand({
+        TableName: process.env.WORK_TABLE,
+        KeyConditionExpression: "PK = :pk",
+        ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(res.Items || []));
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+async function runEscalationSweep() {
+  const tasks = await queryAllTasks();
+  let processed = 0;
+  for (const task of tasks) {
+    if (task.archived) continue;
+    await persistEscalations(task);
+    processed += 1;
+  }
+  return json(200, { ok: true, processed });
 }
 
 async function getProjectName(projectId) {
@@ -230,6 +427,15 @@ async function listByPrefix(pk, prefix) {
 }
 
 exports.handler = async (event) => {
+  if (isScheduleEvent(event)) {
+    try {
+      return await runEscalationSweep();
+    } catch (err) {
+      console.error("Task escalation sweep error:", err);
+      return json(500, { error: "Internal server error" });
+    }
+  }
+
   if (event.httpMethod === "OPTIONS") return json(200, "");
 
   const user = getUser(event);
@@ -269,7 +475,7 @@ exports.handler = async (event) => {
         const taskPrefix = taskId ? `tasks/${taskId}/` : "";
         const allowed =
           user.isAdmin ||
-          (task && task.assignee === user.email) ||
+          (task && escalation.taskAssignedTo(task, user.email)) ||
           (ownPrefix && objectKey.startsWith(ownPrefix)) ||
           (taskPrefix && objectKey.startsWith(taskPrefix));
         if (!allowed) return json(403, { error: "Forbidden" });
@@ -287,28 +493,32 @@ exports.handler = async (event) => {
 
       if (!sub && method === "GET") {
         if (!task) return json(404, { error: "Task not found" });
-        const isAssignee = task.assignee === user.email;
-        if (!user.isAdmin && !isAssignee) {
+        const assignments = await resolveAssignments(task);
+        const snap = snapshotTask(task, assignments);
+        if (!user.isAdmin && !escalation.taskAssignedTo(snap, user.email)) {
           return json(403, { error: "Forbidden" });
         }
 
-        const [projectName, assignee] = await Promise.all([
+        const decorated = escalation.decorateTask(snap, Date.now(), user.email);
+        const [projectName, assignee, assigneeProfiles] = await Promise.all([
           getProjectName(task.projectId),
-          getAssigneeProfile(task.assignee),
+          getAssigneeProfile(decorated.assignee),
+          Promise.all(
+            (decorated.assignees || []).map((email) => getAssigneeProfile(email))
+          ),
         ]);
 
         return json(200, {
-          ...task,
+          ...decorated,
           projectName,
           assigneeProfile: assignee,
-          overdue: isOverdue(task),
-          displayStatus: isOverdue(task) ? "OVERDUE" : task.status,
+          assigneeProfiles,
         });
       }
 
       if (!task) return json(404, { error: "Task not found" });
       const canAccess =
-        user.isAdmin || task.assignee === user.email;
+        user.isAdmin || escalation.taskAssignedTo(task, user.email);
       if (!canAccess) return json(403, { error: "Forbidden" });
 
       // Comments
@@ -357,7 +567,7 @@ exports.handler = async (event) => {
       }
 
       if (sub === "attachment-upload-url" && method === "POST") {
-        if (!user.isAdmin && task.assignee !== user.email) {
+        if (!user.isAdmin && !escalation.taskAssignedTo(task, user.email)) {
           return json(403, { error: "Forbidden" });
         }
         const fileName = body.fileName;
@@ -381,7 +591,7 @@ exports.handler = async (event) => {
       }
 
       if (sub === "attachments" && method === "POST") {
-        if (!user.isAdmin && task.assignee !== user.email) {
+        if (!user.isAdmin && !escalation.taskAssignedTo(task, user.email)) {
           return json(403, { error: "Forbidden" });
         }
         const { fileName, contentType, s3Key } = body;
@@ -452,7 +662,15 @@ exports.handler = async (event) => {
 
     // ── TASKS LIST / CREATE / UPDATE ──
     if (path.endsWith("/tasks") && method === "GET") {
-      const { projectId, assignee, mine } = event.queryStringParameters || {};
+      const {
+        projectId,
+        assignee,
+        mine,
+        zone,
+        q,
+        search,
+        priority,
+      } = event.queryStringParameters || {};
       let items = [];
 
       if (projectId) {
@@ -478,17 +696,39 @@ exports.handler = async (event) => {
         items = res.Items || [];
       }
 
+      items = items.filter((t) => !t.archived);
+
+      const focusEmail =
+        mine === "true" ? user.email : assignee || "";
+
       if (mine === "true" || assignee) {
-        const email = assignee || user.email;
-        items = items.filter((t) => t.assignee === email);
+        items = items.filter((t) =>
+          escalation.taskAssignedTo(t, focusEmail || user.email)
+        );
       }
 
-      items = items.map((t) => ({
-        ...t,
-        overdue: isOverdue(t),
-      }));
+      items = items.map((t) =>
+        escalation.decorateTask(t, Date.now(), user.email)
+      );
 
-      return json(200, items);
+      const query = q || search;
+      if (query) {
+        items = items.filter((t) => escalation.matchesSearch(t, query));
+      }
+      if (priority) {
+        items = items.filter((t) =>
+          escalation.matchesPriorityFilter(t, priority)
+        );
+      }
+
+      const counts = escalation.zoneCounts(items, focusEmail || undefined);
+      items = escalation.applyZoneFilter(
+        items,
+        zone,
+        focusEmail || undefined
+      );
+
+      return json(200, { tasks: items, zoneCounts: counts });
     }
 
     if (path.endsWith("/tasks") && method === "POST") {
@@ -500,46 +740,71 @@ exports.handler = async (event) => {
       }
 
       const now = new Date().toISOString();
+      const nowMs = Date.now();
       const duration = parseDuration(body);
-      const item = {
-        PK: "ENTITY#TASK",
-        SK: `TASK#${id}`,
-        taskId: id,
-        projectId,
-        title: body.title,
-        description: body.description || "",
-        assignee: body.assignee || "",
-        priority: PRIORITIES.includes(body.priority)
-          ? body.priority
-          : "MEDIUM",
-        status: STATUSES.includes(body.status) ? body.status : "TODO",
-        dueDate: body.dueDate || null,
-        startDate: body.startDate || null,
-        durationType: duration.durationType,
-        durationHours: duration.durationHours,
-        durationDays: duration.durationDays,
-        durationStart: duration.durationStart,
-        durationEnd: duration.durationEnd,
-        completedDate: null,
-        labels: body.labels || [],
-        archived: false,
-        createdAt: now,
-        createdBy: user.email,
-        updatedAt: now,
-      };
+      const emails = escalation.normalizeEmailList(body.assignees, body.assignee);
+      const initialStatus = STATUSES.includes(body.status) ? body.status : "TODO";
+      const assignments = emails.map((email) => ({
+        email,
+        status: initialStatus,
+        assignedAt: now,
+        assignedBy: user.email,
+        recordedZone: escalation.zoneAt(
+          escalation.parseDeadlineMs(body.dueDate),
+          nowMs
+        ),
+      }));
 
-      await putTaskCopies(item);
+      const item = snapshotTask(
+        {
+          PK: "ENTITY#TASK",
+          SK: `TASK#${id}`,
+          taskId: id,
+          projectId,
+          title: body.title,
+          description: body.description || "",
+          assignee: emails[0] || "",
+          priority: escalation.normalizePriority(body.priority),
+          status: initialStatus,
+          dueDate: body.dueDate || null,
+          startDate: body.startDate || null,
+          durationType: duration.durationType,
+          durationHours: duration.durationHours,
+          durationDays: duration.durationDays,
+          durationStart: duration.durationStart,
+          durationEnd: duration.durationEnd,
+          completedDate: null,
+          labels: body.labels || [],
+          archived: false,
+          createdAt: now,
+          createdBy: user.email,
+          updatedAt: now,
+        },
+        assignments
+      );
+
+      await persistAssignmentsAndTask(item, assignments);
       await appendActivity(id, "task_created", "Task created", user.email);
-      if (item.assignee) {
+      if (emails.length) {
         await appendActivity(
           id,
           "task_assigned",
-          `Assigned to ${item.assignee}`,
+          `Assigned to ${emails.join(", ")}`,
           user.email
         );
+        for (const email of emails) {
+          await notifyTaskEvent(
+            email,
+            "TASK_ASSIGNED",
+            `New task assigned: ${item.title}`,
+            `You have been assigned "${item.title}".`,
+            `${id}#${email}#assigned#${now}`,
+            { taskId: id }
+          );
+        }
       }
 
-      return json(201, item);
+      return json(201, escalation.decorateTask(item, nowMs, user.email));
     }
 
     if (path.endsWith("/tasks") && method === "PUT") {
@@ -549,81 +814,251 @@ exports.handler = async (event) => {
       const existing = await getTask(taskId);
       if (!existing) return json(404, { error: "Task not found" });
 
-      const isAssignee = existing.assignee === user.email;
+      let assignments = await resolveAssignments(existing);
+      const snapExisting = snapshotTask(existing, assignments);
+      const isAssignee = escalation.taskAssignedTo(snapExisting, user.email);
       if (!user.isAdmin && !isAssignee) return json(403, { error: "Forbidden" });
 
       const allowed = user.isAdmin
         ? updates
         : {
             status: updates.status,
+            assignmentEmail: updates.assignmentEmail,
           };
 
       if (allowed.status && !STATUSES.includes(allowed.status)) {
         delete allowed.status;
       }
-      if (allowed.priority && !PRIORITIES.includes(allowed.priority)) {
-        delete allowed.priority;
+      if (allowed.priority) {
+        allowed.priority = escalation.normalizePriority(allowed.priority);
       }
       if (allowed.durationType !== undefined) {
         Object.assign(allowed, parseDuration(allowed));
       }
 
+      const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
       const merged = {
         ...existing,
         ...allowed,
         taskId: existing.taskId,
         PK: "ENTITY#TASK",
         SK: `TASK#${taskId}`,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nowIso,
       };
 
-      if (
-        allowed.status === "DONE" &&
-        existing.status !== "DONE" &&
-        !merged.completedDate
-      ) {
-        merged.completedDate = new Date().toISOString().slice(0, 10);
+      delete merged.assignmentEmail;
+      delete merged.assignees;
+      delete merged.zone;
+      delete merged.overdue;
+      delete merged.timing;
+      delete merged.myAssignment;
+      delete merged.assigneeProfiles;
+      delete merged.displayStatus;
+      delete merged.priorityLabel;
+
+      const statusLabel = (s) => {
+        const map = {
+          TODO: "TODO",
+          IN_PROGRESS: "IN PROGRESS",
+          REVIEW: "IN REVIEW",
+          DONE: "COMPLETED",
+          CANCELLED: "CANCELLED",
+          BACKLOG: "TODO",
+        };
+        return map[String(s || "").toUpperCase()] || s;
+      };
+
+      const applyStatusToAssignment = async (target, nextStatus) => {
+        if (!target || target.removed) return;
+        if (nextStatus === "DONE") {
+          const completed = escalation.completeAssignment(
+            target,
+            merged.dueDate,
+            nowMs,
+            nowIso
+          );
+          Object.assign(target, completed);
+          await appendActivity(
+            taskId,
+            "task_completed",
+            `Completed by ${target.email} (zone ${completed.completedZone})`,
+            user.email,
+            { assignmentEmail: target.email, zone: completed.completedZone }
+          );
+          await notifyTaskEvent(
+            target.email,
+            "TASK_COMPLETED",
+            `Task completed: ${merged.title}`,
+            `"${merged.title}" was marked completed.`,
+            `${taskId}#${target.email}#completed#${nowIso}`,
+            { taskId }
+          );
+        } else {
+          const prev = target.status;
+          target.status = nextStatus;
+          if (nextStatus !== "DONE") {
+            target.completedAt = null;
+            target.completedDate = null;
+            target.completedZone = null;
+          }
+          if (prev !== nextStatus) {
+            await appendActivity(
+              taskId,
+              "status_changed",
+              `${target.email}: ${statusLabel(prev)} → ${statusLabel(nextStatus)}`,
+              user.email,
+              { assignmentEmail: target.email }
+            );
+          }
+        }
+      };
+
+      if (allowed.status) {
+        const targetEmail = user.isAdmin
+          ? escalation.normalizeEmail(allowed.assignmentEmail) ||
+            (assignments.filter((a) => !a.removed).length <= 1
+              ? assignments.find((a) => !a.removed)?.email
+              : "")
+          : user.email;
+        if (targetEmail) {
+          const mine = assignments.find(
+            (a) =>
+              escalation.normalizeEmail(a.email) === targetEmail && !a.removed
+          );
+          if (mine) {
+            if (
+              !user.isAdmin &&
+              escalation.isComplete(mine.status) &&
+              allowed.status !== "DONE"
+            ) {
+              // Employees cannot reopen a completed assignment.
+            } else if (!user.isAdmin && allowed.status === "CANCELLED") {
+              // Employees cannot cancel tasks.
+            } else {
+              await applyStatusToAssignment(mine, allowed.status);
+            }
+          }
+        } else if (user.isAdmin && allowed.status === "CANCELLED") {
+          for (const a of assignments.filter((x) => !x.removed)) {
+            await applyStatusToAssignment(a, "CANCELLED");
+          }
+        }
       }
 
-      await putTaskCopies(merged);
+      if (
+        user.isAdmin &&
+        (updates.assignees !== undefined || updates.assignee !== undefined)
+      ) {
+        const emails = escalation.normalizeEmailList(
+          updates.assignees !== undefined ? updates.assignees : updates.assignee,
+          null
+        );
+        const current = new Set(
+          assignments
+            .filter((a) => !a.removed)
+            .map((a) => escalation.normalizeEmail(a.email))
+        );
+        const nextSet = new Set(emails);
+        for (const a of assignments) {
+          const email = escalation.normalizeEmail(a.email);
+          if (!nextSet.has(email) && !a.removed) {
+            a.removed = true;
+            await appendActivity(
+              taskId,
+              "task_reassigned",
+              `Removed assignee ${email}`,
+              user.email,
+              { assignmentEmail: email }
+            );
+          }
+        }
+        for (const email of emails) {
+          const existingA = assignments.find(
+            (a) => escalation.normalizeEmail(a.email) === email
+          );
+          if (!existingA) {
+            assignments.push({
+              email,
+              status: "TODO",
+              assignedAt: nowIso,
+              assignedBy: user.email,
+              recordedZone: escalation.zoneAt(
+                escalation.parseDeadlineMs(merged.dueDate),
+                nowMs
+              ),
+            });
+            await appendActivity(
+              taskId,
+              "task_assigned",
+              `Assigned to ${email}`,
+              user.email,
+              { assignmentEmail: email }
+            );
+            await notifyTaskEvent(
+              email,
+              "TASK_ASSIGNED",
+              `New task assigned: ${merged.title}`,
+              `You have been assigned "${merged.title}".`,
+              `${taskId}#${email}#assigned#${nowIso}`,
+              { taskId }
+            );
+          } else if (existingA.removed) {
+            existingA.removed = false;
+            existingA.assignedAt = nowIso;
+            existingA.assignedBy = user.email;
+            if (!escalation.isComplete(existingA.status)) {
+              existingA.status = "TODO";
+              existingA.recordedZone = escalation.zoneAt(
+                escalation.parseDeadlineMs(merged.dueDate),
+                nowMs
+              );
+            }
+            await appendActivity(
+              taskId,
+              "task_assigned",
+              `Assigned to ${email}`,
+              user.email,
+              { assignmentEmail: email }
+            );
+          }
+        }
+        if ([...nextSet].sort().join(",") !== [...current].sort().join(",")) {
+          await appendActivity(
+            taskId,
+            "task_reassigned",
+            emails.length
+              ? `Assignees: ${emails.join(", ")}`
+              : "Task unassigned",
+            user.email
+          );
+        }
+      }
 
-      if (allowed.status && allowed.status !== existing.status) {
-        const statusLabel = (s) => {
-          const map = {
-            TODO: "TODO",
-            IN_PROGRESS: "IN PROGRESS",
-            REVIEW: "IN REVIEW",
-            DONE: "COMPLETED",
-            CANCELLED: "CANCELLED",
-            BACKLOG: "TODO",
-          };
-          return map[String(s || "").toUpperCase()] || s;
-        };
+      if (
+        user.isAdmin &&
+        allowed.dueDate !== undefined &&
+        allowed.dueDate !== existing.dueDate
+      ) {
         await appendActivity(
           taskId,
-          "status_changed",
-          `Status changed from ${statusLabel(existing.status)} → ${statusLabel(
-            allowed.status
-          )}`,
-          user.email
+          "deadline_changed",
+          `Deadline changed from ${existing.dueDate || "none"} → ${
+            allowed.dueDate || "none"
+          }`,
+          user.email,
+          { previousDeadline: existing.dueDate || null }
+        );
+        assignments = assignments.map((a) =>
+          escalation.resetEscalationForNewDeadline(a, allowed.dueDate, nowMs)
         );
       }
+
       if (allowed.priority && allowed.priority !== existing.priority) {
         await appendActivity(
           taskId,
           "priority_changed",
           `Priority changed from ${existing.priority} → ${allowed.priority}`,
-          user.email
-        );
-      }
-      if (
-        allowed.assignee !== undefined &&
-        allowed.assignee !== existing.assignee
-      ) {
-        await appendActivity(
-          taskId,
-          "task_assigned",
-          `Assigned to ${allowed.assignee || "Unassigned"}`,
           user.email
         );
       }
@@ -635,25 +1070,25 @@ exports.handler = async (event) => {
           user.email
         );
       }
-      if (allowed.title || allowed.description || allowed.dueDate !== undefined) {
-        if (
-          (allowed.title && allowed.title !== existing.title) ||
-          (allowed.description !== undefined &&
-            allowed.description !== existing.description) ||
-          (allowed.dueDate !== undefined &&
-            allowed.dueDate !== existing.dueDate)
-        ) {
-          await appendActivity(
-            taskId,
-            "task_updated",
-            "Task details updated",
-            user.email
-          );
-        }
+      if (
+        (allowed.title && allowed.title !== existing.title) ||
+        (allowed.description !== undefined &&
+          allowed.description !== existing.description)
+      ) {
+        await appendActivity(
+          taskId,
+          "task_updated",
+          "Task details updated",
+          user.email
+        );
       }
 
+      const saved = await persistAssignmentsAndTask(merged, assignments);
       void projectId;
-      return json(200, { ...merged, overdue: isOverdue(merged) });
+      return json(
+        200,
+        escalation.decorateTask(saved, nowMs, user.email)
+      );
     }
 
     // Soft-delete / archive via PUT preferred; hard delete for admin

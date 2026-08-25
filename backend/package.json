@@ -2,6 +2,9 @@
   "name": "employee-portal-backend",
   "private": true,
   "version": "1.0.0",
+  "scripts": {
+    "test": "node lambda/meetings/logic.test.js && node lambda/notifications/logic.test.js && node lambda/common/notify.test.js && node lambda/projects/escalation.test.js"
+  },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.787.0",
     "@aws-sdk/client-dynamodb": "^3.787.0",

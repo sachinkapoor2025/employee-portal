@@ -921,7 +921,17 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-ProjectsFunction"
       Handler: lambda/projects/handler.handler
-      Timeout: 30
+      Timeout: 60
+      Environment:
+        Variables:
+          WORK_TABLE: !Ref WorkTasksTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+          TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
+          COMPANY_TIMEZONE: Asia/Kolkata
+          COMPANY_TZ_OFFSET: "+05:30"
+          NOTIFICATION_FROM_EMAIL: !Ref NotificationFromEmail
+          NOTIFICATION_FROM_NAME: DGV Portal
+          PORTAL_URL: !Sub "https://${FrontendDomainName}"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -930,11 +940,12 @@ Resources:
             TableName: !Ref UserProfileTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
-      Environment:
-        Variables:
-          WORK_TABLE: !Ref WorkTasksTable
-          USER_PROFILE_TABLE: !Ref UserProfileTable
-          TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
       Events:
         ProjectsGetApi:
           Type: Api
@@ -1032,6 +1043,14 @@ Resources:
             Path: /time-entries
             Method: POST
             RestApiId: !Ref ApiGateway
+        TaskEscalationSchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-task-escalation"
+            Description: Persist Green/Orange/Red zone transitions from original deadlines
+            Enabled: true
+            Schedule: rate(5 minutes)
+            Input: '{"taskEscalation":true,"source":"task-escalation"}'
 
   LeaveFunction:
     Type: AWS::Serverless::Function

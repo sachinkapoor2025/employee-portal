@@ -1,0 +1,271 @@
+const assert = require("assert");
+const {
+  ORANGE_MS,
+  ZONES,
+  parseDeadlineMs,
+  zoneAt,
+  computeAssignmentView,
+  completeAssignment,
+  detectTransitions,
+  synthesizeAssignments,
+  deriveParentStatus,
+  decorateTask,
+  taskAssignedTo,
+  resetEscalationForNewDeadline,
+  normalizeEmailList,
+  normalizePriority,
+} = require("./escalation");
+
+const DEADLINE = "2026-08-25T11:30:00.000Z"; // 17:00 IST
+const DEADLINE_MS = Date.parse(DEADLINE);
+
+assert.strictEqual(parseDeadlineMs(DEADLINE), DEADLINE_MS);
+assert.ok(parseDeadlineMs("2026-08-25") > Date.parse("2026-08-25T18:29:00.000Z"));
+
+assert.strictEqual(zoneAt(DEADLINE_MS, DEADLINE_MS - 1), ZONES.GREEN);
+assert.strictEqual(zoneAt(DEADLINE_MS, DEADLINE_MS), ZONES.ORANGE);
+assert.strictEqual(zoneAt(DEADLINE_MS, DEADLINE_MS + ORANGE_MS - 1), ZONES.ORANGE);
+assert.strictEqual(zoneAt(DEADLINE_MS, DEADLINE_MS + ORANGE_MS), ZONES.RED);
+
+// Test 1 — completed before deadline stays Green, never Orange/Red
+const t1Now = Date.parse("2026-08-25T11:00:00.000Z"); // 16:30 IST
+const t1Done = completeAssignment(
+  { email: "rahul@mydgv.com", status: "IN_PROGRESS" },
+  DEADLINE,
+  t1Now,
+  new Date(t1Now).toISOString()
+);
+assert.strictEqual(t1Done.status, "DONE");
+assert.strictEqual(t1Done.completedZone, ZONES.GREEN);
+const t1Later = computeAssignmentView(
+  t1Done,
+  DEADLINE,
+  DEADLINE_MS + ORANGE_MS + 60 * 1000
+);
+assert.strictEqual(t1Later.zone, ZONES.GREEN);
+assert.strictEqual(t1Later.completed, true);
+assert.strictEqual(t1Later.reachedRed, false);
+
+// Test 2 — becomes Orange at 6:00 PM same day
+const t2 = computeAssignmentView(
+  { email: "amit@mydgv.com", status: "TODO" },
+  DEADLINE,
+  Date.parse("2026-08-25T12:30:00.000Z") // 18:00 IST
+);
+assert.strictEqual(t2.zone, ZONES.ORANGE);
+assert.strictEqual(t2.completed, false);
+
+// Detection at 5:10 PM still Orange since 5:00 PM (not detection+24h)
+const lateDetect = detectTransitions(
+  { email: "amit@mydgv.com", status: "TODO", recordedZone: "GREEN" },
+  DEADLINE,
+  Date.parse("2026-08-25T11:40:00.000Z")
+);
+assert.strictEqual(lateDetect.assignment.recordedZone, ZONES.ORANGE);
+assert.strictEqual(lateDetect.events[0].action, "zone_orange");
+assert.strictEqual(lateDetect.events[0].timestamp, DEADLINE);
+
+// Test 3 — completed during Orange never becomes Red
+const t3Now = Date.parse("2026-08-26T09:30:00.000Z"); // next day 15:00 IST
+const t3Done = completeAssignment(
+  { email: "priya@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
+  DEADLINE,
+  t3Now,
+  new Date(t3Now).toISOString()
+);
+assert.strictEqual(t3Done.completedZone, ZONES.ORANGE);
+const t3AfterRedWindow = computeAssignmentView(
+  t3Done,
+  DEADLINE,
+  DEADLINE_MS + ORANGE_MS + 60 * 1000
+);
+assert.strictEqual(t3AfterRedWindow.zone, ZONES.ORANGE);
+assert.strictEqual(t3AfterRedWindow.reachedRed, false);
+
+// Test 4 — becomes Red the next day at 5:01 PM
+const t4 = computeAssignmentView(
+  { email: "dev@mydgv.com", status: "TODO" },
+  DEADLINE,
+  Date.parse("2026-08-26T11:31:00.000Z")
+);
+assert.strictEqual(t4.zone, ZONES.RED);
+
+const skippedOrange = detectTransitions(
+  { email: "dev@mydgv.com", status: "TODO", recordedZone: "GREEN" },
+  DEADLINE,
+  Date.parse("2026-08-26T11:31:00.000Z")
+);
+assert.strictEqual(skippedOrange.events.length, 2);
+assert.strictEqual(skippedOrange.events[0].action, "zone_orange");
+assert.strictEqual(skippedOrange.events[0].timestamp, DEADLINE);
+assert.strictEqual(skippedOrange.events[1].action, "zone_red");
+assert.strictEqual(
+  skippedOrange.events[1].timestamp,
+  new Date(DEADLINE_MS + ORANGE_MS).toISOString()
+);
+
+// Test 5 — completed after Red retains Red history
+const t5Now = Date.parse("2026-08-26T12:00:00.000Z");
+const t5Done = completeAssignment(
+  {
+    email: "dev@mydgv.com",
+    status: "TODO",
+    recordedZone: "RED",
+    highestZone: "RED",
+  },
+  DEADLINE,
+  t5Now,
+  new Date(t5Now).toISOString()
+);
+assert.strictEqual(t5Done.status, "DONE");
+assert.strictEqual(t5Done.completedZone, ZONES.RED);
+assert.strictEqual(t5Done.highestZone, ZONES.RED);
+const t5View = computeAssignmentView(t5Done, DEADLINE, t5Now + 86400000);
+assert.strictEqual(t5View.zone, ZONES.RED);
+assert.strictEqual(t5View.reachedRed, true);
+assert.strictEqual(t5View.completed, true);
+
+// Completing again must not reopen or change zone
+const t5Again = completeAssignment(t5Done, DEADLINE, t5Now + 1000, new Date(t5Now + 1000).toISOString());
+assert.strictEqual(t5Again.completedAt, t5Done.completedAt);
+assert.strictEqual(t5Again.completedZone, ZONES.RED);
+
+// Test 6 — multiple employees independent
+const task = {
+  taskId: "t1",
+  title: "Prepare Monthly Report",
+  dueDate: DEADLINE,
+  assignee: "rahul@mydgv.com",
+  assignees: [
+    "rahul@mydgv.com",
+    "amit@mydgv.com",
+    "priya@mydgv.com",
+    "dev@mydgv.com",
+  ],
+  assignments: [
+    completeAssignment(
+      { email: "rahul@mydgv.com", status: "TODO" },
+      DEADLINE,
+      t1Now,
+      new Date(t1Now).toISOString()
+    ),
+    { email: "amit@mydgv.com", status: "TODO" },
+    completeAssignment(
+      { email: "priya@mydgv.com", status: "TODO" },
+      DEADLINE,
+      t3Now,
+      new Date(t3Now).toISOString()
+    ),
+    { email: "dev@mydgv.com", status: "TODO" },
+  ],
+};
+
+const nowAll = Date.parse("2026-08-26T11:31:00.000Z");
+const decorated = decorateTask(task, nowAll, "amit@mydgv.com");
+const byEmail = Object.fromEntries(decorated.assignments.map((a) => [a.email, a]));
+assert.strictEqual(byEmail["rahul@mydgv.com"].status, "DONE");
+assert.strictEqual(byEmail["rahul@mydgv.com"].zone, ZONES.GREEN);
+assert.strictEqual(byEmail["amit@mydgv.com"].status, "TODO");
+assert.strictEqual(byEmail["amit@mydgv.com"].zone, ZONES.RED);
+assert.strictEqual(byEmail["priya@mydgv.com"].status, "DONE");
+assert.strictEqual(byEmail["priya@mydgv.com"].zone, ZONES.ORANGE);
+assert.strictEqual(byEmail["dev@mydgv.com"].zone, ZONES.RED);
+assert.strictEqual(deriveParentStatus(task.assignments), "TODO");
+assert.strictEqual(decorated.myAssignment.email, "amit@mydgv.com");
+
+// Legacy single-assignee task still works
+const legacy = synthesizeAssignments({
+  assignee: "old@mydgv.com",
+  status: "IN_PROGRESS",
+  dueDate: DEADLINE,
+});
+assert.strictEqual(legacy.length, 1);
+assert.strictEqual(legacy[0].email, "old@mydgv.com");
+assert.strictEqual(legacy[0].status, "IN_PROGRESS");
+assert.ok(taskAssignedTo({ assignee: "old@mydgv.com" }, "old@mydgv.com"));
+assert.ok(
+  taskAssignedTo(
+    { assignees: ["a@mydgv.com", "b@mydgv.com"] },
+    "b@mydgv.com"
+  )
+);
+
+// Deadline change resets live escalation for incomplete work
+const reset = resetEscalationForNewDeadline(
+  { email: "amit@mydgv.com", status: "TODO", recordedZone: "RED", highestZone: "RED" },
+  "2026-08-30T11:30:00.000Z",
+  Date.parse("2026-08-26T12:00:00.000Z")
+);
+assert.strictEqual(reset.recordedZone, ZONES.GREEN);
+assert.strictEqual(reset.highestZone, ZONES.GREEN);
+
+assert.deepStrictEqual(
+  normalizeEmailList(["A@mydgv.com", "a@mydgv.com", "b@mydgv.com"], ""),
+  ["a@mydgv.com", "b@mydgv.com"]
+);
+assert.strictEqual(normalizePriority("critical"), "CRITICAL");
+assert.strictEqual(normalizePriority("URGENT"), "URGENT");
+
+const {
+  applyZoneFilter,
+  zoneCounts,
+  assignmentMatchesZone,
+  matchesSearch,
+  matchesPriorityFilter,
+} = require("./escalation");
+
+const mixed = decorateTask(task, nowAll);
+const filteredRed = applyZoneFilter([mixed], "RED");
+assert.strictEqual(filteredRed.length, 1);
+assert.deepStrictEqual(
+  filteredRed[0].matchedAssignments.map((a) => a.email).sort(),
+  ["amit@mydgv.com", "dev@mydgv.com"]
+);
+
+const filteredCompleted = applyZoneFilter([mixed], "COMPLETED");
+assert.deepStrictEqual(
+  filteredCompleted[0].matchedAssignments.map((a) => a.email).sort(),
+  ["priya@mydgv.com", "rahul@mydgv.com"]
+);
+assert.ok(!filteredCompleted[0].matchedAssignments.some((a) => a.email === "dev@mydgv.com"));
+
+const orangeNow = Date.parse("2026-08-25T12:30:00.000Z");
+const orangeTask = decorateTask(
+  {
+    title: "Monthly Report",
+    dueDate: DEADLINE,
+    assignments: [
+      { email: "amit@mydgv.com", status: "TODO" },
+      completeAssignment(
+        { email: "rahul@mydgv.com", status: "TODO" },
+        DEADLINE,
+        t1Now,
+        new Date(t1Now).toISOString()
+      ),
+    ],
+  },
+  orangeNow
+);
+const filteredOrange = applyZoneFilter([orangeTask], "ORANGE");
+assert.strictEqual(filteredOrange[0].matchedAssignments.map((a) => a.email).join(), "amit@mydgv.com");
+
+const amitOnly = applyZoneFilter([decorateTask(task, nowAll, "amit@mydgv.com")], "RED", "amit@mydgv.com");
+assert.strictEqual(amitOnly.length, 1);
+const rahulRed = applyZoneFilter([decorateTask(task, nowAll, "rahul@mydgv.com")], "RED", "rahul@mydgv.com");
+assert.strictEqual(rahulRed.length, 0);
+
+const counts = zoneCounts([mixed]);
+assert.strictEqual(counts.COMPLETED, 2);
+assert.strictEqual(counts.RED, 2);
+assert.strictEqual(counts.ORANGE, 0);
+assert.strictEqual(counts.ALL, 4);
+
+assert.ok(matchesSearch(task, "Monthly"));
+assert.ok(!matchesSearch(task, "Weekly"));
+assert.ok(matchesPriorityFilter({ priority: "HIGH" }, "HIGH"));
+assert.ok(matchesPriorityFilter({ priority: "URGENT" }, "CRITICAL"));
+assert.ok(assignmentMatchesZone({ status: "TODO", zone: "GREEN" }, "GREEN"));
+assert.ok(!assignmentMatchesZone({ status: "DONE", zone: "GREEN" }, "GREEN"));
+assert.ok(assignmentMatchesZone({ status: "DONE", zone: "GREEN" }, "COMPLETED"));
+
+console.log("escalation tests passed");

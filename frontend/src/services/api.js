@@ -209,9 +209,26 @@ export const fetchAdminDashboard = () => api("/admin/dashboard", "GET");
 
 export const fetchProjects = () => api("/projects", "GET");
 export const createProject = (data) => api("/projects", "POST", data);
-export const fetchTasks = (params = {}) => {
-  const qs = new URLSearchParams(params).toString();
-  return api(`/tasks${qs ? `?${qs}` : ""}`, "GET");
+export const fetchTasks = async (params = {}) => {
+  const data = await fetchTaskList(params);
+  return data.tasks;
+};
+
+export const fetchTaskList = async (params = {}) => {
+  const clean = {};
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    clean[key] = value;
+  });
+  const qs = new URLSearchParams(clean).toString();
+  const data = await api(`/tasks${qs ? `?${qs}` : ""}`, "GET");
+  if (Array.isArray(data)) {
+    return { tasks: data, zoneCounts: null };
+  }
+  return {
+    tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+    zoneCounts: data?.zoneCounts || null,
+  };
 };
 export const createTask = (data) => api("/tasks", "POST", data);
 export const updateTask = (data) => api("/tasks", "PUT", data);

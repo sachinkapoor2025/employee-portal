@@ -2,13 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
-import {
-  fetchProjects,
-  fetchTasks,
-  createProject,
-  createTask,
-  fetchUsers,
-} from "../../services/api";
+import { fetchProjects, fetchTaskList, createProject, createTask, fetchUsers } from "../../services/api";
 import {
   colors,
   pageCard,
@@ -22,11 +16,24 @@ import {
   KANBAN_COLUMNS,
   formatTaskDateTime,
   formatTaskDuration,
-  isTaskOverdue,
+  getTaskAssignees,
+  getTaskZone,
+  getTaskTiming,
+  joinDueParts,
   personLabel,
+  priorityLabel,
   statusBadgeStyle,
   statusLabel,
+  applyClientZoneFilter,
+  countZones,
+  emptyZoneMessage,
+  taskMatchesSearch,
+  taskMatchesPriority,
+  taskAssignedToClient,
+  TASK_PRIORITIES,
 } from "../../utils/taskStatus";
+import ZoneBadge from "../../components/ZoneBadge";
+import ZoneFilter from "../../components/ZoneFilter";
 
 function StatusBadge({ task }) {
   const style = statusBadgeStyle(task);
@@ -60,12 +67,54 @@ function StatusBadge({ task }) {
   );
 }
 
+const FILTER_KEYS = {
+  zone: "dgv.tasks.zone",
+  search: "dgv.tasks.search",
+  priority: "dgv.tasks.priority",
+  employee: "dgv.tasks.employee",
+};
+
+function readFilter(key, fallback) {
+  try {
+    return sessionStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFilter(key, value) {
+  try {
+    if (!value) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function ManageTasks() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
   const [projectId, setProjectId] = useState("");
+  const [zone, setZone] = useState(() => readFilter(FILTER_KEYS.zone, "ALL"));
+  const [search, setSearch] = useState(() => readFilter(FILTER_KEYS.search, ""));
+  const [searchInput, setSearchInput] = useState(() =>
+    readFilter(FILTER_KEYS.search, "")
+  );
+  const [priorityFilter, setPriorityFilter] = useState(() =>
+    readFilter(FILTER_KEYS.priority, "")
+  );
+  const [employeeFilter, setEmployeeFilter] = useState(() =>
+    readFilter(FILTER_KEYS.employee, "")
+  );
+  const [zoneCounts, setZoneCounts] = useState({
+    ALL: 0,
+    GREEN: 0,
+    ORANGE: 0,
+    RED: 0,
+    COMPLETED: 0,
+  });
   const [showProject, setShowProject] = useState(false);
   const [showTask, setShowTask] = useState(false);
   const [projectForm, setProjectForm] = useState({
@@ -76,9 +125,13 @@ export default function ManageTasks() {
   const [taskForm, setTaskForm] = useState({
     title: "",
     description: "",
-    assignee: "",
+    assignees: [],
     priority: "MEDIUM",
     status: "TODO",
+    startDate: "",
+    startTime: "",
+    dueDate: "",
+    dueTime: "",
     durationType: "",
     durationHours: "",
     durationDays: "",
@@ -87,20 +140,61 @@ export default function ManageTasks() {
   });
 
   const load = useCallback(async () => {
-    const [p, t, u] = await Promise.all([
+    const [p, list, u] = await Promise.all([
       fetchProjects(),
-      fetchTasks(projectId ? { projectId } : {}),
+      fetchTaskList({
+        ...(projectId ? { projectId } : {}),
+        ...(search.trim() ? { q: search.trim() } : {}),
+        ...(priorityFilter ? { priority: priorityFilter } : {}),
+        ...(employeeFilter ? { assignee: employeeFilter } : {}),
+        ...(zone && zone !== "ALL" ? { zone } : {}),
+      }),
       fetchUsers(),
     ]);
+    const raw = (Array.isArray(list.tasks) ? list.tasks : []).filter(
+      (x) => !x.archived
+    );
+    const scoped = raw.filter(
+      (t) =>
+        taskMatchesSearch(t, search) &&
+        taskMatchesPriority(t, priorityFilter) &&
+        taskAssignedToClient(t, employeeFilter)
+    );
+    const filtered = applyClientZoneFilter(
+      scoped,
+      zone,
+      employeeFilter || ""
+    );
     setProjects(p);
-    setTasks((Array.isArray(t) ? t : []).filter((x) => !x.archived));
-    setUsers(u);
+    setTasks(filtered);
+    setZoneCounts(
+      list.zoneCounts || countZones(scoped, employeeFilter || "")
+    );
+    setUsers(Array.isArray(u) ? u : []);
     if (!projectId && p.length) setProjectId(p[0].projectId);
-  }, [projectId]);
+  }, [projectId, zone, search, priorityFilter, employeeFilter]);
 
   useEffect(() => {
     load().catch(console.error);
   }, [load]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    writeFilter(FILTER_KEYS.zone, zone === "ALL" ? "" : zone);
+  }, [zone]);
+  useEffect(() => {
+    writeFilter(FILTER_KEYS.search, search);
+  }, [search]);
+  useEffect(() => {
+    writeFilter(FILTER_KEYS.priority, priorityFilter);
+  }, [priorityFilter]);
+  useEffect(() => {
+    writeFilter(FILTER_KEYS.employee, employeeFilter);
+  }, [employeeFilter]);
 
   const saveProject = async () => {
     await createProject(projectForm);
@@ -110,13 +204,24 @@ export default function ManageTasks() {
   };
 
   const saveTask = async () => {
+    if (!projectId) {
+      alert("Select a project before creating a task.");
+      return;
+    }
+    if (!taskForm.title?.trim()) {
+      alert("Task title is required");
+      return;
+    }
     await createTask({
       title: taskForm.title,
       description: taskForm.description,
-      assignee: taskForm.assignee,
+      assignees: taskForm.assignees,
+      assignee: taskForm.assignees[0] || "",
       priority: taskForm.priority,
       projectId,
       status: taskForm.status || "TODO",
+      startDate: joinDueParts(taskForm.startDate, taskForm.startTime),
+      dueDate: joinDueParts(taskForm.dueDate, taskForm.dueTime),
       durationType: taskForm.durationType || null,
       durationHours: taskForm.durationHours
         ? Number(taskForm.durationHours)
@@ -129,9 +234,13 @@ export default function ManageTasks() {
     setTaskForm({
       title: "",
       description: "",
-      assignee: "",
+      assignees: [],
       priority: "MEDIUM",
       status: "TODO",
+      startDate: "",
+      startTime: "",
+      dueDate: "",
+      dueTime: "",
       durationType: "",
       durationHours: "",
       durationDays: "",
@@ -141,8 +250,38 @@ export default function ManageTasks() {
     load();
   };
 
-  const byStatus = (status) =>
-    tasks.filter((t) => (t.status || "TODO").toUpperCase() === status);
+  const toggleAssignee = (email) => {
+    setTaskForm((f) => {
+      const has = f.assignees.includes(email);
+      return {
+        ...f,
+        assignees: has
+          ? f.assignees.filter((x) => x !== email)
+          : [...f.assignees, email],
+      };
+    });
+  };
+
+  const byStatus = (status) => {
+    if (zone === "COMPLETED") {
+      return status === "DONE" ? tasks : [];
+    }
+    return tasks.filter((t) => (t.status || "TODO").toUpperCase() === status);
+  };
+
+  const filtersActive =
+    zone !== "ALL" ||
+    !!searchInput.trim() ||
+    !!priorityFilter ||
+    !!employeeFilter;
+
+  const clearFilters = () => {
+    setZone("ALL");
+    setSearch("");
+    setSearchInput("");
+    setPriorityFilter("");
+    setEmployeeFilter("");
+  };
 
   const openTask = (task) => {
     navigate(`/admin/tasks/${encodeURIComponent(task.taskId)}`, {
@@ -194,6 +333,88 @@ export default function ManageTasks() {
           ))}
         </select>
 
+        <label style={formLabel}>Search tasks</label>
+        <input
+          style={{ ...formInput, maxWidth: 420 }}
+          placeholder="Search tasks..."
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+        />
+
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            alignItems: "flex-end",
+          }}
+        >
+          <div style={{ minWidth: 180, flex: "1 1 180px" }}>
+            <label style={formLabel}>Priority</label>
+            <select
+              style={formSelect}
+              value={priorityFilter}
+              onChange={(e) => setPriorityFilter(e.target.value)}
+            >
+              <option value="">All priorities</option>
+              {TASK_PRIORITIES.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ minWidth: 220, flex: "1 1 220px" }}>
+            <label style={formLabel}>Employee</label>
+            <select
+              style={formSelect}
+              value={employeeFilter}
+              onChange={(e) => setEmployeeFilter(e.target.value)}
+            >
+              <option value="">All employees</option>
+              {users.map((u) => (
+                <option key={u.email} value={u.email}>
+                  {u.name ? `${u.name} (${u.email})` : u.email}
+                </option>
+              ))}
+            </select>
+          </div>
+          {filtersActive ? (
+            <button
+              type="button"
+              onClick={clearFilters}
+              style={{
+                ...buttonPrimary,
+                background: "transparent",
+                color: colors.text,
+                border: `1px solid ${colors.border}`,
+                boxShadow: "none",
+                marginBottom: 16,
+              }}
+            >
+              Clear Filters
+            </button>
+          ) : null}
+        </div>
+
+        <label style={formLabel}>Zone</label>
+        <ZoneFilter
+          value={zone}
+          onChange={setZone}
+          counts={{
+            ALL: zoneCounts.ALL ?? zoneCounts.all,
+            GREEN: zoneCounts.GREEN ?? zoneCounts.green,
+            ORANGE: zoneCounts.ORANGE ?? zoneCounts.orange,
+            RED: zoneCounts.RED ?? zoneCounts.red,
+            COMPLETED: zoneCounts.COMPLETED ?? zoneCounts.completed,
+          }}
+        />
+
+        {tasks.length === 0 ? (
+          <p style={{ color: colors.textMuted, marginTop: 16 }}>
+            {emptyZoneMessage(zone)}
+          </p>
+        ) : (
         <div
           style={{
             display: "grid",
@@ -223,8 +444,17 @@ export default function ManageTasks() {
                 {col.label}
               </h4>
               {byStatus(col.key).map((task) => {
-                const person = personLabel(users, task.assignee);
-                const overdue = isTaskOverdue(task);
+                const shown =
+                  task.matchedAssignments || getTaskAssignees(task);
+                const people = shown.map((a) => personLabel(users, a.email));
+                const zoneKey =
+                  shown.length === 1
+                    ? shown[0].zone || getTaskZone(task)
+                    : getTaskZone(task);
+                const timing =
+                  shown.length === 1
+                    ? shown[0].timing || getTaskTiming(task)
+                    : getTaskTiming(task);
                 return (
                   <div
                     key={task.taskId}
@@ -244,7 +474,11 @@ export default function ManageTasks() {
                       marginBottom: 8,
                       boxShadow: "var(--dgv-shadow)",
                       border: `1px solid ${
-                        overdue ? "rgba(239,68,68,0.45)" : colors.border
+                        zoneKey === "RED"
+                          ? "rgba(239,68,68,0.45)"
+                          : zoneKey === "ORANGE"
+                          ? "rgba(249,115,22,0.45)"
+                          : colors.border
                       }`,
                       color: colors.text,
                       cursor: "pointer",
@@ -258,23 +492,11 @@ export default function ManageTasks() {
                     <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
                       Assigned to:
                     </div>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
-                      {person.name}
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                      {people.length
+                        ? people.map((p) => p.name).join(", ")
+                        : "Unassigned"}
                     </div>
-                    {person.email ? (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: colors.textMuted,
-                          marginBottom: 10,
-                          wordBreak: "break-all",
-                        }}
-                      >
-                        {person.email}
-                      </div>
-                    ) : (
-                      <div style={{ marginBottom: 10 }} />
-                    )}
 
                     <div
                       style={{
@@ -285,23 +507,40 @@ export default function ManageTasks() {
                         flexWrap: "wrap",
                       }}
                     >
-                      <span style={{ fontSize: 12, color: colors.textMuted }}>
-                        Status:
-                      </span>
+                      <ZoneBadge
+                        zone={zoneKey}
+                        status={
+                          shown.length === 1 ? shown[0].status : task.status
+                        }
+                      />
                       <StatusBadge task={task} />
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>
+                      Priority:{" "}
+                      <span style={{ color: colors.text, fontWeight: 600 }}>
+                        {priorityLabel(task.priority)}
+                      </span>
                     </div>
 
                     <div style={{ fontSize: 12, color: colors.textMuted }}>
                       Due:{" "}
                       <span
                         style={{
-                          color: overdue ? "var(--dgv-danger)" : colors.text,
+                          color:
+                            zoneKey === "RED" || zoneKey === "ORANGE"
+                              ? "var(--dgv-danger)"
+                              : colors.text,
                           fontWeight: 600,
                         }}
                       >
                         {task.dueDate ? formatTaskDateTime(task.dueDate) : "—"}
                       </span>
                     </div>
+                    {timing ? (
+                      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                        {timing}
+                      </div>
+                    ) : null}
                     {formatTaskDuration(task) ? (
                       <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 6 }}>
                         Duration:{" "}
@@ -327,6 +566,7 @@ export default function ManageTasks() {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {showProject && (
@@ -366,21 +606,82 @@ export default function ManageTasks() {
             value={taskForm.description}
             onChange={(v) => setTaskForm({ ...taskForm, description: v })}
           />
-          <label style={formLabel}>Assignee</label>
+          <label style={formLabel}>Assignees</label>
+          <div
+            style={{
+              maxHeight: 160,
+              overflowY: "auto",
+              border: `1px solid ${colors.border}`,
+              borderRadius: 10,
+              padding: 8,
+              marginBottom: 16,
+            }}
+          >
+            {users.length === 0 ? (
+              <div style={{ fontSize: 13, color: colors.textMuted }}>No users loaded</div>
+            ) : (
+              users.map((u) => (
+                <label
+                  key={u.email}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 13,
+                    padding: "4px 2px",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={taskForm.assignees.includes(u.email)}
+                    onChange={() => toggleAssignee(u.email)}
+                  />
+                  {u.name ? `${u.name} (${u.email})` : u.email}
+                </label>
+              ))
+            )}
+          </div>
+          <label style={formLabel}>Priority</label>
           <select
             style={formSelect}
-            value={taskForm.assignee}
+            value={
+              taskForm.priority === "URGENT" ? "CRITICAL" : taskForm.priority
+            }
             onChange={(e) =>
-              setTaskForm({ ...taskForm, assignee: e.target.value })
+              setTaskForm({ ...taskForm, priority: e.target.value })
             }
           >
-            <option value="">Select</option>
-            {users.map((u) => (
-              <option key={u.email} value={u.email}>
-                {u.name ? `${u.name} (${u.email})` : u.email}
+            {TASK_PRIORITIES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
               </option>
             ))}
           </select>
+          <Field
+            label="Start date"
+            type="date"
+            value={taskForm.startDate}
+            onChange={(v) => setTaskForm({ ...taskForm, startDate: v })}
+          />
+          <Field
+            label="Start time"
+            type="time"
+            value={taskForm.startTime}
+            onChange={(v) => setTaskForm({ ...taskForm, startTime: v })}
+          />
+          <Field
+            label="Deadline date"
+            type="date"
+            value={taskForm.dueDate}
+            onChange={(v) => setTaskForm({ ...taskForm, dueDate: v })}
+          />
+          <Field
+            label="Deadline time"
+            type="time"
+            value={taskForm.dueTime}
+            onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
+          />
           <label style={formLabel}>Status</label>
           <select
             style={formSelect}
