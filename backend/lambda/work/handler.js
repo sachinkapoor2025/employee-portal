@@ -2,6 +2,7 @@ const { getUser } = require("../common/auth");
 const { json } = require("../common/response");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { taskAssignedTo } = require("../projects/escalation");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -22,7 +23,9 @@ exports.handler = async (event) => {
       })
     );
 
-    const tasks = (res.Items || []).filter((t) => t.assignee === user.email);
+    const tasks = (res.Items || []).filter((t) =>
+      taskAssignedTo(t, user.email)
+    );
     return json(200, tasks);
   } catch (err) {
     console.error("Work error:", err);

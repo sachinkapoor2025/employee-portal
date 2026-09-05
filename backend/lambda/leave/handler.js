@@ -396,7 +396,7 @@ exports.handler = async (event) => {
             TableName: process.env.WORK_TABLE,
             KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
             ExpressionAttributeValues: {
-              ":pk": `USER#${user.email}`,
+              ":pk": `USER#${String(user.email).toLowerCase()}`,
               ":sk": "NOTIFY#",
             },
             ScanIndexForward: false,
@@ -527,6 +527,31 @@ exports.handler = async (event) => {
     }
 
     if (event.httpMethod === "PUT") {
+      if (body.action === "readNotification") {
+        if (!user.email) return json(401, { error: "Unauthorized" });
+        const sk = String(body.sk || body.SK || "").trim();
+        if (!sk.startsWith("NOTIFY#")) {
+          return json(400, { error: "Notification key required" });
+        }
+        const email = String(user.email).toLowerCase();
+        const got = await ddb.send(
+          new GetCommand({
+            TableName: process.env.WORK_TABLE,
+            Key: { PK: `USER#${email}`, SK: sk },
+          })
+        );
+        if (!got.Item) return json(404, { error: "Notification not found" });
+        const updated = {
+          ...got.Item,
+          read: true,
+          readAt: new Date().toISOString(),
+        };
+        await ddb.send(
+          new PutCommand({ TableName: process.env.WORK_TABLE, Item: updated })
+        );
+        return json(200, updated);
+      }
+
       await autoApproveExpiredSafe();
 
       if (!user.isAdmin) return json(403, { error: "Admin required" });

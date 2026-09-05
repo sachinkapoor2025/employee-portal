@@ -81,6 +81,7 @@ function statusLabel(status) {
 function statusClass(status) {
   if (status === "VERIFIED") return "dgv-badge dgv-badge--success";
   if (status === "REJECTED") return "dgv-badge dgv-badge--danger";
+  if (status === "UNDER_REVIEW") return "dgv-badge dgv-badge--warning";
   return "dgv-badge dgv-badge--info";
 }
 
@@ -373,6 +374,7 @@ export default function Documents() {
                 <tr>
                   <th>Date</th>
                   <th>File</th>
+                  <th>Type</th>
                   <th>Description</th>
                   <th>Status</th>
                   <th>Action</th>
@@ -383,6 +385,7 @@ export default function Documents() {
                   <tr key={d.documentId}>
                     <td>{formatWhen(d.documentDate || d.uploadedAt)}</td>
                     <td style={{ wordBreak: "break-word" }}>{d.fileName}</td>
+                    <td>{d.documentType || "OTHER"}</td>
                     <td style={{ wordBreak: "break-word" }}>{d.description || "—"}</td>
                     <td>
                       <span className={statusClass(d.status)}>{statusLabel(d.status)}</span>
@@ -412,29 +415,16 @@ export default function Documents() {
 
       {modalOpen ? (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            zIndex: 80,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
+          className="dgv-modal-overlay"
           onClick={closeModal}
         >
           <form
             onSubmit={submitUpload}
             onClick={(e) => e.stopPropagation()}
-            style={{
-              ...pageCard,
-              maxWidth: 480,
-              width: "100%",
-              margin: 0,
-            }}
+            className="dgv-modal"
+            style={{ maxWidth: 400 }}
           >
-            <h3 style={{ marginTop: 0 }}>Upload Document</h3>
+            <h3 className="dgv-modal__header">Upload Document</h3>
             <label style={formLabel}>Date</label>
             <input
               type="date"
@@ -490,7 +480,7 @@ export default function Documents() {
             {success ? (
               <div style={{ color: "var(--dgv-success)", fontWeight: 700 }}>{success}</div>
             ) : null}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div className="dgv-modal__footer">
               <button
                 type="button"
                 className="dgv-btn dgv-btn--outline"

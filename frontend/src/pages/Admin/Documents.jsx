@@ -36,6 +36,7 @@ function statusLabel(status) {
 function statusClass(status) {
   if (status === "VERIFIED") return "dgv-badge dgv-badge--success";
   if (status === "REJECTED") return "dgv-badge dgv-badge--danger";
+  if (status === "UNDER_REVIEW") return "dgv-badge dgv-badge--warning";
   return "dgv-badge dgv-badge--info";
 }
 

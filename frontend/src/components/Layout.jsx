@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -28,6 +28,7 @@ import {
   ChevronRight,
   FileText,
   Video,
+  Settings,
 } from "lucide-react";
 import {
   logout,
@@ -36,7 +37,14 @@ import {
   getViewRole,
   getLoggedInEmail,
 } from "../services/auth";
-import { fetchLeaveNotifications } from "../services/api";
+import { fetchLeaveNotifications, markNotificationRead } from "../services/api";
+import {
+  isZoneNotification,
+  isRedZoneNotification,
+  notificationTaskPath,
+  relativeTime,
+  unreadCount,
+} from "../utils/notifications";
 import { useTheme } from "../theme/ThemeProvider";
 import AmbientBackground from "./AmbientBackground";
 import Footer from "./Footer";
@@ -95,6 +103,7 @@ const ADMIN_NAV_SECTIONS = [
     items: [
       { label: "Activity", path: "/admin/activity", icon: Activity },
       { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+      { label: "Settings", path: "/admin/settings", icon: Settings },
     ],
   },
 ];
@@ -147,7 +156,7 @@ export default function Layout({ children }) {
     setNotifyOpen(false);
   }, [location.pathname]);
 
-  useEffect(() => {
+  const loadNotifications = useCallback(() => {
     fetchLeaveNotifications()
       .then((items) =>
         setNotifications(
@@ -157,7 +166,37 @@ export default function Layout({ children }) {
         )
       )
       .catch(() => setNotifications([]));
-  }, [location.pathname]);
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+    const timer = setInterval(loadNotifications, 60000);
+    return () => clearInterval(timer);
+  }, [loadNotifications, location.pathname]);
+
+  const openNotification = async (item) => {
+    if (item?.SK && item.read !== true) {
+      try {
+        await markNotificationRead(item.SK);
+        setNotifications((prev) =>
+          prev.map((n) =>
+            n.SK === item.SK
+              ? { ...n, read: true, readAt: new Date().toISOString() }
+              : n
+          )
+        );
+      } catch {
+        /* keep local navigation even if mark-read fails */
+      }
+    }
+    const path = notificationTaskPath(item, showEmployeeNav);
+    if (path) {
+      setNotifyOpen(false);
+      navigate(path);
+    }
+  };
+
+  const unread = unreadCount(notifications);
 
   useEffect(() => {
     const onResize = () => {
@@ -228,7 +267,7 @@ export default function Layout({ children }) {
                     title={item.label}
                   >
                     <span className="dgv-nav-item__icon">
-                      <Icon size={18} strokeWidth={2} />
+                      <Icon size={20} strokeWidth={1.75} />
                     </span>
                     <span className="dgv-nav-item__label">{item.label}</span>
                   </button>
@@ -252,7 +291,7 @@ export default function Layout({ children }) {
                       title={item.label}
                     >
                       <span className="dgv-nav-item__icon">
-                        <Icon size={18} strokeWidth={2} />
+                        <Icon size={20} strokeWidth={1.75} />
                       </span>
                       <span className="dgv-nav-item__label">{item.label}</span>
                     </button>
@@ -271,7 +310,7 @@ export default function Layout({ children }) {
             title="Logout"
           >
             <span className="dgv-nav-item__icon">
-              <LogOut size={18} strokeWidth={2} />
+              <LogOut size={20} strokeWidth={1.75} />
             </span>
             <span className="dgv-nav-item__label">Logout</span>
           </button>
@@ -298,11 +337,11 @@ export default function Layout({ children }) {
             }}
           >
             {isMobile ? (
-              mobileOpen ? <X size={18} /> : <Menu size={18} />
+              mobileOpen ? <X size={20} strokeWidth={1.75} /> : <Menu size={20} strokeWidth={1.75} />
             ) : collapsed ? (
-              <PanelLeftOpen size={18} />
+              <PanelLeftOpen size={20} strokeWidth={1.75} />
             ) : (
-              <PanelLeftClose size={18} />
+              <PanelLeftClose size={20} strokeWidth={1.75} />
             )}
           </button>
 
@@ -326,7 +365,7 @@ export default function Layout({ children }) {
           )}
 
           <label className="dgv-navbar__search">
-            <Search size={16} aria-hidden="true" />
+            <Search size={16} strokeWidth={1.75} aria-hidden="true" />
             <input
               type="search"
               placeholder="Search pages..."
@@ -358,8 +397,8 @@ export default function Layout({ children }) {
                 title="Notifications"
                 onClick={() => setNotifyOpen((v) => !v)}
               >
-                <Bell size={18} />
-                {notifications.length > 0 ? (
+                <Bell size={20} strokeWidth={1.75} />
+                {unread > 0 ? (
                   <span
                     style={{
                       position: "absolute",
@@ -377,47 +416,44 @@ export default function Layout({ children }) {
                       padding: "0 4px",
                     }}
                   >
-                    {notifications.length > 9 ? "9+" : notifications.length}
+                    {unread > 9 ? "9+" : unread}
                   </span>
                 ) : null}
               </button>
               {notifyOpen ? (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 48,
-                    right: 0,
-                    width: 320,
-                    maxHeight: 360,
-                    overflowY: "auto",
-                    background: "var(--dgv-card)",
-                    border: "1px solid var(--dgv-border)",
-                    borderRadius: 12,
-                    boxShadow: "var(--dgv-shadow-lg)",
-                    zIndex: 50,
-                    padding: 8,
-                  }}
-                >
+                <div className="dgv-notify-panel">
                   {notifications.length === 0 ? (
                     <p style={{ margin: 12, fontSize: 13, color: "var(--dgv-text-muted)" }}>
                       No notifications.
                     </p>
                   ) : (
-                    notifications.map((n) => (
-                      <div
-                        key={n.notifyId || n.SK}
-                        style={{
-                          padding: "10px 12px",
-                          borderBottom: "1px solid var(--dgv-border)",
-                          fontSize: 13,
-                        }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{n.title || "Leave update"}</div>
-                        <div style={{ color: "var(--dgv-text-muted)", marginTop: 4 }}>
-                          {n.message}
-                        </div>
-                      </div>
-                    ))
+                    notifications.map((n) => {
+                      const zone = isZoneNotification(n);
+                      const red = isRedZoneNotification(n);
+                      const unreadItem = n.read !== true;
+                      const tone = red ? "is-error" : zone ? "is-warning" : "";
+                      return (
+                        <button
+                          type="button"
+                          key={n.notifyId || n.SK}
+                          className={`dgv-notify-item ${unreadItem ? "is-unread" : ""} ${tone}`.trim()}
+                          onClick={() => openNotification(n)}
+                          style={{
+                            cursor: n.taskId || zone ? "pointer" : "default",
+                          }}
+                        >
+                          <div className="dgv-notify-item__title">
+                            {n.title || "Notification"}
+                          </div>
+                          <div className="dgv-notify-item__body">{n.message}</div>
+                          {n.createdAt ? (
+                            <div className="dgv-notify-item__time">
+                              {relativeTime(n.createdAt)}
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               ) : null}
@@ -430,7 +466,7 @@ export default function Layout({ children }) {
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               title="Toggle theme"
             >
-              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+              {theme === "dark" ? <Sun size={20} strokeWidth={1.75} /> : <Moon size={20} strokeWidth={1.75} />}
             </button>
 
             <button
@@ -446,17 +482,7 @@ export default function Layout({ children }) {
         </header>
 
         <main className="dgv-content">
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginBottom: 14,
-              fontSize: 12,
-              color: "var(--dgv-text-muted)",
-              fontWeight: 500,
-            }}
-          >
+          <div className="dgv-breadcrumb">
             <span>Portal</span>
             <ChevronRight size={12} />
             <span style={{ color: "var(--dgv-text-secondary)" }}>

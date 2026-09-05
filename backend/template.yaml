@@ -430,6 +430,8 @@ Resources:
         Variables:
           ATTENDANCE_TABLE: !Ref AttendanceTable
           USER_PROFILE_TABLE: !Ref UserProfileTable
+          COMPANY_TIMEZONE: Asia/Kolkata
+          COMPANY_TZ_OFFSET: "+05:30"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -921,20 +923,33 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-ProjectsFunction"
       Handler: lambda/projects/handler.handler
-      Timeout: 30
+      Timeout: 120
+      Environment:
+        Variables:
+          WORK_TABLE: !Ref WorkTasksTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+          TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
+          COMPANY_TIMEZONE: Asia/Kolkata
+          COMPANY_TZ_OFFSET: "+05:30"
+          NOTIFICATION_FROM_EMAIL: !Ref NotificationFromEmail
+          NOTIFICATION_FROM_NAME: DGV Portal
+          PORTAL_URL: !Sub "https://${FrontendDomainName}"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WorkTasksTable
         - DynamoDBReadPolicy:
             TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
-      Environment:
-        Variables:
-          WORK_TABLE: !Ref WorkTasksTable
-          USER_PROFILE_TABLE: !Ref UserProfileTable
-          TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
       Events:
         ProjectsGetApi:
           Type: Api
@@ -971,6 +986,24 @@ Resources:
           Properties:
             Path: /tasks
             Method: DELETE
+            RestApiId: !Ref ApiGateway
+        RedZoneWeeklyGetApi:
+          Type: Api
+          Properties:
+            Path: /tasks/redzone-report
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        RedZoneWeeklyPutApi:
+          Type: Api
+          Properties:
+            Path: /tasks/redzone-report
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        RedZoneWeeklyPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks/redzone-report
+            Method: POST
             RestApiId: !Ref ApiGateway
         TaskByIdGetApi:
           Type: Api
@@ -1032,6 +1065,14 @@ Resources:
             Path: /time-entries
             Method: POST
             RestApiId: !Ref ApiGateway
+        TaskEscalationSchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-task-escalation"
+            Description: Persist Green/Orange/Red zone transitions from original deadlines
+            Enabled: true
+            Schedule: rate(5 minutes)
+            Input: '{"taskEscalation":true,"source":"task-escalation"}'
 
   LeaveFunction:
     Type: AWS::Serverless::Function
@@ -1087,7 +1128,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-NotificationsFunction"
       Handler: lambda/notifications/handler.handler
-      Timeout: 120
+      Timeout: 60
       Environment:
         Variables:
           COMPANY_TIMEZONE: Asia/Kolkata
@@ -1210,15 +1251,29 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-AnnouncementsFunction"
       Handler: lambda/announcements/handler.handler
+      Timeout: 20
+      Environment:
+        Variables:
+          COMPANY_TIMEZONE: Asia/Kolkata
+          COMPANY_TZ_OFFSET: "+05:30"
+          USER_PROFILE_TABLE: !Ref UserProfileTable
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WorkTasksTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
       Events:
         AnnouncementsGetApi:
           Type: Api
           Properties:
             Path: /announcements
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminAnnouncementsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
             Method: GET
             RestApiId: !Ref ApiGateway
         AdminAnnouncementsPostApi:
@@ -1227,12 +1282,26 @@ Resources:
             Path: /admin/announcements
             Method: POST
             RestApiId: !Ref ApiGateway
+        AdminAnnouncementsPutApi:
+          Type: Api
+          Properties:
+            Path: /admin/announcements
+            Method: PUT
+            RestApiId: !Ref ApiGateway
         AdminAnnouncementsDeleteApi:
           Type: Api
           Properties:
             Path: /admin/announcements
             Method: DELETE
             RestApiId: !Ref ApiGateway
+        AnnouncementExpirySchedule:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-announcement-expiry"
+            Description: Log expired announcements; visibility is still enforced on every GET
+            Enabled: true
+            Schedule: rate(5 minutes)
+            Input: '{"expireAnnouncements":true,"source":"announcement-expiry"}'
 
   MeetingsFunction:
     Type: AWS::Serverless::Function

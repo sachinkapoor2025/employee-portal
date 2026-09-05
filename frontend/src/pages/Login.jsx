@@ -46,11 +46,11 @@ export default function Login() {
             width: 52,
             height: 52,
             margin: "0 auto 16px",
-            borderRadius: 14,
+            borderRadius: 8,
             display: "grid",
             placeItems: "center",
-            background: "linear-gradient(135deg, var(--dgv-accent), var(--dgv-accent-2))",
-            color: "#fff",
+            background: "#172033",
+            color: "#ffffff",
           }}
         >
           <Building2 size={26} />

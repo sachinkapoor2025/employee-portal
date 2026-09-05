@@ -18,7 +18,7 @@ export default function Footer() {
             href={`https://${companyDetails.website}`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ color: "var(--dgv-accent)", textDecoration: "none", fontWeight: 600 }}
+            style={{ color: "var(--dgv-info)", textDecoration: "none", fontWeight: 600 }}
           >
             {companyDetails.website}
           </a>

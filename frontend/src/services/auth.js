@@ -29,6 +29,23 @@ export function getLoggedInEmail() {
   return token ? parseEmailFromToken(token) : "";
 }
 
+export function getLoggedInDisplayName() {
+  try {
+    const token = localStorage.getItem("token");
+    if (!token) return "";
+    const payload = JSON.parse(
+      atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))
+    );
+    const combined = `${payload.given_name || ""} ${payload.family_name || ""}`.trim();
+    if (combined) return combined;
+    const name = String(payload.name || "").trim();
+    if (name && !name.includes("@")) return name;
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
 export function canAccessAdmin() {
   const portalRole = localStorage.getItem(PORTAL_ROLE_KEY);
   if (

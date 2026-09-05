@@ -14,6 +14,63 @@ const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
+const COMPANY_TZ = process.env.COMPANY_TIMEZONE || "Asia/Kolkata";
+const COMPANY_OFFSET = process.env.COMPANY_TZ_OFFSET || "+05:30";
+const EMPLOYEE_STATUSES = new Set([
+  "Working",
+  "Leave",
+  "Holiday",
+  "WeeklyOff",
+]);
+const DAY_TYPES = new Set(["Full Day", "Half Day"]);
+const SHIFT_TIMES = {
+  "Full Day": {
+    "Morning Shift": { in: "11:00", out: "20:00" },
+    "Afternoon Shift": { in: "14:00", out: "23:00" },
+    "Evening Shift": { in: "17:00", out: "23:00" },
+  },
+  "Half Day": {
+    "Morning Shift": { in: "11:00", out: "15:30" },
+    "Afternoon Shift": { in: "14:00", out: "18:30" },
+    "Evening Shift": { in: "17:00", out: "20:30" },
+  },
+};
+
+function companyDateTimeIso(dateKey, hhmm) {
+  if (!dateKey || !hhmm) return null;
+  const d = new Date(`${dateKey}T${hhmm}:00${COMPANY_OFFSET}`);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+function resolveShiftTimes(dayType, shift, dateKey) {
+  const mapping = SHIFT_TIMES[dayType]?.[shift];
+  if (!mapping) return null;
+  const checkInTime = companyDateTimeIso(dateKey, mapping.in);
+  const checkOutTime = companyDateTimeIso(dateKey, mapping.out);
+  if (!checkInTime || !checkOutTime) return null;
+  return { checkInTime, checkOutTime };
+}
+
+function companyTodayKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: COMPANY_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function isValidDateKey(key) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(key || ""));
+}
+
+function parseInstantMs(value) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function formatWorkingTime(checkInTime, checkOutTime) {
   const start = new Date(checkInTime).getTime();
   const end = new Date(checkOutTime).getTime();
@@ -52,6 +109,10 @@ function toPublicRecord(item) {
     workingSeconds: item.workingSeconds ?? null,
     hours: item.hours ?? null,
     status: item.status || null,
+    dayType: item.dayType || null,
+    shift: item.shift || null,
+    reason: item.reason || null,
+    submittedAt: item.submittedAt || null,
     sessionStatus: item.sessionStatus || null,
     createdAt: item.createdAt || null,
     updatedAt: item.updatedAt || null,
@@ -167,6 +228,29 @@ async function putRecord(item) {
     new PutCommand({
       TableName: process.env.ATTENDANCE_TABLE,
       Item: item,
+    })
+  );
+}
+
+function isEmployeeLocked(item) {
+  return Boolean(item?.submittedAt);
+}
+
+function isConditionalCheckFailed(err) {
+  return (
+    err?.name === "ConditionalCheckFailedException" ||
+    err?.Code === "ConditionalCheckFailedException" ||
+    err?.code === "ConditionalCheckFailedException"
+  );
+}
+
+/** First employee submission only — never overwrite submittedAt. */
+async function putFirstEmployeeSubmission(item) {
+  await ddb.send(
+    new PutCommand({
+      TableName: process.env.ATTENDANCE_TABLE,
+      Item: item,
+      ConditionExpression: "attribute_not_exists(submittedAt)",
     })
   );
 }
@@ -345,6 +429,12 @@ exports.handler = async (event) => {
         }
 
         const existing = await getDayRecord(user.email, date);
+        if (isEmployeeLocked(existing)) {
+          return json(409, {
+            error: "Today's attendance has already been submitted.",
+            attendance: toPublicRecord(existing),
+          });
+        }
         if (existing?.checkInTime && !existing?.checkOutTime) {
           return json(200, {
             message: "Already checked in",
@@ -393,6 +483,12 @@ exports.handler = async (event) => {
         }
 
         const existing = await getDayRecord(user.email, date);
+        if (isEmployeeLocked(existing)) {
+          return json(409, {
+            error: "Today's attendance has already been submitted.",
+            attendance: toPublicRecord(existing),
+          });
+        }
         if (!existing?.checkInTime) {
           return json(400, { error: "Cannot check out before check-in" });
         }
@@ -439,51 +535,100 @@ exports.handler = async (event) => {
         });
       }
 
-      // ---- Week attendance bulk save ----
+      // ---- Employee daily attendance save (today only) ----
       const attendanceData = body;
-      if (!Array.isArray(attendanceData) || attendanceData.length === 0) {
-        return json(400, { error: "Attendance array is required" });
+      if (!Array.isArray(attendanceData) || attendanceData.length !== 1) {
+        return json(400, {
+          error: "Attendance can only be submitted for today.",
+        });
       }
 
+      const todayKey = companyTodayKey();
       const profile = await getProfile(user.email);
       const nowIso = new Date().toISOString();
 
       for (const entry of attendanceData) {
-        const existing = await getDayRecord(user.email, entry.date);
-        const checkInTime = entry.checkInTime || existing?.checkInTime || null;
-        const checkOutTime =
-          entry.checkOutTime || existing?.checkOutTime || null;
+        if (entry.date && isValidDateKey(entry.date) && entry.date !== todayKey) {
+          return json(400, {
+            error: "Attendance can only be submitted for today.",
+          });
+        }
+
+        const status = String(entry.status || "").trim();
+        if (!EMPLOYEE_STATUSES.has(status)) {
+          return json(400, { error: "Invalid attendance status." });
+        }
+
+        const existing = await getDayRecord(user.email, todayKey);
+        if (isEmployeeLocked(existing)) {
+          return json(409, {
+            error: "Today's attendance has already been submitted.",
+            attendance: toPublicRecord(existing),
+          });
+        }
+
+        const working = status === "Working";
+        const dayType = working ? String(entry.dayType || "").trim() : null;
+        const shift = working ? String(entry.shift || "").trim() : null;
+        const reason =
+          status === "Leave"
+            ? "Leave"
+            : status === "Holiday"
+              ? "Holiday"
+              : null;
+
+        let assignedTimes = null;
+        if (working) {
+          if (!DAY_TYPES.has(dayType)) {
+            return json(400, {
+              error: "Please select Full Day or Half Day.",
+            });
+          }
+          assignedTimes = resolveShiftTimes(dayType, shift, todayKey);
+          if (!assignedTimes) {
+            return json(400, {
+              error: "Please select a valid shift.",
+            });
+          }
+        }
+
+        const checkInTime = working
+          ? assignedTimes.checkInTime
+          : existing?.checkInTime || null;
+        const checkOutTime = working
+          ? assignedTimes.checkOutTime
+          : existing?.checkOutTime || null;
 
         let sessionStatus = existing?.sessionStatus || null;
-        if (!sessionStatus) {
-          if (checkInTime && !checkOutTime) sessionStatus = "Active";
-          else if (checkOutTime) sessionStatus = "Checked Out";
-          else if (entry.status === "Working") sessionStatus = "Present";
+        if (working) {
+          sessionStatus = "Present";
+        } else if (!sessionStatus) {
+          sessionStatus = status;
         }
 
         let workingTime = existing?.workingTime || null;
         let workingSeconds = existing?.workingSeconds ?? null;
-        let hours =
-          entry.hours !== undefined && entry.hours !== null
-            ? entry.hours
-            : existing?.hours ?? null;
-
-        if (checkInTime && checkOutTime) {
+        let hours = existing?.hours ?? null;
+        if (working && checkInTime && checkOutTime) {
           const computed = formatWorkingTime(checkInTime, checkOutTime);
           workingTime = computed.workingTime;
           workingSeconds = computed.workingSeconds;
-          if (hours == null) hours = computed.hours;
+          hours = computed.hours;
         }
 
         const item = {
           PK: user.email,
-          SK: entry.date,
+          SK: todayKey,
           email: user.email,
-          date: entry.date,
+          date: todayKey,
           attendanceId: existing?.attendanceId || randomUUID(),
           employeeId: existing?.employeeId || profile.employeeId,
           employeeName: existing?.employeeName || profile.employeeName,
-          status: entry.status,
+          status,
+          dayType: working ? dayType : null,
+          shift: working ? shift : null,
+          reason,
+          submittedAt: nowIso,
           sessionStatus,
           checkInTime,
           checkOutTime,
@@ -493,13 +638,29 @@ exports.handler = async (event) => {
           createdAt: existing?.createdAt || nowIso,
           updatedAt: nowIso,
           ...buildDateKeys(
-            entry.date,
+            todayKey,
             checkInTime || nowIso,
             user.email
           ),
         };
 
-        await putRecord(item);
+        try {
+          await putFirstEmployeeSubmission(item);
+        } catch (err) {
+          if (isConditionalCheckFailed(err)) {
+            const locked = await getDayRecord(user.email, todayKey);
+            return json(409, {
+              error: "Today's attendance has already been submitted.",
+              attendance: toPublicRecord(locked),
+            });
+          }
+          throw err;
+        }
+
+        return json(200, {
+          message: "Attendance saved",
+          attendance: toPublicRecord(item),
+        });
       }
 
       return json(200, { message: "Attendance saved" });
@@ -533,6 +694,10 @@ exports.handler = async (event) => {
         date: item.SK || item.date,
         status: item.status || null,
         hours: item.hours ?? null,
+        dayType: item.dayType || null,
+        shift: item.shift || null,
+        reason: item.reason || null,
+        submittedAt: item.submittedAt || null,
         checkInTime: item.checkInTime || null,
         checkOutTime: item.checkOutTime || null,
         workingTime: item.workingTime || null,
@@ -577,7 +742,7 @@ exports.handler = async (event) => {
               const dateKey = new Date(t).toISOString().slice(0, 10);
               if (inRange(dateKey)) {
                 const existing = byDate[dateKey];
-                if (!existing?.checkInTime) {
+                if (!existing?.checkInTime && !existing?.submittedAt) {
                   byDate[dateKey] = {
                     ...(existing || { date: dateKey }),
                     date: dateKey,

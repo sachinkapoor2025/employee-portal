@@ -19,6 +19,8 @@ import {
 } from "../../theme";
 import {
   TASK_STATUSES,
+  TASK_PRIORITIES,
+  TASK_CATEGORIES,
   displayTaskId,
   formatTaskDate,
   formatTaskDateTime,
@@ -26,13 +28,19 @@ import {
   formatTaskTime,
   friendlyActivityText,
   getStoredStatus,
-  isTaskOverdue,
+  getTaskAssignees,
+  getTaskTiming,
+  getTaskZone,
   joinDueParts,
+  isQuarterHourTime,
   personLabel,
+  priorityLabel,
   splitDueParts,
   statusBadgeStyle,
   statusLabel,
+  zoneDisplay,
 } from "../../utils/taskStatus";
+import ZoneBadge from "../../components/ZoneBadge";
 
 function StatusBadge({ taskOrStatus }) {
   const style = statusBadgeStyle(taskOrStatus);
@@ -74,6 +82,7 @@ export default function TaskDetails() {
   const { taskId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const employeeView = location.pathname.startsWith("/work");
   const [task, setTask] = useState(location.state?.task || null);
   const [activity, setActivity] = useState([]);
   const [users, setUsers] = useState([]);
@@ -85,10 +94,15 @@ export default function TaskDetails() {
   const [editForm, setEditForm] = useState({
     title: "",
     description: "",
-    assignee: "",
+    assignees: [],
     dueDate: "",
     dueTime: "",
+    startDate: "",
+    startTime: "",
     status: "TODO",
+    priority: "MEDIUM",
+    assignmentEmail: "",
+    category: "",
   });
 
   const enrichTask = useCallback(async (t, userList) => {
@@ -112,8 +126,9 @@ export default function TaskDetails() {
       }
     }
 
-    let createdByName = "";
-    if (t.createdBy) {
+    let createdByName = String(t.createdByName || "").trim();
+    if (createdByName && createdByName.includes("@")) createdByName = "";
+    if (!createdByName && t.createdBy) {
       const fromList = personLabel(userList, t.createdBy);
       if (fromList.name && fromList.name !== t.createdBy.split("@")[0]) {
         createdByName = fromList.name;
@@ -131,7 +146,6 @@ export default function TaskDetails() {
       ...t,
       assigneeProfile,
       createdByName,
-      overdue: isTaskOverdue(t),
     };
   }, []);
 
@@ -151,13 +165,23 @@ export default function TaskDetails() {
       setCreatorName(enriched.createdByName || "");
 
       const dueParts = splitDueParts(enriched.dueDate);
+      const startParts = splitDueParts(enriched.startDate);
+      const assigneeEmails = getTaskAssignees(enriched).map((a) => a.email);
       setEditForm({
         title: enriched.title || "",
         description: enriched.description || "",
-        assignee: enriched.assignee || "",
+        assignees: assigneeEmails,
         dueDate: dueParts.date,
         dueTime: dueParts.time,
+        startDate: startParts.date,
+        startTime: startParts.time,
         status: getStoredStatus(enriched),
+        priority:
+          String(enriched.priority || "MEDIUM").toUpperCase() === "URGENT"
+            ? "CRITICAL"
+            : enriched.priority || "MEDIUM",
+        assignmentEmail: assigneeEmails[0] || "",
+        category: enriched.category || "",
       });
 
       const a = await fetchTaskActivity(taskId).catch(() => []);
@@ -182,7 +206,7 @@ export default function TaskDetails() {
       ...updates,
     });
     const enriched = await enrichTask(
-      { ...task, ...updated, overdue: isTaskOverdue({ ...task, ...updated }) },
+      { ...task, ...updated },
       users
     );
     setTask(enriched);
@@ -194,25 +218,54 @@ export default function TaskDetails() {
 
   const openEdit = () => {
     const dueParts = splitDueParts(task.dueDate);
+    const startParts = splitDueParts(task.startDate);
     setEditForm({
       title: task.title || "",
       description: task.description || "",
-      assignee: task.assignee || "",
+      assignees: getTaskAssignees(task).map((a) => a.email),
       dueDate: dueParts.date,
       dueTime: dueParts.time,
+      startDate: startParts.date,
+      startTime: startParts.time,
       status: getStoredStatus(task),
+      priority:
+        String(task.priority || "MEDIUM").toUpperCase() === "URGENT"
+          ? "CRITICAL"
+          : task.priority || "MEDIUM",
+      assignmentEmail: getTaskAssignees(task)[0]?.email || "",
+      category: task.category || "",
     });
     setModal("edit");
   };
 
   const openStatus = () => {
-    setEditForm((f) => ({ ...f, status: getStoredStatus(task) }));
+    setEditForm((f) => ({
+      ...f,
+      status: getStoredStatus(task),
+      assignmentEmail: f.assignmentEmail || getTaskAssignees(task)[0]?.email || "",
+    }));
     setModal("status");
   };
 
   const openReassign = () => {
-    setEditForm((f) => ({ ...f, assignee: task.assignee || "" }));
+    setEditForm((f) => ({
+      ...f,
+      assignees: getTaskAssignees(task).map((a) => a.email),
+    }));
     setModal("reassign");
+  };
+
+  const toggleAssignee = (email) => {
+    setEditForm((f) => {
+      const current = f.assignees || [];
+      const has = current.includes(email);
+      return {
+        ...f,
+        assignees: has
+          ? current.filter((x) => x !== email)
+          : [...current, email],
+      };
+    });
   };
 
   const handleSaveEdit = async () => {
@@ -220,14 +273,46 @@ export default function TaskDetails() {
       alert("Task name is required");
       return;
     }
+    const nextStart = joinDueParts(editForm.startDate, editForm.startTime);
+    const nextDue = joinDueParts(editForm.dueDate, editForm.dueTime);
+    const originalStart = splitDueParts(task.startDate);
+    const originalDue = splitDueParts(task.dueDate);
+    if (
+      editForm.startTime !== originalStart.time &&
+      !isQuarterHourTime(editForm.startTime)
+    ) {
+      alert("Start time must be in 15-minute intervals (00, 15, 30, or 45).");
+      return;
+    }
+    if (
+      editForm.dueTime !== originalDue.time &&
+      !isQuarterHourTime(editForm.dueTime)
+    ) {
+      alert("Deadline time must be in 15-minute intervals (00, 15, 30, or 45).");
+      return;
+    }
+    if (nextStart && nextDue && new Date(nextDue).getTime() < new Date(nextStart).getTime()) {
+      alert("Deadline must be after the start date and time.");
+      return;
+    }
+    if (nextDue !== (task.dueDate || null)) {
+      const ok = window.confirm(
+        "Changing the deadline will recalculate Green/Orange/Red for incomplete assignees. Continue?"
+      );
+      if (!ok) return;
+    }
     setSaving(true);
     try {
       await patchTask({
         title: editForm.title.trim(),
         description: editForm.description || "",
-        assignee: editForm.assignee,
+        assignees: editForm.assignees,
+        assignee: editForm.assignees[0] || "",
         status: editForm.status,
-        dueDate: joinDueParts(editForm.dueDate, editForm.dueTime),
+        priority: editForm.priority,
+        category: editForm.category || "",
+        startDate: nextStart,
+        dueDate: nextDue,
       });
       setModal(null);
     } catch (err) {
@@ -238,9 +323,18 @@ export default function TaskDetails() {
   };
 
   const handleChangeStatus = async () => {
+    if (editForm.status === "DONE") {
+      const ok = window.confirm(
+        "Mark this assignment as completed? Completed work will not move to Orange or Red."
+      );
+      if (!ok) return;
+    }
     setSaving(true);
     try {
-      await patchTask({ status: editForm.status });
+      await patchTask({
+        status: editForm.status,
+        assignmentEmail: editForm.assignmentEmail || undefined,
+      });
       setModal(null);
     } catch (err) {
       alert(err.message || "Failed to update status");
@@ -252,7 +346,10 @@ export default function TaskDetails() {
   const handleReassign = async () => {
     setSaving(true);
     try {
-      await patchTask({ assignee: editForm.assignee });
+      await patchTask({
+        assignees: editForm.assignees,
+        assignee: editForm.assignees[0] || "",
+      });
       setModal(null);
     } catch (err) {
       alert(err.message || "Failed to reassign");
@@ -288,13 +385,19 @@ export default function TaskDetails() {
     );
   }
 
-  const assigneeInfo = personLabel(users, task.assignee);
-  const assignee = {
-    name: task.assigneeProfile?.name || assigneeInfo.name,
-    email: assigneeInfo.email,
-  };
-  const creator = creatorName || personLabel(users, task.createdBy).name;
-  const overdue = isTaskOverdue(task);
+  const assignees = getTaskAssignees(task);
+  const assigneeNames = assignees
+    .map((a) => {
+      const info = personLabel(users, a.email);
+      const profile = (task.assigneeProfiles || []).find(
+        (p) => String(p.email).toLowerCase() === String(a.email).toLowerCase()
+      );
+      return profile?.name || info.name;
+    })
+    .join(", ");
+  const creator = task.createdByName || creatorName || personLabel(users, task.createdBy).name;
+  const zone = getTaskZone(task);
+  const timing = getTaskTiming(task);
   const timeline = [...activity].sort((a, b) => {
     const ta = new Date(a.timestamp || 0).getTime();
     const tb = new Date(b.timestamp || 0).getTime();
@@ -328,11 +431,12 @@ export default function TaskDetails() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => navigate("/admin/tasks")}
+              onClick={() => navigate(employeeView ? "/work" : "/admin/tasks")}
             >
-              Back to Tasks
+              {employeeView ? "Back to My Tasks" : "Back to Tasks"}
             </Button>
           </div>
+          {employeeView ? null : (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <Button type="button" onClick={openEdit}>
               Edit Task
@@ -344,6 +448,7 @@ export default function TaskDetails() {
               Reassign
             </Button>
           </div>
+          )}
         </div>
 
         <section style={sectionBox}>
@@ -352,18 +457,30 @@ export default function TaskDetails() {
             {task.title}
           </h3>
           <Label>STATUS</Label>
-          <StatusBadge taskOrStatus={task} />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <StatusBadge taskOrStatus={task} />
+            <ZoneBadge zone={zone} status={task.status} size="md" />
+          </div>
+          {timing ? (
+            <p style={{ margin: "10px 0 0", fontSize: 13, color: colors.textMuted }}>
+              {timing}
+            </p>
+          ) : null}
         </section>
 
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>TASK INFORMATION</h3>
           <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
           <InfoRow
-            label="Created By"
+            label="Author"
             value={
-              task.createdBy
-                ? `${creator}${
-                    creator !== task.createdBy ? `\n${task.createdBy}` : ""
+              creator || task.createdByName || task.createdBy
+                ? `${creator || task.createdByName || task.createdBy}${
+                    task.createdBy &&
+                    creator &&
+                    creator !== task.createdBy
+                      ? `\n${task.createdBy}`
+                      : ""
                   }`
                 : "—"
             }
@@ -371,27 +488,91 @@ export default function TaskDetails() {
           <InfoRow
             label="Assigned To"
             value={
-              task.assignee
-                ? `${assignee.name}\n${assignee.email}`
+              assignees.length
+                ? `${assigneeNames}\n${assignees.map((a) => a.email).join("\n")}`
                 : "Unassigned"
             }
           />
+          <InfoRow label="Priority" value={priorityLabel(task.priority)} />
+          <InfoRow label="Category" value={task.category || "—"} />
           <InfoRow label="Created Date" value={formatTaskDate(task.createdAt)} />
           <InfoRow label="Created Time" value={formatTaskTime(task.createdAt)} />
           <InfoRow
+            label="Assigned / Start Date"
+            value={formatTaskDate(task.startDate || task.createdAt)}
+          />
+          <InfoRow
+            label="Assigned / Start Time"
+            value={formatTaskTime(task.startDate || task.createdAt)}
+          />
+          <InfoRow
             label="Due Date"
             value={formatTaskDate(task.dueDate)}
-            danger={overdue}
+            danger={zone === "RED" || zone === "ORANGE"}
           />
           <InfoRow
             label="Due Time"
             value={formatTaskTime(task.dueDate)}
-            danger={overdue}
+            danger={zone === "RED" || zone === "ORANGE"}
+          />
+          <InfoRow
+            label="Current Zone"
+            value={`${zoneDisplay(zone, task.status).emoji} ${zoneDisplay(zone, task.status).label}`.trim()}
           />
           <InfoRow
             label="Duration"
             value={formatTaskDuration(task) || "—"}
           />
+        </section>
+
+        <section style={{ ...sectionBox, marginTop: 14 }}>
+          <h3 style={sectionTitle}>INDIVIDUAL EMPLOYEE PROGRESS</h3>
+          {assignees.length === 0 ? (
+            <p style={{ margin: 0, color: colors.textMuted }}>No assignees yet.</p>
+          ) : (
+            assignees.map((a) => {
+              const info = personLabel(users, a.email);
+              const profile = (task.assigneeProfiles || []).find(
+                (p) =>
+                  String(p.email).toLowerCase() === String(a.email).toLowerCase()
+              );
+              const name = profile?.name || info.name;
+              return (
+                <div
+                  key={a.email}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    padding: "10px 0",
+                    borderBottom: "1px solid var(--dgv-border)",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{name}</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>
+                      {a.email}
+                    </div>
+                    {a.completedAt ? (
+                      <div style={{ fontSize: 12, color: colors.textMuted }}>
+                        Completed {formatTaskDateTime(a.completedAt)}
+                      </div>
+                    ) : a.timing ? (
+                      <div style={{ fontSize: 12, color: colors.textMuted }}>
+                        {a.timing}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <ZoneBadge zone={a.zone} status={a.status} />
+                    <StatusBadge taskOrStatus={a.status} />
+                  </div>
+                </div>
+              );
+            })
+          )}
         </section>
 
         <section style={{ ...sectionBox, marginTop: 14 }}>
@@ -464,21 +645,88 @@ export default function TaskDetails() {
               setEditForm({ ...editForm, description: e.target.value })
             }
           />
-          <label style={formLabel}>Assigned Employee</label>
+          <label style={formLabel}>Assigned Employees</label>
+          <div
+            style={{
+              maxHeight: 160,
+              overflowY: "auto",
+              border: "1px solid var(--dgv-border)",
+              borderRadius: 10,
+              padding: 8,
+              marginBottom: 16,
+            }}
+          >
+            {users.map((u) => (
+              <label
+                key={u.email}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 13,
+                  padding: "4px 2px",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                    checked={(editForm.assignees || []).includes(u.email)}
+                  onChange={() => toggleAssignee(u.email)}
+                />
+                {u.name ? `${u.name} (${u.email})` : u.email}
+              </label>
+            ))}
+          </div>
+          <label style={formLabel}>Priority</label>
           <select
             style={formSelect}
-            value={editForm.assignee}
+            value={
+              editForm.priority === "URGENT" ? "CRITICAL" : editForm.priority
+            }
             onChange={(e) =>
-              setEditForm({ ...editForm, assignee: e.target.value })
+              setEditForm({ ...editForm, priority: e.target.value })
             }
           >
-            <option value="">Unassigned</option>
-            {users.map((u) => (
-              <option key={u.email} value={u.email}>
-                {u.name ? `${u.name} (${u.email})` : u.email}
+            {TASK_PRIORITIES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
               </option>
             ))}
           </select>
+          <label style={formLabel}>Category</label>
+          <select
+            style={formSelect}
+            value={editForm.category || ""}
+            onChange={(e) =>
+              setEditForm({ ...editForm, category: e.target.value })
+            }
+          >
+            <option value="">Select category</option>
+            {TASK_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label style={formLabel}>Start Date</label>
+          <input
+            type="date"
+            style={formInput}
+            value={editForm.startDate}
+            onChange={(e) =>
+              setEditForm({ ...editForm, startDate: e.target.value })
+            }
+          />
+          <label style={formLabel}>Start Time</label>
+          <input
+            type="time"
+            step={900}
+            style={formInput}
+            value={editForm.startTime}
+            onChange={(e) =>
+              setEditForm({ ...editForm, startTime: e.target.value })
+            }
+          />
           <label style={formLabel}>Due Date</label>
           <input
             type="date"
@@ -491,6 +739,7 @@ export default function TaskDetails() {
           <label style={formLabel}>Due Time</label>
           <input
             type="time"
+            step={900}
             style={formInput}
             value={editForm.dueTime}
             onChange={(e) =>
@@ -534,6 +783,24 @@ export default function TaskDetails() {
           <p style={{ marginTop: 0, color: colors.textMuted, fontSize: 13 }}>
             Current: <StatusBadge taskOrStatus={task} />
           </p>
+          {assignees.length > 1 ? (
+            <>
+              <label style={formLabel}>Employee</label>
+              <select
+                style={formSelect}
+                value={editForm.assignmentEmail}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, assignmentEmail: e.target.value })
+                }
+              >
+                {assignees.map((a) => (
+                  <option key={a.email} value={a.email}>
+                    {personLabel(users, a.email).name} ({a.email})
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : null}
           <label style={formLabel}>New Status</label>
           <select
             style={formSelect}
@@ -568,21 +835,38 @@ export default function TaskDetails() {
 
       {modal === "reassign" ? (
         <Modal title="Reassign Task" onClose={() => setModal(null)}>
-          <label style={formLabel}>Assigned Employee</label>
-          <select
-            style={formSelect}
-            value={editForm.assignee}
-            onChange={(e) =>
-              setEditForm({ ...editForm, assignee: e.target.value })
-            }
+          <label style={formLabel}>Assigned Employees</label>
+          <div
+            style={{
+              maxHeight: 220,
+              overflowY: "auto",
+              border: "1px solid var(--dgv-border)",
+              borderRadius: 10,
+              padding: 8,
+              marginBottom: 16,
+            }}
           >
-            <option value="">Unassigned</option>
             {users.map((u) => (
-              <option key={u.email} value={u.email}>
+              <label
+                key={u.email}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 13,
+                  padding: "4px 2px",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                    checked={(editForm.assignees || []).includes(u.email)}
+                  onChange={() => toggleAssignee(u.email)}
+                />
                 {u.name ? `${u.name} (${u.email})` : u.email}
-              </option>
+              </label>
             ))}
-          </select>
+          </div>
           <div style={modalActions}>
             <Button type="button" variant="outline" onClick={() => setModal(null)}>
               Cancel
