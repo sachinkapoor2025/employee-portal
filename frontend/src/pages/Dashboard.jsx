@@ -5,8 +5,6 @@ import {
   CalendarDays,
   Megaphone,
   ArrowRight,
-  Clock,
-  Bell,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
@@ -15,26 +13,20 @@ import {
   fetchAnnouncements,
   fetchTasks,
   fetchMyLeave,
-  fetchMyActivityToday,
-  fetchLeaveNotifications,
-  markNotificationRead,
 } from "../services/api";
-import { colors, pageCard, pageTitle, pageSubtitle } from "../theme";
+import { colors, pageTitle, pageSubtitle } from "../theme";
 import ZoneBadge from "../components/ZoneBadge";
-import { getTaskZone } from "../utils/taskStatus";
-import { displayNameFromEmail } from "../utils/meetings";
 import {
-  isZoneNotification,
-  isRedZoneNotification,
-  relativeTime,
-} from "../utils/notifications";
+  formatTaskDateTime,
+  getTaskZone,
+  statusLabel,
+} from "../utils/taskStatus";
+import { displayNameFromEmail } from "../utils/meetings";
 
 export default function Dashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [leave, setLeave] = useState([]);
-  const [portalMinutes, setPortalMinutes] = useState(0);
-  const [zoneNotes, setZoneNotes] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -43,34 +35,44 @@ export default function Dashboard() {
         fetchAnnouncements(),
         fetchTasks({ mine: "true" }),
         fetchMyLeave(),
-        fetchMyActivityToday().catch(() => null),
-        fetchLeaveNotifications().catch(() => []),
       ])
-        .then(([a, t, l, activity, notes]) => {
+        .then(([a, t, l]) => {
           setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
-          setTasks(
-            Array.isArray(t)
-              ? t
-                  .filter((x) => {
-                    const status = x.myAssignment?.status || x.status;
-                    return status !== "DONE" && status !== "CANCELLED";
-                  })
-                  .slice(0, 5)
-              : []
-          );
+          const seen = new Set();
+          const open = [];
+          for (const x of Array.isArray(t) ? t : []) {
+            const id = x?.taskId;
+            if (!id || seen.has(id)) continue;
+            const status = String(
+              x.myAssignment?.status || x.status || ""
+            ).toUpperCase();
+            if (status === "DONE" || status === "CANCELLED") continue;
+            seen.add(id);
+            open.push(x);
+          }
+          open.sort((left, right) => {
+            const leftMs = Date.parse(
+              left.myAssignment?.assignedAt ||
+                left.updatedAt ||
+                left.createdAt ||
+                0
+            );
+            const rightMs = Date.parse(
+              right.myAssignment?.assignedAt ||
+                right.updatedAt ||
+                right.createdAt ||
+                0
+            );
+            return (Number.isFinite(rightMs) ? rightMs : 0) -
+              (Number.isFinite(leftMs) ? leftMs : 0);
+          });
+          setTasks(open);
           setLeave(
             Array.isArray(l)
               ? l.filter(
                   (x) => x.status === "PENDING" || x.status === "PENDING_APPROVAL"
                 )
               : []
-          );
-          const mins = Number(activity?.summary?.totalMinutes);
-          setPortalMinutes(Number.isFinite(mins) ? mins : 0);
-          setZoneNotes(
-            (Array.isArray(notes) ? notes : [])
-              .filter(isZoneNotification)
-              .slice(0, 8)
           );
         })
         .catch(console.error);
@@ -80,216 +82,66 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, []);
 
-  const openZoneNote = async (item) => {
-    if (item?.SK && item.read !== true) {
-      try {
-        await markNotificationRead(item.SK);
-        setZoneNotes((prev) =>
-          prev.map((n) =>
-            n.SK === item.SK
-              ? { ...n, read: true, readAt: new Date().toISOString() }
-              : n
-          )
-        );
-      } catch {
-        /* still navigate */
-      }
-    }
-    if (item?.taskId) navigate(`/work/${encodeURIComponent(item.taskId)}`);
-  };
-
   return (
     <Layout>
-      <div style={{ ...pageCard, maxWidth: 960 }}>
-        <h2 style={pageTitle}>Welcome to DGV Portal</h2>
-        <p style={pageSubtitle}>Your gateway to company resources</p>
+      <h1 style={pageTitle}>Welcome to DGV Portal</h1>
+      <p style={pageSubtitle}>Your gateway to company resources</p>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-            gap: 16,
-            margin: "8px 0 24px",
-          }}
-        >
-          <StatCard
-            label="Portal Time Today"
-            value={`${portalMinutes} min`}
-            icon={<Clock size={20} />}
-          />
-          <StatCard
-            label="Open Tasks"
-            value={tasks.length}
-            icon={<ListTodo size={20} />}
-          />
-          <StatCard
-            label="Pending Leave"
-            value={leave.length}
-            icon={<CalendarDays size={20} />}
-          />
-        </div>
+      <div className="dgv-kpi-grid dgv-kpi-grid--3">
+        <StatCard
+          label="Open Tasks"
+          value={tasks.length}
+          hint={
+            tasks.length
+              ? `${tasks.length} requiring action`
+              : "Nothing pending"
+          }
+          icon={<ListTodo size={18} strokeWidth={1.75} />}
+        />
+        <StatCard
+          label="Pending Leave"
+          value={leave.length}
+          hint={leave.length ? "Awaiting approval" : "No pending requests"}
+          icon={<CalendarDays size={18} strokeWidth={1.75} />}
+        />
+      </div>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            flexWrap: "wrap",
-            marginBottom: 24,
-          }}
-        >
-          <Button onClick={() => navigate("/attendance")}>
-            Mark Attendance
-          </Button>
-          <Button variant="secondary" onClick={() => navigate("/work")}>
-            My Tasks
-          </Button>
-          <Button variant="outline" onClick={() => navigate("/leave")}>
-            Apply Leave
-          </Button>
-          <Button variant="outline" onClick={() => navigate("/software-center")}>
-            Software Center
-          </Button>
-        </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          marginBottom: 8,
+        }}
+      >
+        <Button onClick={() => navigate("/attendance")}>
+          Mark Attendance
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/work")}>
+          My Tasks
+        </Button>
+        <Button variant="outline" onClick={() => navigate("/leave")}>
+          Apply Leave
+        </Button>
+        <Button variant="outline" onClick={() => navigate("/software-center")}>
+          Software Center
+        </Button>
+      </div>
 
-        {zoneNotes.length > 0 ? (
-          <>
-            <h3
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginTop: 0,
-              }}
-            >
-              <Bell size={18} color="var(--dgv-accent)" />
-              Notifications
-            </h3>
-            {zoneNotes.map((n) => {
-              const red = isRedZoneNotification(n);
-              const unreadItem = n.read !== true;
-              return (
-                <button
-                  type="button"
-                  key={n.notifyId || n.SK}
-                  onClick={() => openZoneNote(n)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    background: unreadItem
-                      ? red
-                        ? "rgba(220,38,38,0.12)"
-                        : "rgba(234,88,12,0.12)"
-                      : "var(--dgv-surface-solid)",
-                    border: `1px solid ${
-                      red ? "rgba(220,38,38,0.45)" : "rgba(234,88,12,0.4)"
-                    }`,
-                    borderLeft: `5px solid ${red ? "#dc2626" : "#ea580c"}`,
-                    borderRadius: 12,
-                    padding: 14,
-                    marginBottom: 10,
-                    cursor: "pointer",
-                    color: colors.text,
-                  }}
-                >
-                  <div style={{ fontWeight: 800 }}>
-                    {red ? "🚨 Red Zone" : "⚠️ Orange Zone"}
-                    {unreadItem ? " · New" : ""}
-                  </div>
-                  <div style={{ fontWeight: 700, marginTop: 4 }}>
-                    {n.title || (red ? "Task moved to Red Zone" : "Task moved to Orange Zone")}
-                  </div>
-                  <p
-                    style={{
-                      margin: "6px 0 0",
-                      fontSize: 14,
-                      color: colors.textMuted,
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {n.message}
-                  </p>
-                  <div
-                    style={{
-                      marginTop: 8,
-                      fontSize: 12,
-                      color: colors.textMuted,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 8,
-                    }}
-                  >
-                    <span>{relativeTime(n.createdAt)}</span>
-                    <span style={{ color: "var(--dgv-accent)", fontWeight: 700 }}>
-                      Open Task →
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </>
-        ) : null}
-
-        {announcements.length > 0 && (
-          <>
-            <h3
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginTop: 0,
-              }}
-            >
-              <Megaphone size={18} color="var(--dgv-accent)" />
-              Announcements
-            </h3>
-            {announcements.map((a) => (
-              <div
-                key={a.announceId}
-                style={{
-                  background: colors.primaryLight,
-                  padding: 14,
-                  borderRadius: 12,
-                  marginBottom: 10,
-                  border: `1px solid ${colors.border}`,
-                }}
-              >
-                <strong>{a.title}</strong>
-                <p
-                  style={{
-                    margin: "6px 0 0",
-                    fontSize: 14,
-                    color: colors.textMuted,
-                  }}
-                >
-                  {a.message}
-                </p>
-                <div
-                  style={{
-                    marginTop: 8,
-                    fontSize: 12,
-                    color: colors.textMuted,
-                  }}
-                >
-                  {a.createdByName || a.createdBy
-                    ? `By ${a.createdByName || displayNameFromEmail(a.createdBy)}`
-                    : null}
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-
-        <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <ListTodo size={18} color="var(--dgv-accent)" />
-          My Open Tasks
-        </h3>
-        {tasks.length === 0 ? (
-          <p style={{ color: colors.textMuted }}>No open tasks assigned.</p>
-        ) : (
-          tasks.map((t) => (
+      <h2 className="dgv-section-title">
+        <ListTodo size={18} strokeWidth={1.75} />
+        My Open Tasks
+      </h2>
+      {tasks.length === 0 ? (
+        <p style={{ color: colors.textMuted }}>No open tasks</p>
+      ) : (
+        tasks.map((t) => {
+          const status = t.myAssignment?.status || t.status;
+          const zone = t.myAssignment?.zone || getTaskZone(t);
+          return (
             <div
               key={t.taskId}
+              className="dgv-list-row"
               role="button"
               tabIndex={0}
               onClick={() => navigate(`/work/${encodeURIComponent(t.taskId)}`)}
@@ -299,39 +151,91 @@ export default function Dashboard() {
                   navigate(`/work/${encodeURIComponent(t.taskId)}`);
                 }
               }}
-              style={{
-                border: `1px solid ${colors.border}`,
-                borderRadius: 12,
-                padding: 12,
-                marginBottom: 8,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                background: "var(--dgv-surface-solid)",
-                cursor: "pointer",
-              }}
             >
               <div>
-                <strong>{t.title}</strong>
-                <span
-                  className="dgv-badge dgv-badge--info"
-                  style={{ marginLeft: 10 }}
+                <div style={{ fontWeight: 600 }}>{t.title}</div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
                 >
-                  {t.myAssignment?.status || t.status}
-                </span>
-                <span style={{ marginLeft: 8, display: "inline-flex", verticalAlign: "middle" }}>
-                  <ZoneBadge
-                    zone={t.myAssignment?.zone || getTaskZone(t)}
-                    status={t.myAssignment?.status || t.status}
-                  />
-                </span>
+                  <span className="dgv-badge dgv-badge--info">
+                    {statusLabel(status)}
+                  </span>
+                  <ZoneBadge zone={zone} status={status} />
+                </div>
+                {t.dueDate ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 13,
+                      color: colors.textMuted,
+                    }}
+                  >
+                    Deadline: {formatTaskDateTime(t.dueDate)}
+                  </div>
+                ) : null}
               </div>
-              <ArrowRight size={16} color="var(--dgv-text-muted)" />
+              <span
+                style={{
+                  color: "var(--dgv-text-secondary)",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  whiteSpace: "nowrap",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                Open Task
+                <ArrowRight size={16} />
+              </span>
             </div>
-          ))
-        )}
-      </div>
+          );
+        })
+      )}
+
+      {announcements.length > 0 ? (
+        <>
+          <h2 className="dgv-section-title">
+            <Megaphone size={18} strokeWidth={1.75} />
+            Announcements
+          </h2>
+          {announcements.map((a) => (
+            <div
+              key={a.announceId}
+              className="dgv-card"
+              style={{ padding: 20, marginBottom: 12 }}
+            >
+              <strong>{a.title}</strong>
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  fontSize: 14,
+                  color: colors.textMuted,
+                }}
+              >
+                {a.message}
+              </p>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: colors.textMuted,
+                }}
+              >
+                {a.createdByName || a.createdBy
+                  ? `By ${a.createdByName || displayNameFromEmail(a.createdBy)}`
+                  : null}
+              </div>
+            </div>
+          ))}
+        </>
+      ) : null}
     </Layout>
   );
 }

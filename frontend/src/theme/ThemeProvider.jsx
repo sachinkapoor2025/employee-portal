@@ -15,8 +15,8 @@ function getInitialTheme() {
   } catch {
     /* ignore */
   }
-  // Default: Dark Mode when no preference is saved
-  return "dark";
+  // Default: light mode (design spec). Saved preference still wins.
+  return "light";
 }
 
 export function ThemeProvider({ children }) {

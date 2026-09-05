@@ -49,6 +49,23 @@ function isValidAssignableRole(role) {
   );
 }
 
+/** Active portal administrators from UserAccess rows (no hardcoded emails). */
+function activeAdminEmailsFromAccess(rows = []) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const email = String(row.email || row.PK || "")
+      .trim()
+      .toLowerCase();
+    if (!email || !email.includes("@") || seen.has(email)) continue;
+    if (String(row.status || "").toUpperCase() !== "ACTIVE") continue;
+    if (!isAdminPortalRole(row.role)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
 module.exports = {
   ROLES,
   ADMIN_PORTAL_ROLES,
@@ -57,4 +74,5 @@ module.exports = {
   cognitoGroupForRole,
   accessGateForRole,
   isValidAssignableRole,
+  activeAdminEmailsFromAccess,
 };

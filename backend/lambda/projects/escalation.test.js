@@ -302,6 +302,16 @@ const badDates = validateCreatePayload({
 assert.strictEqual(badDates.ok, false);
 assert.ok(String(badDates.errors.dueDate).includes("after"));
 
+const badMinutes = validateCreatePayload({
+  title: "Odd minutes",
+  assignees: ["rahul@mydgv.com"],
+  priority: "MEDIUM",
+  startDate: "2026-08-25T04:31:00.000Z",
+  dueDate: "2026-08-25T11:30:00.000Z",
+});
+assert.strictEqual(badMinutes.ok, false);
+assert.ok(String(badMinutes.errors.startDate).includes("15-minute"));
+
 const { validateAttachment } = require("./escalation");
 assert.strictEqual(
   validateAttachment({ fileName: "notes.exe", fileSize: 100 }),
@@ -331,6 +341,150 @@ assert.strictEqual(
     status: "TODO",
   }).createdByName,
   "Nitesh Kumar"
+);
+
+const { needsRedAdminNotify, employeeMayComplete } = require("./escalation");
+assert.strictEqual(needsRedAdminNotify({}, {}, false), false);
+assert.strictEqual(needsRedAdminNotify({}, {}, true), true);
+assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, true), false);
+assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, false), false);
+assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "FAILED" }, {}, false), true);
+assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "PENDING" }, {}, false), true);
+assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "PENDING" }, {}, true), true);
+assert.strictEqual(
+  needsRedAdminNotify(
+    { redAdminNotifyStatus: "SENT" },
+    { redAdminNotifyStatus: "FAILED" },
+    false
+  ),
+  true
+);
+assert.strictEqual(
+  needsRedAdminNotify({}, { redAdminNotifyStatus: "SENT" }, true),
+  false
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    { redAdminNotifyStatus: "SENT" },
+    { email: "rahul@mydgv.com", status: "TODO" },
+    true
+  ),
+  true
+);
+
+const redNow = DEADLINE_MS + ORANGE_MS;
+const taskDue = { dueDate: DEADLINE, taskId: "t-red" };
+
+// TEST 1 — assignment enters Red
+const enterRed = detectTransitions(
+  { email: "a@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
+  DEADLINE,
+  redNow
+);
+assert.strictEqual(enterRed.events.some((e) => e.action === "zone_red"), true);
+assert.strictEqual(
+  needsRedAdminNotify(taskDue, { ...enterRed.assignment, email: "a@mydgv.com" }, true, redNow),
+  true
+);
+
+// TEST 2 — already Red and SENT: next sweep does not notify again
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    {
+      email: "a@mydgv.com",
+      status: "TODO",
+      recordedZone: "RED",
+      redAdminNotifyStatus: "SENT",
+    },
+    false,
+    redNow + 5 * 60 * 1000
+  ),
+  false
+);
+
+// TEST 3 — only the Red assignment notifies; Orange/DONE peers do not
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    { email: "a@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
+    true,
+    redNow
+  ),
+  true
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    { email: "b@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
+    false,
+    orangeNow
+  ),
+  false
+);
+
+// TEST 4 — completed before Red: no admin email
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    { email: "a@mydgv.com", status: "DONE", recordedZone: "ORANGE" },
+    true,
+    redNow
+  ),
+  false
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    { dueDate: DEADLINE },
+    { email: "suman@mydgv.com", status: "TODO" },
+    false,
+    redNow
+  ),
+  true
+);
+
+assert.strictEqual(
+  employeeMayComplete({ email: "amit@mydgv.com", status: "TODO" }, DEADLINE, DEADLINE_MS - 1),
+  true
+);
+assert.strictEqual(
+  employeeMayComplete({ email: "amit@mydgv.com", status: "TODO" }, DEADLINE, DEADLINE_MS + 1),
+  true
+);
+assert.strictEqual(
+  employeeMayComplete(
+    { email: "amit@mydgv.com", status: "TODO" },
+    DEADLINE,
+    DEADLINE_MS + ORANGE_MS
+  ),
+  false
+);
+assert.strictEqual(
+  employeeMayComplete(
+    completeAssignment(
+      { email: "amit@mydgv.com", status: "TODO" },
+      DEADLINE,
+      DEADLINE_MS + 1,
+      new Date(DEADLINE_MS + 1).toISOString()
+    ),
+    DEADLINE,
+    DEADLINE_MS + ORANGE_MS
+  ),
+  false
+);
+
+const { activeAdminEmailsFromAccess } = require("../common/roles");
+assert.deepStrictEqual(
+  activeAdminEmailsFromAccess([
+    { PK: "admin@mydgv.com", role: "ADMIN", status: "ACTIVE" },
+    { email: "emp@mydgv.com", role: "EMPLOYEE", status: "ACTIVE" },
+    { email: "mgr@mydgv.com", role: "MANAGER", status: "BLOCKED" },
+    { email: "waiting@mydgv.com", role: "ADMIN", status: "PENDING" },
+    { email: "super@mydgv.com", role: "SUPER_ADMIN", status: "ACTIVE" },
+    { email: "lead@mydgv.com", role: "MANAGER", status: "ACTIVE" },
+    { PK: "no-email-row", role: "ADMIN", status: "ACTIVE" },
+  ]),
+  ["admin@mydgv.com", "super@mydgv.com", "lead@mydgv.com"]
 );
 
 console.log("escalation tests passed");

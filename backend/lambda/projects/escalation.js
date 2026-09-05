@@ -137,6 +137,8 @@ function validateCreatePayload(body = {}) {
   const startMs = parseInstantMs(body.startDate, false);
   if (!body.startDate || !Number.isFinite(startMs)) {
     errors.startDate = "Start date and time are required.";
+  } else if (!isQuarterHourInstant(body.startDate)) {
+    errors.startDate = quarterHourMessage("Start time");
   }
 
   const dueMs = parseDeadlineMs(body.dueDate);
@@ -144,6 +146,8 @@ function validateCreatePayload(body = {}) {
     errors.dueDate = "Deadline date and time are required.";
   } else if (Number.isFinite(startMs) && dueMs < startMs) {
     errors.dueDate = "Deadline must be after the start date and time.";
+  } else if (!isQuarterHourInstant(body.dueDate)) {
+    errors.dueDate = quarterHourMessage("Deadline time");
   }
 
   return {
@@ -178,6 +182,60 @@ function parseDeadlineMs(dueDate) {
   }
   const ms = Date.parse(raw);
   return Number.isFinite(ms) ? ms : null;
+}
+
+function companyClockParts(iso) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: process.env.COMPANY_TIMEZONE || "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(ms));
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return {
+    hour: Number(get("hour")),
+    minute: Number(get("minute")),
+  };
+}
+
+function isDateOnly(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
+function isQuarterHourInstant(iso) {
+  if (!iso || isDateOnly(iso)) return true;
+  const clock = companyClockParts(iso);
+  if (!clock || !Number.isFinite(clock.minute)) return false;
+  return clock.minute === 0 || clock.minute === 15 || clock.minute === 30 || clock.minute === 45;
+}
+
+function quarterHourMessage(label) {
+  return `${label} must be in 15-minute intervals (00, 15, 30, or 45).`;
+}
+
+function companyDateKey(iso) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms).toLocaleDateString("en-CA", {
+    timeZone: process.env.COMPANY_TIMEZONE || "Asia/Kolkata",
+  });
+}
+
+/** Allow existing non-quarter times to remain; require 15-minute steps for new values. */
+function allowsQuarterHourOrExisting(nextIso, previousIso) {
+  if (!nextIso || isQuarterHourInstant(nextIso)) return true;
+  if (!previousIso) return false;
+  const nextClock = companyClockParts(nextIso);
+  const prevClock = companyClockParts(previousIso);
+  return (
+    !!nextClock &&
+    !!prevClock &&
+    nextClock.hour === prevClock.hour &&
+    nextClock.minute === prevClock.minute &&
+    companyDateKey(nextIso) === companyDateKey(previousIso)
+  );
 }
 
 function zoneAt(deadlineMs, atMs) {
@@ -631,6 +689,49 @@ function resetEscalationForNewDeadline(assignment, newDueDate, nowMs) {
   };
 }
 
+function redAdminNotifyStatusOf(task = {}) {
+  return String(task.redAdminNotifyStatus || "").toUpperCase();
+}
+
+/**
+ * Immediate Red-zone admin email: send on first RED transition, retry FAILED/PENDING,
+ * never resend after SENT. Independent of recorded zone so email failure cannot
+ * block the Red state, and later sweeps cannot duplicate a successful send.
+ */
+function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = Date.now()) {
+  if (assignment.removed || isComplete(assignment.status) || isCancelled(assignment.status)) {
+    return false;
+  }
+  const assignmentStatus = redAdminNotifyStatusOf(assignment);
+  if (assignmentStatus === "SENT") return false;
+
+  const hasEmail = !!normalizeEmail(assignment.email);
+  const taskStatus = redAdminNotifyStatusOf(task);
+  // Legacy single-assignee rows stored the flag on the task item only.
+  if (!hasEmail && !assignmentStatus && taskStatus === "SENT") return false;
+
+  if (enteredRed) return true;
+  if (assignmentStatus === "FAILED" || assignmentStatus === "PENDING") return true;
+  if (!hasEmail && (taskStatus === "FAILED" || taskStatus === "PENDING")) {
+    return true;
+  }
+  if (hasEmail && !assignmentStatus) {
+    const live = zoneAt(parseDeadlineMs(task.dueDate), nowMs);
+    if (live === ZONES.RED) return true;
+  }
+  return false;
+}
+
+/** Employees may complete Green/Orange assignments. Red requires an admin. */
+function employeeMayComplete(assignment, dueDate, nowMs = Date.now()) {
+  if (!assignment || assignment.removed || isCancelled(assignment.status)) {
+    return false;
+  }
+  if (isComplete(assignment.status)) return false;
+  const view = computeAssignmentView(assignment, dueDate, nowMs);
+  return view.zone !== ZONES.RED;
+}
+
 module.exports = {
   ORANGE_MS,
   ZONES,
@@ -651,6 +752,7 @@ module.exports = {
   normalizePriority,
   normalizeCategory,
   validateCreatePayload,
+  allowsQuarterHourOrExisting,
   validateAttachment,
   priorityLabel,
   formatDuration,
@@ -677,4 +779,7 @@ module.exports = {
   displayNameFromEmail,
   pickPersonName,
   creatorDisplayName,
+  redAdminNotifyStatusOf,
+  needsRedAdminNotify,
+  employeeMayComplete,
 };

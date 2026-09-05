@@ -10,14 +10,15 @@ export default function Card({ children, className = "", hover = true, style, ..
   );
 }
 
-export function StatCard({ label, value, icon }) {
+export function StatCard({ label, value, hint, icon }) {
   return (
     <div className="dgv-stat-card">
-      {icon ? (
-        <div style={{ marginBottom: 10, color: "var(--dgv-accent)" }}>{icon}</div>
-      ) : null}
+      <div className="dgv-stat-card__top">
+        <div className="dgv-stat-card__label">{label}</div>
+        {icon ? <span className="dgv-stat-card__icon">{icon}</span> : null}
+      </div>
       <div className="dgv-stat-card__value">{value}</div>
-      <div className="dgv-stat-card__label">{label}</div>
+      {hint ? <div className="dgv-stat-card__hint">{hint}</div> : null}
     </div>
   );
 }

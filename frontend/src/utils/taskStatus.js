@@ -46,9 +46,9 @@ const LABEL_BY_VALUE = {
 function parseDue(dueDate) {
   if (!dueDate) return null;
   const raw = String(dueDate);
-  // Date-only → end of that local day so "due today" is not overdue until midnight.
+  // Date-only → end of that Asia/Kolkata day (company timezone, not the browser).
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const d = new Date(`${raw}T23:59:59`);
+    const d = new Date(`${raw}T23:59:59+05:30`);
     return Number.isFinite(d.getTime()) ? d : null;
   }
   const d = new Date(raw);
@@ -93,12 +93,42 @@ export function statusBadgeStyle(statusOrTask) {
       : String(statusOrTask || "").toUpperCase();
 
   const map = {
-    TODO: { bg: "rgba(59,130,246,0.18)", color: "#60a5fa", border: "rgba(59,130,246,0.35)", dot: "#3b82f6" },
-    IN_PROGRESS: { bg: "rgba(234,179,8,0.18)", color: "#facc15", border: "rgba(234,179,8,0.35)", dot: "#eab308" },
-    REVIEW: { bg: "rgba(168,85,247,0.18)", color: "#c084fc", border: "rgba(168,85,247,0.35)", dot: "#a855f7" },
-    DONE: { bg: "rgba(34,197,94,0.18)", color: "#4ade80", border: "rgba(34,197,94,0.35)", dot: "#22c55e" },
-    OVERDUE: { bg: "rgba(239,68,68,0.18)", color: "#f87171", border: "rgba(239,68,68,0.35)", dot: "#ef4444" },
-    CANCELLED: { bg: "rgba(148,163,184,0.18)", color: "#94a3b8", border: "rgba(148,163,184,0.35)", dot: "#64748b" },
+    TODO: {
+      bg: "var(--dgv-info-bg)",
+      color: "var(--dgv-info)",
+      border: "transparent",
+      dot: "var(--dgv-info)",
+    },
+    IN_PROGRESS: {
+      bg: "var(--dgv-warning-bg)",
+      color: "var(--dgv-warning)",
+      border: "transparent",
+      dot: "var(--dgv-warning)",
+    },
+    REVIEW: {
+      bg: "var(--dgv-accent-soft)",
+      color: "var(--dgv-accent)",
+      border: "transparent",
+      dot: "var(--dgv-accent)",
+    },
+    DONE: {
+      bg: "var(--dgv-success-bg)",
+      color: "var(--dgv-success)",
+      border: "transparent",
+      dot: "var(--dgv-success)",
+    },
+    OVERDUE: {
+      bg: "var(--dgv-danger-bg)",
+      color: "var(--dgv-danger)",
+      border: "transparent",
+      dot: "var(--dgv-danger)",
+    },
+    CANCELLED: {
+      bg: "var(--dgv-divider)",
+      color: "var(--dgv-text-secondary)",
+      border: "transparent",
+      dot: "var(--dgv-text-muted)",
+    },
   };
   return map[s] || map.TODO;
 }
@@ -179,6 +209,14 @@ export function joinDueParts(date, time) {
   return d.toISOString();
 }
 
+/** Admin task time pickers allow only 00 / 15 / 30 / 45. */
+export function isQuarterHourTime(time) {
+  const match = String(time || "").match(/^\d{1,2}:(\d{2})/);
+  if (!match) return false;
+  const minutes = Number(match[1]);
+  return minutes === 0 || minutes === 15 || minutes === 30 || minutes === 45;
+}
+
 export const TASK_CATEGORIES = [
   "Development",
   "Design",
@@ -240,34 +278,34 @@ export const TASK_ZONES = [
 
 const ZONE_STYLE = {
   GREEN: {
-    bg: "rgba(34,197,94,0.16)",
-    color: "#4ade80",
-    border: "rgba(34,197,94,0.4)",
-    dot: "#22c55e",
+    bg: "var(--dgv-success-bg)",
+    color: "var(--dgv-success)",
+    border: "transparent",
+    dot: "var(--dgv-success)",
   },
   ORANGE: {
-    bg: "rgba(249,115,22,0.16)",
-    color: "#fb923c",
-    border: "rgba(249,115,22,0.45)",
-    dot: "#f97316",
+    bg: "var(--dgv-warning-bg)",
+    color: "var(--dgv-warning)",
+    border: "transparent",
+    dot: "var(--dgv-warning)",
   },
   RED: {
-    bg: "rgba(239,68,68,0.16)",
-    color: "#f87171",
-    border: "rgba(239,68,68,0.45)",
-    dot: "#ef4444",
+    bg: "var(--dgv-danger-bg)",
+    color: "var(--dgv-danger)",
+    border: "transparent",
+    dot: "var(--dgv-danger)",
   },
   COMPLETED: {
-    bg: "rgba(34,197,94,0.16)",
-    color: "#4ade80",
-    border: "rgba(34,197,94,0.4)",
-    dot: "#22c55e",
+    bg: "var(--dgv-success-bg)",
+    color: "var(--dgv-success)",
+    border: "transparent",
+    dot: "var(--dgv-success)",
   },
   NONE: {
-    bg: "rgba(148,163,184,0.16)",
-    color: "#94a3b8",
-    border: "rgba(148,163,184,0.35)",
-    dot: "#64748b",
+    bg: "var(--dgv-divider)",
+    color: "var(--dgv-text-secondary)",
+    border: "transparent",
+    dot: "var(--dgv-text-muted)",
   },
 };
 
@@ -275,8 +313,8 @@ function parseDeadlineMs(dueDate) {
   if (!dueDate) return null;
   const raw = String(dueDate);
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const d = new Date(`${raw}T23:59:59`);
-    return Number.isFinite(d.getTime()) ? d.getTime() : null;
+    const ms = Date.parse(`${raw}T23:59:59+05:30`);
+    return Number.isFinite(ms) ? ms : null;
   }
   const d = new Date(raw);
   return Number.isFinite(d.getTime()) ? d.getTime() : null;
@@ -312,6 +350,20 @@ export function getTaskZone(task) {
   if (task?.myAssignment?.zone) return task.myAssignment.zone;
   if (task?.zone) return task.zone;
   return computeZoneFallback(task, task?.dueDate);
+}
+
+export function employeeCanComplete(taskOrAssignment, dueDate) {
+  const status = String(
+    taskOrAssignment?.status ||
+      taskOrAssignment?.myAssignment?.status ||
+      ""
+  ).toUpperCase();
+  if (status === "DONE" || status === "CANCELLED") return false;
+  const zone = getAssignmentZone(
+    taskOrAssignment?.myAssignment || taskOrAssignment,
+    dueDate || taskOrAssignment?.dueDate
+  );
+  return zone !== "RED";
 }
 
 export function zoneDisplay(zone, status) {

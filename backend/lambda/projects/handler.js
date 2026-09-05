@@ -18,6 +18,8 @@ const { randomUUID } = require("crypto");
 const escalation = require("./escalation");
 const weekly = require("./redzoneWeekly");
 const { zoneNotifyCopy } = require("./zoneNotify");
+const { notifyAdminsTaskEnteredRed } = require("./redAdminNotify");
+const { activeAdminEmailsFromAccess } = require("../common/roles");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -210,6 +212,8 @@ async function writeAssignment(taskId, assignment) {
     highestZone: assignment.highestZone || null,
     recordedZone: assignment.recordedZone || null,
     zoneReachedAt: assignment.zoneReachedAt || null,
+    redAdminNotifyStatus: assignment.redAdminNotifyStatus || null,
+    redAdminNotifiedAt: assignment.redAdminNotifiedAt || null,
     removed: !!assignment.removed,
   };
   await ddb.send(
@@ -243,6 +247,8 @@ function snapshotTask(task, assignments) {
       highestZone: a.highestZone || null,
       recordedZone: a.recordedZone || null,
       zoneReachedAt: a.zoneReachedAt || null,
+      redAdminNotifyStatus: a.redAdminNotifyStatus || null,
+      redAdminNotifiedAt: a.redAdminNotifiedAt || null,
       removed: !!a.removed,
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
@@ -278,9 +284,24 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
   }
 }
 
-async function persistEscalations(task, nowMs = Date.now()) {
+async function persistAssignmentNotifyStatus(task, assignment, status) {
+  const nextAssignment = {
+    ...assignment,
+    redAdminNotifyStatus: status,
+  };
+  if (status === "SENT") {
+    nextAssignment.redAdminNotifiedAt =
+      assignment.redAdminNotifiedAt || new Date().toISOString();
+  }
+  await writeAssignment(task.taskId, nextAssignment);
+  return nextAssignment;
+}
+
+async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   const assignments = await resolveAssignments(task);
   let changed = false;
+  const enteredRedEmails = new Set();
+  const redAtByEmail = {};
   const next = [];
   for (const a of assignments) {
     if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
@@ -294,8 +315,31 @@ async function persistEscalations(task, nowMs = Date.now()) {
     ) {
       changed = true;
     }
+    if (result.events.length) {
+      console.log(
+        "TASK_ESCALATION_EVALUATED",
+        JSON.stringify({
+          taskId: task.taskId,
+          zone: result.assignment.recordedZone,
+        })
+      );
+    }
     next.push(result.assignment);
     for (const ev of result.events) {
+      if (ev.action === "zone_orange") {
+        console.log(
+          "TASK_ZONE_CHANGED",
+          JSON.stringify({ taskId: task.taskId, change: "GREEN → ORANGE" })
+        );
+      }
+      if (ev.action === "zone_red") {
+        enteredRedEmails.add(escalation.normalizeEmail(a.email));
+        redAtByEmail[escalation.normalizeEmail(a.email)] = ev.timestamp;
+        console.log(
+          "TASK_ZONE_CHANGED",
+          JSON.stringify({ taskId: task.taskId, change: "ORANGE → RED" })
+        );
+      }
       await appendActivityAt(
         task.taskId,
         ev.action,
@@ -340,10 +384,120 @@ async function persistEscalations(task, nowMs = Date.now()) {
       );
     }
   }
-  if (changed) {
-    return persistAssignmentsAndTask(task, next);
+
+  const redStartedFallback = Number.isFinite(escalation.parseDeadlineMs(task.dueDate))
+    ? new Date(
+        escalation.parseDeadlineMs(task.dueDate) + escalation.ORANGE_MS
+      ).toISOString()
+    : new Date(nowMs).toISOString();
+
+  for (const a of next) {
+    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
+      continue;
+    }
+    const email = escalation.normalizeEmail(a.email);
+    const enteredRed = enteredRedEmails.has(email);
+    if (!escalation.needsRedAdminNotify(task, a, enteredRed, nowMs)) continue;
+    if (
+      escalation.redAdminNotifyStatusOf(a) !== "PENDING" &&
+      escalation.redAdminNotifyStatusOf(a) !== "SENT"
+    ) {
+      a.redAdminNotifyStatus = "PENDING";
+      changed = true;
+    }
   }
-  return snapshotTask(task, next);
+
+  let saved;
+  if (changed) {
+    saved = await persistAssignmentsAndTask(task, next);
+  } else {
+    saved = snapshotTask(task, next);
+  }
+
+  const pendingAdmin = next.filter((a) => {
+    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
+      return false;
+    }
+    const email = escalation.normalizeEmail(a.email);
+    return escalation.needsRedAdminNotify(saved, a, enteredRedEmails.has(email), nowMs);
+  });
+  if (!pendingAdmin.length) return saved;
+
+  let adminEmails = [];
+  try {
+    adminEmails =
+      typeof resolveAdmins === "function"
+        ? await resolveAdmins()
+        : resolveAdmins || [];
+  } catch (err) {
+    console.error(
+      "RED_ADMIN_EMAIL_FAILED",
+      JSON.stringify({ taskId: task.taskId, status: "FAILED" })
+    );
+    console.error(err);
+    let notifyChanged = false;
+    for (const a of next) {
+      if (!pendingAdmin.includes(a)) continue;
+      a.redAdminNotifyStatus = "FAILED";
+      notifyChanged = true;
+    }
+    if (notifyChanged) {
+      try {
+        return await persistAssignmentsAndTask(saved, next);
+      } catch (persistErr) {
+        console.error(persistErr);
+        return saved;
+      }
+    }
+    return saved;
+  }
+
+  let notifyChanged = false;
+  for (const a of pendingAdmin) {
+    const email = escalation.normalizeEmail(a.email);
+    try {
+      const { dispatchNotification } = require("../common/notify");
+      const notifyStatus = await notifyAdminsTaskEnteredRed({
+        task: saved,
+        assignment: a,
+        redAt: redAtByEmail[email] || redStartedFallback,
+        adminEmails,
+        getAssigneeProfile,
+        getProjectName,
+        dispatchNotification: (opts) => dispatchNotification(ddb, opts),
+      });
+      if (a.redAdminNotifyStatus !== notifyStatus) {
+        a.redAdminNotifyStatus = notifyStatus;
+        if (notifyStatus === "SENT") {
+          a.redAdminNotifiedAt = a.redAdminNotifiedAt || new Date().toISOString();
+        }
+        notifyChanged = true;
+      }
+      await persistAssignmentNotifyStatus(saved, a, notifyStatus);
+    } catch (err) {
+      console.error(
+        "RED_ADMIN_EMAIL_FAILED",
+        JSON.stringify({ taskId: task.taskId, status: "FAILED" })
+      );
+      console.error(err);
+      a.redAdminNotifyStatus = "FAILED";
+      notifyChanged = true;
+      try {
+        await persistAssignmentNotifyStatus(saved, a, "FAILED");
+      } catch (persistErr) {
+        console.error(persistErr);
+      }
+    }
+  }
+
+  if (notifyChanged) {
+    try {
+      saved = await persistAssignmentsAndTask(saved, next);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  return saved;
 }
 
 async function queryAllTasks() {
@@ -368,13 +522,48 @@ function isRedZoneReportPath(path) {
   return /\/tasks\/redzone-report\/?$/.test(String(path || ""));
 }
 
+async function scanAccessRows() {
+  if (!process.env.USER_ACCESS_TABLE) return [];
+  const items = [];
+  let lastKey;
+  do {
+    const res = await ddb.send(
+      new ScanCommand({
+        TableName: process.env.USER_ACCESS_TABLE,
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(res.Items || []));
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+async function listActiveAdminEmails() {
+  const rows = await scanAccessRows();
+  return activeAdminEmailsFromAccess(rows);
+}
+
 async function runEscalationSweep() {
   const tasks = await queryAllTasks();
+  let adminEmails;
+  const resolveAdmins = async () => {
+    if (!adminEmails) adminEmails = await listActiveAdminEmails();
+    return adminEmails;
+  };
   let processed = 0;
   for (const task of tasks) {
     if (task.archived) continue;
-    await persistEscalations(task);
-    processed += 1;
+    try {
+      await persistEscalations(task, Date.now(), resolveAdmins);
+      processed += 1;
+    } catch (err) {
+      console.error(
+        "TASK_ESCALATION_ERROR",
+        JSON.stringify({ taskId: task.taskId || task.SK || "" })
+      );
+      console.error(err);
+    }
   }
   return json(200, { ok: true, processed });
 }
@@ -1091,6 +1280,13 @@ exports.handler = async (event) => {
         );
       }
 
+      const resolved = [];
+      for (const t of items) {
+        const assignments = await resolveAssignments(t);
+        resolved.push(snapshotTask(t, assignments));
+      }
+      items = resolved;
+
       items = items.map((t) =>
         escalation.decorateTask(t, Date.now(), user.email)
       );
@@ -1253,6 +1449,8 @@ exports.handler = async (event) => {
       delete allowed.createdByName;
       delete allowed.PK;
       delete allowed.SK;
+      delete allowed.redAdminNotifyStatus;
+      delete allowed.redAdminNotifiedAt;
 
       const nowIso = new Date().toISOString();
       const nowMs = Date.now();
@@ -1336,18 +1534,37 @@ exports.handler = async (event) => {
       };
 
       if (allowed.status) {
+        const actorEmail = escalation.normalizeEmail(user.email);
+        const requestedEmail = escalation.normalizeEmail(allowed.assignmentEmail);
+        const activeAssignments = assignments.filter((a) => a && !a.removed);
+        const selfAssignment = activeAssignments.find(
+          (a) => escalation.normalizeEmail(a.email) === actorEmail
+        );
         const targetEmail = user.isAdmin
-          ? escalation.normalizeEmail(allowed.assignmentEmail) ||
-            (assignments.filter((a) => !a.removed).length <= 1
-              ? assignments.find((a) => !a.removed)?.email
-              : "")
-          : user.email;
+          ? requestedEmail ||
+            (selfAssignment
+              ? actorEmail
+              : activeAssignments.length === 1
+                ? escalation.normalizeEmail(activeAssignments[0].email)
+                : "")
+          : actorEmail;
         if (targetEmail) {
           const mine = assignments.find(
             (a) =>
               escalation.normalizeEmail(a.email) === targetEmail && !a.removed
           );
           if (mine) {
+            if (
+              !user.isAdmin &&
+              allowed.status === "DONE" &&
+              !escalation.isComplete(mine.status) &&
+              !escalation.employeeMayComplete(mine, existing.dueDate, nowMs)
+            ) {
+              return json(403, {
+                error:
+                  "Employees cannot complete a Red Zone task. An administrator must complete it.",
+              });
+            }
             if (
               !user.isAdmin &&
               escalation.isComplete(mine.status) &&
@@ -1442,6 +1659,14 @@ exports.handler = async (event) => {
               user.email,
               { assignmentEmail: email }
             );
+            await notifyTaskEvent(
+              email,
+              "TASK_ASSIGNED",
+              `New task assigned: ${merged.title}`,
+              `You have been assigned "${merged.title}".`,
+              `${taskId}#${email}#assigned#${nowIso}`,
+              { taskId }
+            );
           }
         }
         if ([...nextSet].sort().join(",") !== [...current].sort().join(",")) {
@@ -1473,6 +1698,8 @@ exports.handler = async (event) => {
         assignments = assignments.map((a) =>
           escalation.resetEscalationForNewDeadline(a, allowed.dueDate, nowMs)
         );
+        delete merged.redAdminNotifyStatus;
+        delete merged.redAdminNotifiedAt;
       }
 
       if (allowed.priority && allowed.priority !== existing.priority) {
@@ -1516,6 +1743,30 @@ exports.handler = async (event) => {
             error: "Deadline must be after the start date and time.",
           });
         }
+      }
+      if (
+        merged.startDate &&
+        !escalation.allowsQuarterHourOrExisting(
+          merged.startDate,
+          existing.startDate
+        )
+      ) {
+        return json(400, {
+          error:
+            "Start time must be in 15-minute intervals (00, 15, 30, or 45).",
+        });
+      }
+      if (
+        merged.dueDate &&
+        !escalation.allowsQuarterHourOrExisting(
+          merged.dueDate,
+          existing.dueDate
+        )
+      ) {
+        return json(400, {
+          error:
+            "Deadline time must be in 15-minute intervals (00, 15, 30, or 45).",
+        });
       }
 
       const saved = await persistAssignmentsAndTask(merged, assignments);

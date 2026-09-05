@@ -1,409 +1,533 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "../components/Layout";
 import WeeklyAttendanceHistory from "../components/WeeklyAttendanceHistory";
+import Button from "../components/ui/Button";
 import { pageCard, pageTitle, colors } from "../theme";
 import {
   fetchAttendance as fetchAttendanceApi,
   saveAttendance,
 } from "../services/api";
 
-/* ======================
-   BUTTON COLORS
-====================== */
-
-const BLUE_BTN = "#2563eb";
+const COMPANY_TZ = "Asia/Kolkata";
 
 const STATUS_CLASS = {
   Working: "dgv-status-badge--working",
   Holiday: "dgv-status-badge--holiday",
   Leave: "dgv-status-badge--leave",
   WeeklyOff: "dgv-status-badge--weeklyoff",
-  PlannedOff: "dgv-status-badge--holiday",
 };
 
-function getStartOfWeek(date) {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  const start = new Date(d.setDate(diff));
-  start.setHours(0, 0, 0, 0);
-  return start;
+const TAKER_STATUSES = ["Working", "Leave", "Holiday", "WeeklyOff"];
+const SHIFTS = ["Morning Shift", "Afternoon Shift", "Evening Shift"];
+const SHIFT_TIMES = {
+  "Full Day": {
+    "Morning Shift": { in: "11:00", out: "20:00", label: "11:00 AM — 08:00 PM" },
+    "Afternoon Shift": { in: "14:00", out: "23:00", label: "02:00 PM — 11:00 PM" },
+    "Evening Shift": { in: "17:00", out: "23:00", label: "05:00 PM — 11:00 PM" },
+  },
+  "Half Day": {
+    "Morning Shift": { in: "11:00", out: "15:30", label: "11:00 AM — 03:30 PM" },
+    "Afternoon Shift": { in: "14:00", out: "18:30", label: "02:00 PM — 06:30 PM" },
+    "Evening Shift": { in: "17:00", out: "20:30", label: "05:00 PM — 08:30 PM" },
+  },
+};
+
+function getShiftTiming(dayType, shift) {
+  return SHIFT_TIMES[dayType]?.[shift] || null;
 }
 
-function formatDate(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+const DAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+function companyTodayKey() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: COMPANY_TZ });
 }
 
-function getWeekDates(start) {
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-    return d;
-  });
+function addDaysToKey(key, days) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-function startOfDay(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function weekdayIndex(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+function startOfWeekKey(key) {
+  const day = weekdayIndex(key);
+  const diff = day === 0 ? -6 : 1 - day;
+  return addDaysToKey(key, diff);
+}
+
+function formatDisplayDate(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+function formatDayName(key) {
+  return DAY_NAMES[weekdayIndex(key)];
+}
+
+function formatClock(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "—";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: COMPANY_TZ,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(t));
+}
+
+function combineDateAndTime(dateKey, hhmm) {
+  if (!dateKey || !hhmm) return null;
+  const d = new Date(`${dateKey}T${hhmm}:00+05:30`);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+function submittedRowFromSave(todayKey, payload, apiItem) {
+  const fromApi = apiItem ? recordFromApi({ ...apiItem, date: apiItem.date || todayKey }) : null;
+  const working = payload.status === "Working";
+  const timing = working ? getShiftTiming(payload.dayType, payload.shift) : null;
+  return {
+    status: fromApi?.status || payload.status,
+    hours: fromApi?.hours ?? null,
+    dayType: working ? payload.dayType || fromApi?.dayType || null : null,
+    shift: working ? payload.shift || fromApi?.shift || null : null,
+    reason:
+      fromApi?.reason ||
+      payload.reason ||
+      (payload.status === "Leave" || payload.status === "Holiday"
+        ? payload.status
+        : null),
+    submittedAt: fromApi?.submittedAt || new Date().toISOString(),
+    checkInTime:
+      fromApi?.checkInTime ||
+      (timing ? combineDateAndTime(todayKey, timing.in) : null),
+    checkOutTime:
+      fromApi?.checkOutTime ||
+      (timing ? combineDateAndTime(todayKey, timing.out) : null),
+    workingTime: fromApi?.workingTime || null,
+    workingSeconds: fromApi?.workingSeconds ?? null,
+    sessionStatus:
+      fromApi?.sessionStatus || (working ? "Present" : payload.status),
+  };
+}
+
+function resultLabel(record) {
+  if (!record?.status) return "Attendance Not Marked";
+  if (record.status === "Leave") return "Absent — Leave";
+  if (record.status === "Holiday") return "Absent — Holiday";
+  if (record.status === "WeeklyOff") return "Weekly Off";
+  if (record.status === "Working") {
+    return record.dayType ? `Working / ${record.dayType}` : "Working";
+  }
+  return record.status;
+}
+
+function recordFromApi(item) {
+  const key = item.date;
+  if (!key) return null;
+  return {
+    status: item.status || null,
+    hours: item.hours ?? null,
+    dayType: item.dayType || null,
+    shift: item.shift || null,
+    reason: item.reason || null,
+    submittedAt: item.submittedAt || null,
+    checkInTime: item.checkInTime || null,
+    checkOutTime: item.checkOutTime || null,
+    workingTime: item.workingTime || null,
+    workingSeconds: item.workingSeconds ?? null,
+    sessionStatus: item.sessionStatus || null,
+  };
 }
 
 export default function Attendance() {
-  const [currentWeekStart, setCurrentWeekStart] = useState(() =>
-    getStartOfWeek(new Date())
+  const todayKey = companyTodayKey();
+  const [historyWeekStart, setHistoryWeekStart] = useState(() =>
+    startOfWeekKey(companyTodayKey())
   );
   const [attendanceData, setAttendanceData] = useState({});
-  const [lockedDates, setLockedDates] = useState({});
   const [loadingWeek, setLoadingWeek] = useState(true);
   const [weekError, setWeekError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const dayNames = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-  ];
+  const [status, setStatus] = useState("");
+  const [dayType, setDayType] = useState("");
+  const [shift, setShift] = useState("");
 
-  function isWithinEditableRange(date) {
-    const today = startOfDay(new Date());
-    const target = startOfDay(date);
+  const todayRecord = attendanceData[todayKey] || {};
+  const submitted = !!todayRecord.submittedAt;
 
-    const oneWeekAgo = new Date(today);
-    oneWeekAgo.setDate(today.getDate() - 7);
-
-    const threeDaysAhead = new Date(today);
-    threeDaysAhead.setDate(today.getDate() + 3);
-
-    return target >= oneWeekAgo && target <= threeDaysAhead;
-  }
-
-  /* ======================
-     FETCH ATTENDANCE (own records only — API scopes by auth token)
-  ====================== */
-
-  const loadWeekAttendance = useCallback(async (start, end) => {
-    setLoadingWeek(true);
-    setWeekError("");
-    try {
-      const data = await fetchAttendanceApi(start, end);
-
-      if (!Array.isArray(data)) {
-        setAttendanceData({});
-        setLockedDates({});
-        return;
-      }
-
-      const obj = {};
-      const locked = {};
-
+  const loadRange = useCallback(async (start, end) => {
+    const data = await fetchAttendanceApi(start, end);
+    const obj = {};
+    if (Array.isArray(data)) {
       data.forEach((item) => {
-        const key = item.date;
-        if (!key) return;
-        obj[key] = {
-          status: item.status || null,
-          hours: item.hours ?? null,
-          checkInTime: item.checkInTime || null,
-          checkOutTime: item.checkOutTime || null,
-          workingTime: item.workingTime || null,
-          workingSeconds: item.workingSeconds ?? null,
-          sessionStatus: item.sessionStatus || null,
-        };
-        // Submitted / stored records are locked for re-edit in the marking UI
-        locked[key] = true;
+        const row = recordFromApi(item);
+        if (row && item.date) obj[item.date] = row;
       });
-
-      setAttendanceData(obj);
-      setLockedDates(locked);
-    } catch (err) {
-      console.error("Fetch attendance error:", err);
-      setWeekError("Unable to load weekly attendance. Please try again.");
-      setAttendanceData({});
-      setLockedDates({});
-    } finally {
-      setLoadingWeek(false);
     }
+    return obj;
   }, []);
 
-  /* ======================
-     SUBMIT ATTENDANCE
-  ====================== */
+  const loadAttendance = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoadingWeek(true);
+      setWeekError("");
+    }
+    try {
+      const start = historyWeekStart;
+      const end = addDaysToKey(historyWeekStart, 6);
+      const today = companyTodayKey();
+      const weekData = await loadRange(start, end);
+      let merged = { ...weekData };
+      if (today < start || today > end) {
+        const todayData = await loadRange(today, today);
+        merged = { ...merged, ...todayData };
+      }
+      setAttendanceData((prev) => {
+        const next = { ...merged };
+        const locked = prev[today];
+        if (locked?.submittedAt && !next[today]?.submittedAt) {
+          next[today] = { ...next[today], ...locked };
+        } else if (locked?.submittedAt && next[today]) {
+          next[today] = {
+            ...locked,
+            ...next[today],
+            submittedAt: next[today].submittedAt || locked.submittedAt,
+            checkInTime: next[today].checkInTime || locked.checkInTime,
+            checkOutTime: next[today].checkOutTime || locked.checkOutTime,
+          };
+        }
+        return next;
+      });
+    } catch (err) {
+      console.error("Fetch attendance error:", err);
+      if (!silent) {
+        setWeekError("Unable to load weekly attendance. Please try again.");
+      }
+    } finally {
+      if (!silent) setLoadingWeek(false);
+    }
+  }, [historyWeekStart, loadRange]);
+
+  useEffect(() => {
+    loadAttendance();
+  }, [loadAttendance]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        loadAttendance({ silent: true });
+      }
+    };
+    const onFocus = () => loadAttendance({ silent: true });
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [loadAttendance]);
 
   const submitAttendance = async () => {
-    const attendance = getWeekDates(currentWeekStart)
-      .map((date) => {
-        const dateStr = formatDate(date);
-        const data = attendanceData[dateStr];
-
-        if (!data?.status) return null;
-        if (!isWithinEditableRange(date)) return null;
-        if (lockedDates[dateStr]) return null;
-
-        return {
-          date: dateStr,
-          status: data.status,
-          hours: data.hours || 0,
-        };
-      })
-      .filter(Boolean);
-
-    if (attendance.length === 0) {
-      alert("No valid attendance to submit");
+    if (submitted || submitting) {
+      if (submitted) alert("Today's attendance is already submitted.");
       return;
     }
+    if (!status) {
+      alert("Please select today's attendance status.");
+      return;
+    }
+    if (status === "Working") {
+      if (!dayType) {
+        alert("Please select Full Day or Half Day.");
+        return;
+      }
+      if (!shift) {
+        alert("Please select a shift.");
+        return;
+      }
+      if (!getShiftTiming(dayType, shift)) {
+        alert("Please select a valid shift.");
+        return;
+      }
+    }
 
+    const payload = {
+      date: todayKey,
+      status,
+    };
+    if (status === "Working") {
+      payload.dayType = dayType;
+      payload.shift = shift;
+    } else if (status === "Leave") {
+      payload.reason = "Leave";
+    } else if (status === "Holiday") {
+      payload.reason = "Holiday";
+    }
+
+    setSubmitting(true);
     try {
-      await saveAttendance(attendance);
-      alert("Attendance submitted successfully");
-
-      const dates = getWeekDates(currentWeekStart);
-      await loadWeekAttendance(formatDate(dates[0]), formatDate(dates[6]));
+      const res = await saveAttendance([payload]);
+      const savedRow = submittedRowFromSave(todayKey, payload, res?.attendance);
+      setAttendanceData((prev) => ({ ...prev, [todayKey]: savedRow }));
+      setStatus("");
+      setDayType("");
+      setShift("");
+      await loadAttendance({ silent: true });
     } catch (err) {
       console.error("Submit error:", err);
+      const already = /already been submitted|already submitted/i.test(
+        String(err.message || "")
+      );
+      if (already) {
+        if (err.attendance) {
+          const lockedRow = recordFromApi({
+            ...err.attendance,
+            date: err.attendance.date || todayKey,
+          });
+          if (lockedRow?.submittedAt) {
+            setAttendanceData((prev) => ({ ...prev, [todayKey]: lockedRow }));
+          }
+        }
+        await loadAttendance({ silent: true });
+      }
       alert(err.message || "Failed to submit attendance");
+    } finally {
+      setSubmitting(false);
     }
-  };
-
-  const updateAttendance = (dateStr, updates) => {
-    setAttendanceData((prev) => ({
-      ...prev,
-      [dateStr]: { ...prev[dateStr], ...updates },
-    }));
   };
 
   const goToPreviousWeek = () =>
-    setCurrentWeekStart((prev) => new Date(prev.getTime() - 7 * 86400000));
-
+    setHistoryWeekStart((prev) => addDaysToKey(prev, -7));
   const goToNextWeek = () =>
-    setCurrentWeekStart((prev) => new Date(prev.getTime() + 7 * 86400000));
+    setHistoryWeekStart((prev) => addDaysToKey(prev, 7));
+  const goToCurrentWeek = () =>
+    setHistoryWeekStart(startOfWeekKey(companyTodayKey()));
 
-  const goToCurrentWeek = () => setCurrentWeekStart(getStartOfWeek(new Date()));
-
-  useEffect(() => {
-    const dates = getWeekDates(currentWeekStart);
-    loadWeekAttendance(formatDate(dates[0]), formatDate(dates[6]));
-  }, [currentWeekStart, loadWeekAttendance]);
-
-  // Refresh when returning to the tab (e.g. after dashboard check-in)
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      const dates = getWeekDates(currentWeekStart);
-      loadWeekAttendance(formatDate(dates[0]), formatDate(dates[6]));
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [currentWeekStart, loadWeekAttendance]);
-
-  const dates = getWeekDates(currentWeekStart);
-
-  /* ======================
-     UI
-  ====================== */
+  const working = status === "Working";
+  const shiftTiming = working ? getShiftTiming(dayType, shift) : null;
 
   return (
     <Layout>
       <div style={pageCard}>
-        <h2 style={pageTitle}>Attendance</h2>
+        <h1 style={pageTitle}>Attendance</h1>
         <p style={{ color: colors.textMuted, marginTop: 0, marginBottom: 16 }}>
-          Mark your weekly status below, then review check-in history in My
-          Attendance.
+          Submit today&apos;s attendance, then review history in My Attendance.
         </p>
 
-        {/* WEEK NAVIGATION (marking) */}
-        <button
-          type="button"
-          onClick={goToPreviousWeek}
-          style={{
-            background: BLUE_BTN,
-            color: "#fff",
-            border: "none",
-            padding: "8px 14px",
-            borderRadius: 8,
-            cursor: "pointer",
-            fontWeight: 500,
-            transition: "transform 0.3s ease, opacity 0.3s ease",
-          }}
-        >
-          Previous Week
-        </button>
+        <section className="dgv-attendance-taker" aria-labelledby="today-attendance-title">
+          <div className="dgv-attendance-taker__head">
+            <h2 id="today-attendance-title" className="dgv-attendance-taker__title">
+              Today&apos;s Attendance
+            </h2>
+            <span
+              className={
+                submitted
+                  ? "dgv-badge dgv-badge--success"
+                  : "dgv-badge dgv-badge--info"
+              }
+            >
+              {submitted ? "Attendance Submitted — Locked" : "Attendance Not Marked"}
+            </span>
+          </div>
 
-        <button
-          type="button"
-          onClick={goToCurrentWeek}
-          style={{
-            marginLeft: 10,
-            background: "transparent",
-            color: colors.text,
-            border: `1px solid ${colors.border}`,
-            padding: "8px 14px",
-            borderRadius: 8,
-            cursor: "pointer",
-            fontWeight: 500,
-          }}
-        >
-          Current Week
-        </button>
-
-        <button
-          type="button"
-          onClick={goToNextWeek}
-          style={{
-            marginLeft: 10,
-            background: BLUE_BTN,
-            color: "#fff",
-            border: "none",
-            padding: "8px 14px",
-            borderRadius: 8,
-            cursor: "pointer",
-            fontWeight: 500,
-            transition: "transform 0.3s ease, opacity 0.3s ease",
-          }}
-        >
-          Next Week
-        </button>
-
-        {/* MARKING TABLE — existing functionality */}
-        <div className="dgv-table-wrap" style={{ marginTop: 20 }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              color: colors.text,
-            }}
-          >
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", padding: 10 }}>Date</th>
-                <th style={{ textAlign: "left", padding: 10 }}>Day</th>
-                <th style={{ textAlign: "left", padding: 10 }}>Status</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {dates.map((date) => {
-                const dateStr = formatDate(date);
-                const data = attendanceData[dateStr] || {};
-                const editable =
-                  isWithinEditableRange(date) && !lockedDates[dateStr];
-                const isToday = formatDate(startOfDay(new Date())) === dateStr;
-
-                return (
-                  <tr
-                    key={dateStr}
-                    style={
-                      isToday
-                        ? { background: "var(--dgv-accent-soft)" }
-                        : undefined
-                    }
-                  >
-                    <td style={{ padding: 10 }}>
-                      {dateStr}
-                      {isToday ? (
-                        <span
-                          style={{
-                            marginLeft: 8,
-                            fontSize: 11,
-                            fontWeight: 700,
-                            color: "var(--dgv-accent)",
-                          }}
-                        >
-                          Today
-                        </span>
-                      ) : null}
-                    </td>
-                    <td style={{ padding: 10 }}>{dayNames[date.getDay()]}</td>
-
-                    <td style={{ padding: 10 }}>
-                      {(data.status === "PlannedOff"
-                        ? ["Working", "Holiday", "Leave", "WeeklyOff", "PlannedOff"]
-                        : ["Working", "Holiday", "Leave", "WeeklyOff"]
-                      ).map((status) => {
-                          const isActive = data.status === status;
-
-                          return (
-                            <button
-                              key={status}
-                              type="button"
-                              disabled={!editable || status === "PlannedOff"}
-                              onClick={() =>
-                                editable &&
-                                status !== "PlannedOff" &&
-                                updateAttendance(dateStr, { status })
-                              }
-                              className={`dgv-status-badge ${STATUS_CLASS[status]} ${
-                                isActive ? "is-active" : ""
-                              }`}
-                              aria-pressed={isActive}
-                            >
-                              {status === "PlannedOff" ? "Planned Off" : status}
-                            </button>
-                          );
-                        }
-                      )}
-
-                      {data.status === "Working" && (
-                        <input
-                          type="number"
-                          disabled={!editable}
-                          value={data.hours ?? ""}
-                          onChange={(e) =>
-                            editable &&
-                            updateAttendance(dateStr, {
-                              hours: Number(e.target.value),
-                            })
+          {submitted ? (
+            <div className="dgv-attendance-taker__locked">
+              <div>
+                <div className="dgv-attendance-taker__label">Date</div>
+                <div className="dgv-attendance-taker__value">
+                  {formatDisplayDate(todayKey)}
+                </div>
+              </div>
+              <div>
+                <div className="dgv-attendance-taker__label">Day</div>
+                <div className="dgv-attendance-taker__value">
+                  {formatDayName(todayKey)}
+                </div>
+              </div>
+              <div>
+                <div className="dgv-attendance-taker__label">Status</div>
+                <div className="dgv-attendance-taker__value">
+                  ✓ {resultLabel(todayRecord)}
+                </div>
+              </div>
+              {todayRecord.status === "Working" ? (
+                <>
+                  <div>
+                    <div className="dgv-attendance-taker__label">Working Type</div>
+                    <div className="dgv-attendance-taker__value">
+                      ✓ {todayRecord.dayType || "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="dgv-attendance-taker__label">Shift</div>
+                    <div className="dgv-attendance-taker__value">
+                      ✓ {todayRecord.shift || "—"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="dgv-attendance-taker__label">Shift Timing</div>
+                    <div className="dgv-attendance-taker__value">
+                      {getShiftTiming(todayRecord.dayType, todayRecord.shift)?.label ||
+                        `${formatClock(todayRecord.checkInTime)} — ${formatClock(todayRecord.checkOutTime)}`}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+              <p className="dgv-attendance-taker__hint" style={{ gridColumn: "1 / -1" }}>
+                ✓ Attendance Submitted · Attendance Locked
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="dgv-attendance-taker__meta">
+                <div>
+                  <div className="dgv-attendance-taker__label">Date</div>
+                  <div className="dgv-attendance-taker__value">
+                    {formatDisplayDate(todayKey)}
+                  </div>
+                </div>
+                <div>
+                  <div className="dgv-attendance-taker__label">Day</div>
+                  <div className="dgv-attendance-taker__value">
+                    {formatDayName(todayKey)}
+                  </div>
+                </div>
+                <div className="dgv-attendance-taker__field">
+                  <span className="dgv-attendance-taker__label">Status</span>
+                  <div className="dgv-attendance-taker__statuses">
+                    {TAKER_STATUSES.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => {
+                          setStatus(item);
+                          if (item !== "Working") {
+                            setDayType("");
+                            setShift("");
                           }
-                          style={{
-                            width: 60,
-                            marginLeft: 8,
-                            padding: 4,
-                            borderRadius: 6,
-                            border: `1px solid ${colors.border}`,
-                            background: "var(--dgv-surface-solid)",
-                            color: "var(--dgv-text)",
-                          }}
-                          aria-label={`Hours for ${dateStr}`}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                        }}
+                        className={`dgv-status-badge ${STATUS_CLASS[item]} ${
+                          status === item ? "is-active" : ""
+                        }`}
+                        aria-pressed={status === item}
+                      >
+                        {item === "WeeklyOff" ? "Weekly Off" : item}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
-        <button
-          type="button"
-          onClick={submitAttendance}
-          style={{
-            marginTop: 20,
-            background: BLUE_BTN,
-            color: "#fff",
-            border: "none",
-            padding: "10px 18px",
-            borderRadius: 10,
-            cursor: "pointer",
-            fontSize: 15,
-            fontWeight: 600,
-            transition: "transform 0.3s ease, opacity 0.3s ease",
-          }}
-        >
-          Submit Attendance
-        </button>
+              {status === "Leave" ? (
+                <p className="dgv-attendance-taker__hint">
+                  Result: Absent — Leave
+                </p>
+              ) : null}
+              {status === "Holiday" ? (
+                <p className="dgv-attendance-taker__hint">
+                  Result: Absent — Holiday
+                </p>
+              ) : null}
+              {status === "WeeklyOff" ? (
+                <p className="dgv-attendance-taker__hint">Result: Weekly Off</p>
+              ) : null}
 
-        {/* WEEKLY HISTORY — read-only tracker */}
+              {working ? (
+                <>
+                  <div className="dgv-attendance-taker__grid">
+                    <div className="dgv-attendance-taker__field">
+                      <span className="dgv-attendance-taker__label">
+                        Working Type
+                      </span>
+                      <div className="dgv-attendance-taker__statuses">
+                        {["Full Day", "Half Day"].map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => setDayType(item)}
+                            className={`dgv-status-badge dgv-status-badge--working ${
+                              dayType === item ? "is-active" : ""
+                            }`}
+                            aria-pressed={dayType === item}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="dgv-attendance-taker__field">
+                      <label className="dgv-attendance-taker__label" htmlFor="att-shift">
+                        Shift
+                      </label>
+                      <select
+                        id="att-shift"
+                        className="dgv-select"
+                        value={shift}
+                        onChange={(e) => setShift(e.target.value)}
+                      >
+                        <option value="">Select shift</option>
+                        {SHIFTS.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {shiftTiming ? (
+                      <div className="dgv-attendance-taker__field">
+                        <div className="dgv-attendance-taker__label">
+                          Shift Timing
+                        </div>
+                        <div className="dgv-attendance-taker__value">
+                          {shiftTiming.label}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="dgv-attendance-taker__hint">
+                    Shift timing is automatically assigned based on your selected shift.
+                  </p>
+                </>
+              ) : null}
+
+              <div className="dgv-attendance-taker__actions">
+                <Button
+                  type="button"
+                  onClick={submitAttendance}
+                  disabled={submitting || submitted}
+                >
+                  {submitting ? "Submitting..." : "Submit Attendance"}
+                </Button>
+              </div>
+            </>
+          )}
+        </section>
+
         <div style={{ marginTop: 36 }}>
           <WeeklyAttendanceHistory
-            weekStart={currentWeekStart}
+            weekStart={historyWeekStart}
             attendanceData={attendanceData}
             loading={loadingWeek}
             error={weekError}
+            todayKey={todayKey}
             onPreviousWeek={goToPreviousWeek}
             onCurrentWeek={goToCurrentWeek}
             onNextWeek={goToNextWeek}

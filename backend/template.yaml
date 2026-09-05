@@ -430,6 +430,8 @@ Resources:
         Variables:
           ATTENDANCE_TABLE: !Ref AttendanceTable
           USER_PROFILE_TABLE: !Ref UserProfileTable
+          COMPANY_TIMEZONE: Asia/Kolkata
+          COMPANY_TZ_OFFSET: "+05:30"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -938,6 +940,8 @@ Resources:
             TableName: !Ref WorkTasksTable
         - DynamoDBReadPolicy:
             TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
         - Statement:

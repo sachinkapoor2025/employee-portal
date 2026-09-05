@@ -11,12 +11,6 @@ const DAY_NAMES = [
   "Saturday",
 ];
 
-function startOfDay(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
 function formatDateKey(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -24,50 +18,31 @@ function formatDateKey(date) {
   return `${y}-${m}-${d}`;
 }
 
-function formatDisplayDate(date) {
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "short",
-  }).format(date);
+function addDaysToKey(key, days) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-/** e.g. 09:15 AM */
+function formatDisplayDate(dateKey) {
+  const [y, m, d] = String(dateKey).split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "short",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+/** e.g. 09:15 AM — company timezone */
 function formatTime(iso) {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return "—";
   return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
   }).format(new Date(t));
-}
-
-/** e.g. 8h 55m */
-function formatWorkingHours(record) {
-  if (!record) return "—";
-
-  let totalMinutes = null;
-
-  if (record.workingSeconds != null && Number.isFinite(Number(record.workingSeconds))) {
-    totalMinutes = Math.floor(Number(record.workingSeconds) / 60);
-  } else if (record.workingTime && typeof record.workingTime === "string") {
-    const match = record.workingTime.match(/(\d+)\s*h.*?(\d+)\s*m/i);
-    if (match) {
-      totalMinutes = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
-    }
-  } else if (
-    record.hours != null &&
-    record.hours !== "" &&
-    !Number.isNaN(Number(record.hours))
-  ) {
-    totalMinutes = Math.round(Number(record.hours) * 60);
-  }
-
-  if (totalMinutes == null || totalMinutes < 0) return "—";
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
 /**
@@ -101,20 +76,26 @@ const STATUS_CLASS = {
   "Attendance Not Marked": "dgv-badge dgv-badge--info",
 };
 
-function buildWeekRows(weekStart, attendanceData) {
+function buildWeekRows(weekStart, attendanceData, todayKey) {
+  const mondayKey =
+    typeof weekStart === "string" ? weekStart : formatDateKey(weekStart);
+  const today =
+    todayKey ||
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   return Array.from({ length: 7 }, (_, i) => {
-    const date = new Date(weekStart);
-    date.setDate(weekStart.getDate() + i);
-    const dateKey = formatDateKey(date);
+    const dateKey = addDaysToKey(mondayKey, i);
+    const [y, m, d] = dateKey.split("-").map(Number);
     const record = attendanceData?.[dateKey] || null;
-    const displayStatus = getWeeklyDisplayStatus(record);
+    const displayStatus =
+      dateKey === today && !record?.submittedAt
+        ? "Not Marked"
+        : getWeeklyDisplayStatus(record);
     return {
-      date,
       dateKey,
-      dayName: DAY_NAMES[date.getDay()],
+      dayName: DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()],
       record,
       displayStatus,
-      isToday: formatDateKey(startOfDay(new Date())) === dateKey,
+      isToday: dateKey === today,
     };
   });
 }
@@ -127,7 +108,6 @@ function summarize(rows) {
     leave: 0,
     plannedOff: 0,
     notMarked: 0,
-    totalHours: 0,
   };
 
   rows.forEach((row) => {
@@ -138,31 +118,19 @@ function summarize(rows) {
     else if (row.displayStatus === "Weekly Off") {
       /* counted in total days only */
     } else summary.notMarked += 1;
-
-    const hrs = Number(row.record?.hours);
-    if (Number.isFinite(hrs) && hrs > 0) summary.totalHours += hrs;
-    else if (row.record?.workingSeconds) {
-      summary.totalHours += Number(row.record.workingSeconds) / 3600;
-    }
   });
 
-  summary.totalHours = Math.round(summary.totalHours * 100) / 100;
   return summary;
 }
 
 function formatWeekRange(weekStart) {
-  const end = new Date(weekStart);
-  end.setDate(weekStart.getDate() + 6);
-  const opts = { day: "2-digit", month: "short", year: "numeric" };
-  return `${weekStart.toLocaleDateString("en-GB", opts)} – ${end.toLocaleDateString("en-GB", opts)}`;
-}
-
-function formatTotalHours(hours) {
-  if (!hours || hours <= 0) return "—";
-  const totalMinutes = Math.round(hours * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  return `${h}h ${String(m).padStart(2, "0")}m`;
+  const mondayKey =
+    typeof weekStart === "string" ? weekStart : formatDateKey(weekStart);
+  const endKey = addDaysToKey(mondayKey, 6);
+  const opts = { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" };
+  const start = new Date(`${mondayKey}T12:00:00Z`);
+  const end = new Date(`${endKey}T12:00:00Z`);
+  return `${start.toLocaleDateString("en-GB", opts)} – ${end.toLocaleDateString("en-GB", opts)}`;
 }
 
 function TodayBanner({ rows }) {
@@ -204,11 +172,12 @@ export default function WeeklyAttendanceHistory({
   attendanceData,
   loading,
   error,
+  todayKey,
   onPreviousWeek,
   onCurrentWeek,
   onNextWeek,
 }) {
-  const rows = buildWeekRows(weekStart, attendanceData);
+  const rows = buildWeekRows(weekStart, attendanceData, todayKey);
   const summary = summarize(rows);
 
   return (
@@ -267,10 +236,6 @@ export default function WeeklyAttendanceHistory({
           <span>Not Marked</span>
           <strong>{summary.notMarked}</strong>
         </div>
-        <div className="dgv-weekly-attendance__chip">
-          <span>Total Working Hours</span>
-          <strong>{formatTotalHours(summary.totalHours)}</strong>
-        </div>
       </div>
 
       {loading ? (
@@ -288,7 +253,6 @@ export default function WeeklyAttendanceHistory({
                 <th>Date</th>
                 <th>Check-in</th>
                 <th>Check-out</th>
-                <th>Working Hours</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -310,12 +274,9 @@ export default function WeeklyAttendanceHistory({
                         </span>
                       ) : null}
                     </td>
-                    <td>{formatDisplayDate(row.date)}</td>
+                    <td>{formatDisplayDate(row.dateKey)}</td>
                     <td>{empty ? "—" : formatTime(row.record?.checkInTime)}</td>
                     <td>{empty ? "—" : formatTime(row.record?.checkOutTime)}</td>
-                    <td style={{ fontVariantNumeric: "tabular-nums" }}>
-                      {empty ? "—" : formatWorkingHours(row.record)}
-                    </td>
                     <td>
                       {empty ? (
                         <span className={STATUS_CLASS["Attendance Not Marked"]}>

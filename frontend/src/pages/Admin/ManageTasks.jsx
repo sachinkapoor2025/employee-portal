@@ -2,6 +2,9 @@ import { useEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
+import TaskTimePicker, {
+  nextQuarterHourKolkata,
+} from "../../components/TaskTimePicker";
 import { fetchProjects, fetchTaskList, createProject, createTask, fetchUsers } from "../../services/api";
 import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
 import { displayNameFromEmail } from "../../utils/meetings";
@@ -22,6 +25,7 @@ import {
   getTaskZone,
   getTaskTiming,
   joinDueParts,
+  isQuarterHourTime,
   personLabel,
   priorityLabel,
   statusBadgeStyle,
@@ -38,7 +42,6 @@ import {
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
 import ZoneFilter from "../../components/ZoneFilter";
-import RedZoneWeeklySettings from "./RedZoneWeeklySettings";
 
 function StatusBadge({ task }) {
   const style = statusBadgeStyle(task);
@@ -178,7 +181,17 @@ function TaskCard({ task, users, onOpen }) {
               <span style={{ fontWeight: 600 }}>
                 {personLabel(users, a.email).name}
               </span>
-              <ZoneBadge zone={a.zone} status={a.status} />
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  flexWrap: "wrap",
+                }}
+              >
+                <StatusBadge task={a} />
+                <ZoneBadge zone={a.zone} status={a.status} />
+              </span>
             </div>
           ))}
         </div>
@@ -307,7 +320,11 @@ export default function ManageTasks() {
     startTime: "",
     dueDate: "",
     dueTime: "",
+    projectId: "",
   });
+  const [showInlineProject, setShowInlineProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
   const [assigneeQuery, setAssigneeQuery] = useState("");
   const [showAllAssignees, setShowAllAssignees] = useState(false);
   const [showAllResults, setShowAllResults] = useState(false);
@@ -344,7 +361,6 @@ export default function ManageTasks() {
       list.zoneCounts || countZones(scoped, employeeFilter || "")
     );
     setUsers(Array.isArray(u) ? u : []);
-    if (!projectId && p.length) setProjectId(p[0].projectId);
   }, [projectId, zone, search, employeeFilter]);
 
   useEffect(() => {
@@ -367,9 +383,21 @@ export default function ManageTasks() {
   }, [employeeFilter]);
 
   const saveProject = async () => {
-    await createProject(projectForm);
+    const name = String(projectForm.name || "").trim();
+    if (!name) return;
+    const existing = projects.find(
+      (p) => String(p.name || "").trim().toLowerCase() === name.toLowerCase()
+    );
+    if (existing) {
+      setProjectId(existing.projectId);
+      setShowProject(false);
+      setProjectForm({ name: "", client: "", description: "" });
+      return;
+    }
+    const created = await createProject({ ...projectForm, name });
     setShowProject(false);
     setProjectForm({ name: "", client: "", description: "" });
+    if (created?.projectId) setProjectId(created.projectId);
     load();
   };
 
@@ -384,13 +412,14 @@ export default function ManageTasks() {
     startTime: "",
     dueDate: "",
     dueTime: "",
+    projectId: "",
   };
 
   const saveTask = async () => {
     const errors = {};
     const title = taskForm.title.trim();
-    if (!projectId) {
-      errors.form = "Select a project before creating a task.";
+    if (!taskForm.projectId) {
+      errors.projectId = "Please select a project.";
     }
     if (!title) errors.title = "Task title is required.";
     else if (title.length > TITLE_MAX) {
@@ -410,9 +439,13 @@ export default function ManageTasks() {
     if (!taskForm.priority) errors.priority = "Please select a priority.";
     if (!taskForm.startDate || !taskForm.startTime) {
       errors.startDate = "Start date and time are required.";
+    } else if (!isQuarterHourTime(taskForm.startTime)) {
+      errors.startTime = "Start time must be in 15-minute intervals (00, 15, 30, or 45).";
     }
     if (!taskForm.dueDate || !taskForm.dueTime) {
       errors.dueDate = "Deadline date and time are required.";
+    } else if (!isQuarterHourTime(taskForm.dueTime)) {
+      errors.dueTime = "Deadline time must be in 15-minute intervals (00, 15, 30, or 45).";
     }
     const startIso = joinDueParts(taskForm.startDate, taskForm.startTime);
     const dueIso = joinDueParts(taskForm.dueDate, taskForm.dueTime);
@@ -436,7 +469,7 @@ export default function ManageTasks() {
         assignees: taskForm.assignees,
         assignee: taskForm.assignees[0] || "",
         priority: taskForm.priority,
-        projectId,
+        projectId: taskForm.projectId,
         startDate: startIso,
         dueDate: dueIso,
       });
@@ -444,6 +477,8 @@ export default function ManageTasks() {
       setTaskForm(emptyTaskForm);
       setAssigneeQuery("");
       setShowAllAssignees(false);
+      setShowInlineProject(false);
+      setNewProjectName("");
       load();
     } catch (err) {
       setFormErrors({
@@ -451,6 +486,56 @@ export default function ManageTasks() {
       });
     } finally {
       setSavingTask(false);
+    }
+  };
+
+  const CREATE_PROJECT_VALUE = "__create_project__";
+
+  const createProjectFromTaskForm = async () => {
+    const name = newProjectName.trim();
+    if (!name) {
+      setFormErrors((e) => ({ ...e, projectId: "Project name is required." }));
+      return;
+    }
+    const existing = projects.find(
+      (p) => String(p.name || "").trim().toLowerCase() === name.toLowerCase()
+    );
+    if (existing) {
+      setTaskForm((f) => ({ ...f, projectId: existing.projectId }));
+      setShowInlineProject(false);
+      setNewProjectName("");
+      setFormErrors((e) => {
+        const next = { ...e };
+        delete next.projectId;
+        return next;
+      });
+      return;
+    }
+    setCreatingProject(true);
+    try {
+      const created = await createProject({ name });
+      if (created?.projectId) {
+        setProjects((prev) =>
+          prev.some((p) => p.projectId === created.projectId)
+            ? prev
+            : [...prev, created]
+        );
+        setTaskForm((f) => ({ ...f, projectId: created.projectId }));
+      }
+      setShowInlineProject(false);
+      setNewProjectName("");
+      setFormErrors((e) => {
+        const next = { ...e };
+        delete next.projectId;
+        return next;
+      });
+    } catch (err) {
+      setFormErrors((e) => ({
+        ...e,
+        projectId: err.message || "Unable to create project.",
+      }));
+    } finally {
+      setCreatingProject(false);
     }
   };
 
@@ -525,19 +610,26 @@ export default function ManageTasks() {
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
-              style={buttonPrimary}
+              className="dgv-btn dgv-btn--secondary"
               onClick={() => setShowProject(true)}
             >
               + Project
             </button>
             <button
               type="button"
-              style={buttonPrimary}
+              className="dgv-btn dgv-btn--primary"
               onClick={() => {
-                setTaskForm(emptyTaskForm);
+                setTaskForm({
+                  ...emptyTaskForm,
+                  projectId: projectId || "",
+                  startTime: nextQuarterHourKolkata(),
+                  dueTime: nextQuarterHourKolkata(),
+                });
                 setFormErrors({});
                 setAssigneeQuery("");
                 setShowAllAssignees(false);
+                setShowInlineProject(false);
+                setNewProjectName("");
                 setShowTask(true);
               }}
             >
@@ -552,7 +644,7 @@ export default function ManageTasks() {
           value={projectId}
           onChange={(e) => setProjectId(e.target.value)}
         >
-          <option value="">All projects</option>
+          <option value="">All Projects</option>
           {projects.map((p) => (
             <option key={p.projectId} value={p.projectId}>
               {p.name}
@@ -759,8 +851,6 @@ export default function ManageTasks() {
         )}
       </div>
 
-      <RedZoneWeeklySettings />
-
       {showProject && (
         <Modal title="New Project" onClose={() => setShowProject(false)}>
           <Field
@@ -780,228 +870,349 @@ export default function ManageTasks() {
               setProjectForm({ ...projectForm, description: v })
             }
           />
-          <button type="button" style={buttonPrimary} onClick={saveProject}>
+          <button type="button" className="dgv-btn dgv-btn--primary" onClick={saveProject}>
             Create
           </button>
         </Modal>
       )}
 
       {showTask && (
-        <Modal title="New Task" onClose={() => !savingTask && setShowTask(false)}>
+        <Modal
+          title="New Task"
+          maxWidth={720}
+          onClose={() =>
+            !savingTask &&
+            !creatingProject &&
+            setShowTask(false)
+          }
+        >
           {formErrors.form ? (
             <div className="dgv-alert dgv-alert--error" style={{ marginBottom: 12 }}>
               {formErrors.form}
             </div>
           ) : null}
-          <Field
-            label="Title *"
-            value={taskForm.title}
-            error={formErrors.title}
-            maxLength={TITLE_MAX}
-            onChange={(v) => setTaskForm({ ...taskForm, title: v })}
-          />
-          <Field
-            label="Author *"
-            value={taskForm.authorName}
-            error={formErrors.authorName}
-            maxLength={AUTHOR_MAX}
-            onChange={(v) => setTaskForm({ ...taskForm, authorName: v })}
-          />
-          <label style={formLabel}>Description</label>
-          <textarea
-            style={{ ...formInput, minHeight: 90, resize: "vertical" }}
-            value={taskForm.description}
-            maxLength={DESCRIPTION_MAX}
-            onChange={(e) =>
-              setTaskForm({ ...taskForm, description: e.target.value })
-            }
-          />
-          {formErrors.description ? (
-            <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -10, marginBottom: 12 }}>
-              {formErrors.description}
-            </div>
-          ) : null}
-          <label style={formLabel}>Category</label>
-          <select
-            style={formSelect}
-            value={taskForm.category}
-            onChange={(e) =>
-              setTaskForm({ ...taskForm, category: e.target.value })
-            }
-          >
-            <option value="">Select category</option>
-            {TASK_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-          <label style={formLabel}>Assignees *</label>
-          <input
+          <div
             style={{
-              ...formInput,
-              marginBottom: 8,
-            }}
-            placeholder="Search employees by name or email"
-            value={assigneeQuery}
-            onChange={(e) => {
-              setAssigneeQuery(e.target.value);
-              if (e.target.value.trim()) setShowAllAssignees(false);
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setShowAllAssignees((open) => !open);
-              if (showAllAssignees) setAssigneeQuery("");
-            }}
-            style={{
-              background: "none",
-              border: "none",
-              padding: 0,
-              marginBottom: 10,
-              cursor: "pointer",
-              color: "var(--dgv-accent)",
-              fontSize: 12,
-              fontWeight: 600,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+              columnGap: 16,
             }}
           >
-            {showAllAssignees ? "Hide employee list" : "Show all employees"}
-          </button>
-          {taskForm.assignees.length ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-              {taskForm.assignees.map((email) => {
-                const person = personLabel(users, email);
-                return (
-                  <span
-                    key={email}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "4px 8px",
-                      borderRadius: 999,
-                      background: "var(--dgv-accent-soft)",
-                      border: `1px solid ${colors.border}`,
-                      fontSize: 12,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {person.name}
+            <Field
+              label="Title *"
+              value={taskForm.title}
+              error={formErrors.title}
+              maxLength={TITLE_MAX}
+              onChange={(v) => setTaskForm({ ...taskForm, title: v })}
+            />
+            <div>
+              <label style={formLabel}>Project *</label>
+              <select
+                style={{
+                  ...formSelect,
+                  border: formErrors.projectId
+                    ? "1px solid var(--dgv-danger)"
+                    : formSelect.border,
+                }}
+                value={showInlineProject ? CREATE_PROJECT_VALUE : taskForm.projectId}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === CREATE_PROJECT_VALUE) {
+                    setShowInlineProject(true);
+                    setTaskForm({ ...taskForm, projectId: "" });
+                    setFormErrors((err) => {
+                      const next = { ...err };
+                      delete next.projectId;
+                      return next;
+                    });
+                    return;
+                  }
+                  setShowInlineProject(false);
+                  setNewProjectName("");
+                  setTaskForm({ ...taskForm, projectId: value });
+                }}
+              >
+                <option value="">Select project</option>
+                {projects.map((p) => (
+                  <option key={p.projectId} value={p.projectId}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value={CREATE_PROJECT_VALUE}>+ Create New Project</option>
+              </select>
+              {showInlineProject ? (
+                <div
+                  style={{
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 10,
+                    padding: 12,
+                    marginBottom: 16,
+                  }}
+                >
+                  <label style={formLabel}>New Project Name</label>
+                  <input
+                    style={formInput}
+                    placeholder="Enter project name"
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                  />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button
                       type="button"
-                      onClick={() => toggleAssignee(email)}
-                      aria-label={`Remove ${person.name}`}
                       style={{
-                        border: "none",
+                        ...buttonPrimary,
                         background: "transparent",
-                        cursor: "pointer",
                         color: colors.text,
-                        fontWeight: 700,
-                        padding: 0,
-                        lineHeight: 1,
+                        border: `1px solid ${colors.border}`,
+                        boxShadow: "none",
                       }}
+                      onClick={() => {
+                        setShowInlineProject(false);
+                        setNewProjectName("");
+                      }}
+                      disabled={creatingProject}
                     >
-                      ×
+                      Cancel
                     </button>
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
-          {showAssigneeList ? (
-            <div
-              style={{
-                maxHeight: 160,
-                overflowY: "auto",
-                border: `1px solid ${colors.border}`,
-                borderRadius: 10,
-                padding: 8,
-                marginBottom: 16,
-              }}
-            >
-              {users.length === 0 ? (
-                <div style={{ fontSize: 13, color: colors.textMuted }}>No users loaded</div>
-              ) : assigneeMatches.length === 0 ? (
-                <div style={{ fontSize: 13, color: colors.textMuted }}>
-                  No employees found
+                    <button
+                      type="button"
+                      className="dgv-btn dgv-btn--primary"
+                      onClick={createProjectFromTaskForm}
+                      disabled={creatingProject}
+                    >
+                      {creatingProject ? "Creating..." : "Create Project"}
+                    </button>
+                  </div>
                 </div>
-              ) : (
-                assigneeMatches.map((u) => (
-                  <label
-                    key={u.email}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 13,
-                      padding: "4px 2px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={taskForm.assignees.includes(u.email)}
-                      onChange={() => toggleAssignee(u.email)}
-                    />
-                    {u.name ? `${u.name} (${u.email})` : u.email}
-                  </label>
-                ))
-              )}
+              ) : null}
+              {formErrors.projectId ? (
+                <div
+                  style={{
+                    color: "var(--dgv-danger)",
+                    fontSize: 12,
+                    marginTop: -10,
+                    marginBottom: 12,
+                  }}
+                >
+                  {formErrors.projectId}
+                </div>
+              ) : null}
             </div>
-          ) : null}
-          {formErrors.assignees ? (
-            <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginBottom: 12 }}>
-              {formErrors.assignees}
+            <Field
+              label="Author *"
+              value={taskForm.authorName}
+              error={formErrors.authorName}
+              maxLength={AUTHOR_MAX}
+              onChange={(v) => setTaskForm({ ...taskForm, authorName: v })}
+            />
+            <div>
+              <label style={formLabel}>Category</label>
+              <select
+                style={formSelect}
+                value={taskForm.category}
+                onChange={(e) =>
+                  setTaskForm({ ...taskForm, category: e.target.value })
+                }
+              >
+                <option value="">Select category</option>
+                {TASK_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </div>
-          ) : null}
-          <label style={formLabel}>Priority *</label>
-          <select
-            style={formSelect}
-            value={
-              taskForm.priority === "URGENT" ? "CRITICAL" : taskForm.priority
-            }
-            onChange={(e) =>
-              setTaskForm({ ...taskForm, priority: e.target.value })
-            }
-          >
-            {TASK_PRIORITIES.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          <Field
-            label="Start Date *"
-            type="date"
-            value={taskForm.startDate}
-            error={formErrors.startDate}
-            onChange={(v) => setTaskForm({ ...taskForm, startDate: v })}
-          />
-          <Field
-            label="Start Time *"
-            type="time"
-            value={taskForm.startTime}
-            onChange={(v) => setTaskForm({ ...taskForm, startTime: v })}
-          />
-          <Field
-            label="Deadline Date *"
-            type="date"
-            value={taskForm.dueDate}
-            error={formErrors.dueDate}
-            onChange={(v) => setTaskForm({ ...taskForm, dueDate: v })}
-          />
-          <Field
-            label="Deadline Time *"
-            type="time"
-            value={taskForm.dueTime}
-            onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
-          />
+            <div>
+              <label style={formLabel}>Assignees *</label>
+              <input
+                style={{
+                  ...formInput,
+                  marginBottom: 8,
+                }}
+                placeholder="Search employees by name or email"
+                value={assigneeQuery}
+                onChange={(e) => {
+                  setAssigneeQuery(e.target.value);
+                  if (e.target.value.trim()) setShowAllAssignees(false);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAllAssignees((open) => !open);
+                  if (showAllAssignees) setAssigneeQuery("");
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  marginBottom: 10,
+                  cursor: "pointer",
+                  color: "var(--dgv-accent)",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {showAllAssignees ? "Hide employee list" : "Show all employees"}
+              </button>
+              {taskForm.assignees.length ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                  {taskForm.assignees.map((email) => {
+                    const person = personLabel(users, email);
+                    return (
+                      <span
+                        key={email}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "4px 8px",
+                          borderRadius: 999,
+                          background: "var(--dgv-accent-soft)",
+                          border: `1px solid ${colors.border}`,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {person.name}
+                        <button
+                          type="button"
+                          onClick={() => toggleAssignee(email)}
+                          aria-label={`Remove ${person.name}`}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: colors.text,
+                            fontWeight: 700,
+                            padding: 0,
+                            lineHeight: 1,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {showAssigneeList ? (
+                <div
+                  style={{
+                    maxHeight: 160,
+                    overflowY: "auto",
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 10,
+                    padding: 8,
+                    marginBottom: 16,
+                  }}
+                >
+                  {users.length === 0 ? (
+                    <div style={{ fontSize: 13, color: colors.textMuted }}>No users loaded</div>
+                  ) : assigneeMatches.length === 0 ? (
+                    <div style={{ fontSize: 13, color: colors.textMuted }}>
+                      No employees found
+                    </div>
+                  ) : (
+                    assigneeMatches.map((u) => (
+                      <label
+                        key={u.email}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 13,
+                          padding: "4px 2px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={taskForm.assignees.includes(u.email)}
+                          onChange={() => toggleAssignee(u.email)}
+                        />
+                        {u.name ? `${u.name} (${u.email})` : u.email}
+                      </label>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              {formErrors.assignees ? (
+                <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginBottom: 12 }}>
+                  {formErrors.assignees}
+                </div>
+              ) : null}
+            </div>
+            <div>
+              <label style={formLabel}>Priority *</label>
+              <select
+                style={formSelect}
+                value={
+                  taskForm.priority === "URGENT" ? "CRITICAL" : taskForm.priority
+                }
+                onChange={(e) =>
+                  setTaskForm({ ...taskForm, priority: e.target.value })
+                }
+              >
+                {TASK_PRIORITIES.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="Start Date *"
+              type="date"
+              value={taskForm.startDate}
+              error={formErrors.startDate}
+              onChange={(v) => setTaskForm({ ...taskForm, startDate: v })}
+            />
+            <TaskTimePicker
+              id="task-start-time"
+              label="Start Time *"
+              value={taskForm.startTime}
+              error={formErrors.startTime}
+              onChange={(v) => setTaskForm({ ...taskForm, startTime: v })}
+            />
+            <Field
+              label="Deadline Date *"
+              type="date"
+              value={taskForm.dueDate}
+              error={formErrors.dueDate}
+              onChange={(v) => setTaskForm({ ...taskForm, dueDate: v })}
+            />
+            <TaskTimePicker
+              id="task-deadline-time"
+              label="Deadline Time *"
+              value={taskForm.dueTime}
+              fallbackValue={taskForm.startTime}
+              error={formErrors.dueTime}
+              onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
+            />
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={formLabel}>Description</label>
+              <textarea
+                style={{ ...formInput, minHeight: 90, resize: "vertical" }}
+                value={taskForm.description}
+                maxLength={DESCRIPTION_MAX}
+                onChange={(e) =>
+                  setTaskForm({ ...taskForm, description: e.target.value })
+                }
+              />
+              {formErrors.description ? (
+                <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -10, marginBottom: 12 }}>
+                  {formErrors.description}
+                </div>
+              ) : null}
+            </div>
+          </div>
           <button
             type="button"
-            style={{ ...buttonPrimary, marginTop: 4 }}
+            className="dgv-btn dgv-btn--primary"
+            style={{ marginTop: 4 }}
             onClick={saveTask}
-            disabled={savingTask}
+            disabled={savingTask || creatingProject}
           >
             {savingTask ? "Creating..." : "Create Task"}
           </button>
@@ -1011,7 +1222,7 @@ export default function ManageTasks() {
   );
 }
 
-function Modal({ title, children, onClose }) {
+function Modal({ title, children, onClose, maxWidth = 440 }) {
   return createPortal(
     <div
       style={{
@@ -1037,7 +1248,7 @@ function Modal({ title, children, onClose }) {
           padding: 24,
           borderRadius: 12,
           width: "100%",
-          maxWidth: 440,
+          maxWidth,
           border: `1px solid ${colors.border}`,
           maxHeight: "calc(100vh - 32px)",
           overflowY: "auto",
@@ -1052,9 +1263,9 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-function Field({ label, value, onChange, type = "text", error, maxLength }) {
+function Field({ label, value, onChange, type = "text", error, maxLength, step }) {
   return (
-    <>
+    <div>
       <label style={formLabel}>{label}</label>
       <input
         style={{
@@ -1066,6 +1277,7 @@ function Field({ label, value, onChange, type = "text", error, maxLength }) {
         type={type}
         value={value}
         maxLength={maxLength}
+        step={step}
         onChange={(e) => onChange(e.target.value)}
       />
       {error ? (
@@ -1073,6 +1285,6 @@ function Field({ label, value, onChange, type = "text", error, maxLength }) {
           {error}
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

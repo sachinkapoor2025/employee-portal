@@ -32,6 +32,7 @@ import {
   getTaskTiming,
   getTaskZone,
   joinDueParts,
+  isQuarterHourTime,
   personLabel,
   priorityLabel,
   splitDueParts,
@@ -274,6 +275,22 @@ export default function TaskDetails() {
     }
     const nextStart = joinDueParts(editForm.startDate, editForm.startTime);
     const nextDue = joinDueParts(editForm.dueDate, editForm.dueTime);
+    const originalStart = splitDueParts(task.startDate);
+    const originalDue = splitDueParts(task.dueDate);
+    if (
+      editForm.startTime !== originalStart.time &&
+      !isQuarterHourTime(editForm.startTime)
+    ) {
+      alert("Start time must be in 15-minute intervals (00, 15, 30, or 45).");
+      return;
+    }
+    if (
+      editForm.dueTime !== originalDue.time &&
+      !isQuarterHourTime(editForm.dueTime)
+    ) {
+      alert("Deadline time must be in 15-minute intervals (00, 15, 30, or 45).");
+      return;
+    }
     if (nextStart && nextDue && new Date(nextDue).getTime() < new Date(nextStart).getTime()) {
       alert("Deadline must be after the start date and time.");
       return;
@@ -703,6 +720,7 @@ export default function TaskDetails() {
           <label style={formLabel}>Start Time</label>
           <input
             type="time"
+            step={900}
             style={formInput}
             value={editForm.startTime}
             onChange={(e) =>
@@ -721,6 +739,7 @@ export default function TaskDetails() {
           <label style={formLabel}>Due Time</label>
           <input
             type="time"
+            step={900}
             style={formInput}
             value={editForm.dueTime}
             onChange={(e) =>

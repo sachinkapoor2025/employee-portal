@@ -14,9 +14,7 @@ export default function Modal({ open, onClose, title, children, maxWidth = 520 }
       }}
     >
       <div className="dgv-modal" style={{ maxWidth }}>
-        {title ? (
-          <h3 style={{ marginTop: 0, marginBottom: 16 }}>{title}</h3>
-        ) : null}
+        {title ? <h3 className="dgv-modal__header">{title}</h3> : null}
         {children}
       </div>
     </div>,
