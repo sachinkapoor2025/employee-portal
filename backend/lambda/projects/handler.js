@@ -277,8 +277,9 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
       reason: type,
       dedupKey,
       extra,
-      emailEnabled: channels.emailEnabled !== false,
-      inAppEnabled: channels.inAppEnabled !== false,
+      channel: channels.channel,
+      emailEnabled: channels.emailEnabled,
+      inAppEnabled: channels.inAppEnabled,
     });
   } catch (err) {
     console.error("Task notification failed", err);
@@ -369,7 +370,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
           deadline: task.dueDate || null,
           zoneStartedAt: ev.timestamp,
         },
-        { emailEnabled: false, inAppEnabled: true }
+        { channel: "inapp" }
       );
     }
   }

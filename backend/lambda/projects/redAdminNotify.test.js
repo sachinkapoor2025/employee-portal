@@ -25,8 +25,7 @@ async function run() {
   assert.strictEqual(status, "SENT");
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].email, "admin@mydgv.com");
-  assert.strictEqual(calls[0].emailEnabled, true);
-  assert.strictEqual(calls[0].inAppEnabled, false);
+  assert.strictEqual(calls[0].channel, "email");
   assert.ok(calls[0].message.includes("Amit Sharma"));
   assert.ok(calls[0].message.includes("amit@mydgv.com"));
 

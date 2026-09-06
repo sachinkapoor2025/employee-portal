@@ -95,8 +95,7 @@ async function notifyAdminsTaskEnteredRed({
         html: copy.html,
         reason: "TASK_RED_ADMIN",
         dedupKey,
-        emailEnabled: true,
-        inAppEnabled: false,
+        channel: "email",
         extra: {
           taskId,
           zone: "RED",
