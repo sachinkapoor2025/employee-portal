@@ -1,5 +1,11 @@
 const { getUser } = require("../common/auth");
 const { json } = require("../common/response");
+const { parseProjectRoute, handleProjectRequest } = require("./projectsLogic");
+const { parsePersonalRoute, handlePersonalRequest } = require("./personalLogic");
+const {
+  parseNotificationRoute,
+  handleNotificationRequest,
+} = require("./notificationsLogic");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -300,6 +306,7 @@ function publicDoc(item) {
   };
 }
 
+/** Dormant: Documents v1 dropped the 7-day missing-document reminder. */
 async function maybeRemindMissing(email, types, docs) {
   const byType = Object.fromEntries(docs.map((d) => [d.documentType, d]));
   const { dispatchNotification } = require("../common/notify");
@@ -342,6 +349,41 @@ exports.handler = async (event) => {
   const method = event.httpMethod;
   const path = pathOf(event);
   const qs = event.queryStringParameters || {};
+  const projectRoute = parseProjectRoute(path);
+  const personalRoute = parsePersonalRoute(path);
+  const notificationRoute = parseNotificationRoute(path);
+  if (projectRoute || personalRoute || notificationRoute) {
+    let parsedBody = {};
+    try {
+      parsedBody = event.body ? JSON.parse(event.body) : {};
+    } catch {
+      return json(400, { error: "Invalid JSON body." });
+    }
+    if (notificationRoute) {
+      return handleNotificationRequest({
+        user,
+        method,
+        body: parsedBody,
+        query: qs,
+        route: notificationRoute,
+      });
+    }
+    if (personalRoute) {
+      return handlePersonalRequest({
+        user,
+        method,
+        body: parsedBody,
+        query: qs,
+        route: personalRoute,
+      });
+    }
+    return handleProjectRequest({
+      user,
+      method,
+      body: parsedBody,
+      route: projectRoute,
+    });
+  }
   const body = event.body ? JSON.parse(event.body) : {};
 
   try {
@@ -592,7 +634,6 @@ exports.handler = async (event) => {
       }
 
       const docs = await listCurrentForEmail(user.email);
-      await maybeRemindMissing(user.email, types, docs);
       const summary = buildSummary(types, docs);
       return json(200, {
         types,

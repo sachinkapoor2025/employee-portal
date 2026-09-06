@@ -4,8 +4,6 @@ import Layout from "../../components/Layout";
 import {
   fetchUserProfile,
   fetchUsers,
-  fetchEmployeeDocuments,
-  reviewDocument,
   fetchAttendance,
   fetchTasks,
   fetchAllLeave,
@@ -13,7 +11,6 @@ import {
 } from "../../services/api";
 import { roleLabel } from "../../constants/roles";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
-import { resolveDocumentViewUrl } from "../../utils/documentView";
 import { getWeeklyDisplayStatus } from "../../components/WeeklyAttendanceHistory";
 
 const TABS = [
@@ -120,8 +117,6 @@ export default function EmployeeTracking() {
   const [error, setError] = useState("");
   const [profile, setProfile] = useState(null);
   const [access, setAccess] = useState(null);
-  const [docData, setDocData] = useState(null);
-  const [docBusy, setDocBusy] = useState("");
   const [attendance, setAttendance] = useState(null);
   const [tasks, setTasks] = useState(null);
   const [leaveRows, setLeaveRows] = useState(null);
@@ -158,21 +153,6 @@ export default function EmployeeTracking() {
       cancelled = true;
     };
   }, [email]);
-
-  useEffect(() => {
-    if (tab !== "Documents" || !email) return;
-    let cancelled = false;
-    fetchEmployeeDocuments(email)
-      .then((res) => {
-        if (!cancelled) setDocData(res || null);
-      })
-      .catch(() => {
-        if (!cancelled) setDocData({ documents: [], types: [], summary: null });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, email]);
 
   useEffect(() => {
     if (!email) return;
@@ -343,14 +323,7 @@ export default function EmployeeTracking() {
               ) : tab === "Tasks" ? (
                 <TasksPanel rows={tasks} />
               ) : tab === "Documents" ? (
-                <EmployeeDocumentsPanel
-                  data={docData}
-                  busyId={docBusy}
-                  onRefresh={() =>
-                    fetchEmployeeDocuments(email).then(setDocData)
-                  }
-                  setBusyId={setDocBusy}
-                />
+                <EmployeeDocumentsPanel email={email} />
               ) : tab === "Leave" ? (
                 <LeavePanel rows={leaveRows} />
               ) : tab === "Training" ? (
@@ -674,143 +647,20 @@ function Meta({ label, value }) {
   );
 }
 
-function EmployeeDocumentsPanel({ data, busyId, onRefresh, setBusyId }) {
-  const types = data?.types || [];
-  const documents = data?.documents || [];
-  const summary = data?.summary;
-  const typeLabel = (code) => types.find((t) => t.code === code)?.label || code;
-
-  const viewDoc = async (doc) => {
-    try {
-      console.log("View document:", {
-        documentId: doc.documentId,
-        fileName: doc.fileName,
-        storageKey: doc.storageKey || doc.s3Key,
-      });
-      const url = await resolveDocumentViewUrl(doc);
-      if (!url) {
-        alert("Unable to open document");
-        return;
-      }
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      console.error(err?.message || "S3_SIGNED_URL_FAILED");
-      alert(err.message || "Unable to open document");
-    }
-  };
-
-  const verify = async (documentId) => {
-    setBusyId(documentId);
-    try {
-      await reviewDocument(documentId, "VERIFIED");
-      await onRefresh();
-    } catch (err) {
-      alert(err.message || "Unable to verify");
-    } finally {
-      setBusyId("");
-    }
-  };
-
-  const reject = async (documentId) => {
-    const rejectionReason = window.prompt("Rejection Reason:") || "";
-    if (!rejectionReason.trim()) {
-      alert("Rejection reason is required.");
-      return;
-    }
-    setBusyId(documentId);
-    try {
-      await reviewDocument(documentId, "REJECTED", rejectionReason.trim());
-      await onRefresh();
-    } catch (err) {
-      alert(err.message || "Unable to reject");
-    } finally {
-      setBusyId("");
-    }
-  };
-
-  if (!data) {
-    return <p style={{ color: colors.textMuted, marginBottom: 0 }}>Loading documents…</p>;
-  }
-
+function EmployeeDocumentsPanel({ email }) {
+  const folderPath = `/admin/documents?tab=personal&email=${encodeURIComponent(
+    email || ""
+  )}`;
   return (
     <>
       <h3 style={{ marginTop: 0 }}>Documents</h3>
-      {summary ? (
-        <p style={{ color: colors.textMuted }}>
-          Uploaded {summary.uploaded} · Verified {summary.verified} · Pending{" "}
-          {summary.pendingReview} · Rejected {summary.rejected} · Missing{" "}
-          {summary.missing}
-        </p>
-      ) : null}
-      {documents.length === 0 ? (
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No documents uploaded yet.
-        </p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {documents.map((d) => (
-            <div
-              key={d.documentId}
-              style={{
-                padding: 12,
-                borderRadius: 10,
-                border: "1px solid var(--dgv-border)",
-              }}
-            >
-              <div style={{ fontWeight: 700 }}>
-                {typeLabel(d.documentType)}{" "}
-                <span
-                  className={
-                    d.status === "VERIFIED"
-                      ? "dgv-badge dgv-badge--success"
-                      : d.status === "REJECTED"
-                        ? "dgv-badge dgv-badge--danger"
-                        : "dgv-badge dgv-badge--info"
-                  }
-                >
-                  {d.status === "UNDER_REVIEW" ? "UNDER REVIEW" : d.status}
-                </span>
-              </div>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
-                {d.fileName}
-                {d.rejectionReason ? ` · ${d.rejectionReason}` : ""}
-              </div>
-              <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
-                <button
-                  type="button"
-                  className="dgv-btn dgv-btn--outline"
-                  style={{ padding: "4px 10px", fontSize: 13 }}
-                  onClick={() => viewDoc(d)}
-                >
-                  View
-                </button>
-                {d.status === "UNDER_REVIEW" || d.status === "UPLOADED" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="dgv-btn dgv-btn--success"
-                      style={{ padding: "4px 10px", fontSize: 13 }}
-                      disabled={busyId === d.documentId}
-                      onClick={() => verify(d.documentId)}
-                    >
-                      Verify
-                    </button>
-                    <button
-                      type="button"
-                      className="dgv-btn dgv-btn--danger"
-                      style={{ padding: "4px 10px", fontSize: 13 }}
-                      disabled={busyId === d.documentId}
-                      onClick={() => reject(d.documentId)}
-                    >
-                      Reject
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <p style={{ color: colors.textMuted }}>
+        This employee&apos;s files live in Documents → Personal. Required
+        Documents is pinned storage only — there is no verify or reject status.
+      </p>
+      <Link to={folderPath} className="dgv-btn dgv-btn--primary">
+        Open personal folder
+      </Link>
     </>
   );
 }

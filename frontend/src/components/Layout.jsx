@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -37,13 +37,17 @@ import {
   getViewRole,
   getLoggedInEmail,
 } from "../services/auth";
-import { fetchLeaveNotifications, markNotificationRead } from "../services/api";
+import { fetchLeaveNotifications, markNotificationRead, fetchDocumentNotificationFeed, markDocumentNotificationsSeen } from "../services/api";
 import {
   isZoneNotification,
   isRedZoneNotification,
   notificationTaskPath,
+  notificationDocumentPath,
   relativeTime,
   unreadCount,
+  isDocumentEventUnread,
+  documentEventTitle,
+  documentEventBody,
 } from "../utils/notifications";
 import { useTheme } from "../theme/ThemeProvider";
 import AmbientBackground from "./AmbientBackground";
@@ -145,6 +149,10 @@ export default function Layout({ children }) {
   const [search, setSearch] = useState("");
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [docEvents, setDocEvents] = useState([]);
+  const [docUnread, setDocUnread] = useState(0);
+  const [docLastSeenAt, setDocLastSeenAt] = useState(null);
+  const notifyWrapRef = useRef(null);
 
   const isAdminAccount = canAccessAdmin();
   const showEmployeeNav = viewRole === "USER" || !isAdminAccount;
@@ -168,13 +176,81 @@ export default function Layout({ children }) {
       .catch(() => setNotifications([]));
   }, []);
 
+  const applyDocFeed = useCallback((feed, { preserveSeen = false } = {}) => {
+    const events = Array.isArray(feed?.events) ? feed.events : [];
+    setDocEvents(events);
+    if (preserveSeen) return;
+    if (feed?.lastSeenAt) setDocLastSeenAt(feed.lastSeenAt);
+    setDocUnread(
+      Number.isFinite(Number(feed?.unreadCount)) ? Number(feed.unreadCount) : 0
+    );
+  }, []);
+
+  const loadDocFeed = useCallback(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+    fetchDocumentNotificationFeed()
+      .then(applyDocFeed)
+      .catch(() => {});
+  }, [applyDocFeed]);
+
   useEffect(() => {
     loadNotifications();
     const timer = setInterval(loadNotifications, 60000);
     return () => clearInterval(timer);
   }, [loadNotifications, location.pathname]);
 
+  useEffect(() => {
+    loadDocFeed();
+    const timer = setInterval(loadDocFeed, 10000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") loadDocFeed();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", loadDocFeed);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", loadDocFeed);
+    };
+  }, [loadDocFeed]);
+
+  useEffect(() => {
+    if (!notifyOpen) return undefined;
+    const onPointerDown = (e) => {
+      if (!notifyWrapRef.current?.contains(e.target)) {
+        setNotifyOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [notifyOpen]);
+
+  const toggleNotify = async () => {
+    const next = !notifyOpen;
+    setNotifyOpen(next);
+    if (!next) return;
+    const iso = new Date().toISOString();
+    setDocLastSeenAt(iso);
+    setDocUnread(0);
+    try {
+      const feed = await fetchDocumentNotificationFeed();
+      applyDocFeed(feed, { preserveSeen: true });
+      setDocLastSeenAt(iso);
+      setDocUnread(0);
+      await markDocumentNotificationsSeen(iso);
+    } catch {
+      /* keep the panel open even if mark-seen is unavailable */
+    }
+  };
+
   const openNotification = async (item) => {
+    if (item?.kind === "document") {
+      setNotifyOpen(false);
+      navigate(notificationDocumentPath(showEmployeeNav));
+      return;
+    }
     if (item?.SK && item.read !== true) {
       try {
         await markNotificationRead(item.SK);
@@ -196,7 +272,29 @@ export default function Layout({ children }) {
     }
   };
 
-  const unread = unreadCount(notifications);
+  const notifyItems = useMemo(() => {
+    const docs = (docEvents || []).map((event) => ({
+      kind: "document",
+      eventId: event.eventId || event.key,
+      title: documentEventTitle(event),
+      message: documentEventBody(event),
+      createdAt: event.timestamp,
+      read: !isDocumentEventUnread(event, docLastSeenAt),
+      projectId: event.projectId,
+    }));
+    const leave = (notifications || []).map((n) => ({
+      ...n,
+      kind: "leave",
+      createdAt: n.createdAt || n.updatedAt || n.readAt,
+    }));
+    return [...docs, ...leave].sort((a, b) => {
+      const am = Date.parse(a.createdAt || "") || 0;
+      const bm = Date.parse(b.createdAt || "") || 0;
+      return bm - am;
+    });
+  }, [docEvents, docLastSeenAt, notifications]);
+
+  const unread = unreadCount(notifications) + docUnread;
 
   useEffect(() => {
     const onResize = () => {
@@ -389,13 +487,14 @@ export default function Layout({ children }) {
           </label>
 
           <div className="dgv-navbar__actions">
-            <div style={{ position: "relative" }}>
+            <div style={{ position: "relative" }} ref={notifyWrapRef}>
               <button
                 type="button"
                 className="dgv-icon-btn"
                 aria-label="Notifications"
+                aria-expanded={notifyOpen}
                 title="Notifications"
-                onClick={() => setNotifyOpen((v) => !v)}
+                onClick={toggleNotify}
               >
                 <Bell size={20} strokeWidth={1.75} />
                 {unread > 0 ? (
@@ -421,25 +520,26 @@ export default function Layout({ children }) {
                 ) : null}
               </button>
               {notifyOpen ? (
-                <div className="dgv-notify-panel">
-                  {notifications.length === 0 ? (
+                <div className="dgv-notify-panel" role="menu" aria-label="Notifications">
+                  {notifyItems.length === 0 ? (
                     <p style={{ margin: 12, fontSize: 13, color: "var(--dgv-text-muted)" }}>
                       No notifications.
                     </p>
                   ) : (
-                    notifications.map((n) => {
-                      const zone = isZoneNotification(n);
-                      const red = isRedZoneNotification(n);
+                    notifyItems.map((n) => {
+                      const isDoc = n.kind === "document";
+                      const zone = !isDoc && isZoneNotification(n);
+                      const red = !isDoc && isRedZoneNotification(n);
                       const unreadItem = n.read !== true;
-                      const tone = red ? "is-error" : zone ? "is-warning" : "";
+                      const tone = isDoc ? "" : red ? "is-error" : zone ? "is-warning" : "";
                       return (
                         <button
                           type="button"
-                          key={n.notifyId || n.SK}
+                          key={isDoc ? `doc-${n.eventId}` : n.notifyId || n.SK}
                           className={`dgv-notify-item ${unreadItem ? "is-unread" : ""} ${tone}`.trim()}
                           onClick={() => openNotification(n)}
                           style={{
-                            cursor: n.taskId || zone ? "pointer" : "default",
+                            cursor: isDoc || n.taskId || zone ? "pointer" : "default",
                           }}
                         >
                           <div className="dgv-notify-item__title">

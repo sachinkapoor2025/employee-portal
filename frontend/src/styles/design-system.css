@@ -678,6 +678,22 @@ a {
   box-shadow: none;
 }
 
+.dgv-folder-card .dgv-folder-card__actions {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.dgv-folder-card:hover .dgv-folder-card__actions,
+.dgv-folder-card:focus-within .dgv-folder-card__actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .dgv-folder-card .dgv-folder-card__actions {
+    opacity: 1;
+  }
+}
+
 .dgv-stat-card {
   background: var(--dgv-surface);
   border: 1px solid var(--dgv-border);

@@ -156,7 +156,7 @@ Resources:
       StageName: prod
 
       Cors:
-        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
         AllowHeaders: "'Authorization,Content-Type'"
         AllowOrigin: "'*'"
 
@@ -166,19 +166,19 @@ Resources:
             Headers:
               Access-Control-Allow-Origin: "'*'"
               Access-Control-Allow-Headers: "'Authorization,Content-Type'"
-              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
         DEFAULT_5XX:
           ResponseParameters:
             Headers:
               Access-Control-Allow-Origin: "'*'"
               Access-Control-Allow-Headers: "'Authorization,Content-Type'"
-              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
         UNAUTHORIZED:
           ResponseParameters:
             Headers:
               Access-Control-Allow-Origin: "'*'"
               Access-Control-Allow-Headers: "'Authorization,Content-Type'"
-              Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
 
       Auth:
         DefaultAuthorizer: CognitoAuthorizer
@@ -1162,7 +1162,7 @@ Resources:
           Type: Schedule
           Properties:
             Name: !Sub "${AWS::StackName}-daily-notifications"
-            Description: Attendance, document, and training email notifications (09:00 IST)
+            Description: Attendance and training email notifications (09:00 IST)
             Enabled: true
             Schedule: cron(30 3 * * ? *)
             Input: '{"notifications":true,"source":"notifications"}'
@@ -1172,7 +1172,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-DocumentsFunction"
       Handler: lambda/documents/handler.handler
-      Timeout: 20
+      Timeout: 29
       Environment:
         Variables:
           DOCUMENTS_BUCKET: !Ref DocumentsBucket
@@ -1244,6 +1244,240 @@ Resources:
           Properties:
             Path: /admin/documents
             Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectsGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectsPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectItemGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectItemPatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectItemDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFoldersGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFolderGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFolderPatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFolderDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectRootSubfoldersPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/subfolders
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectSubfoldersPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}/subfolders
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectRootFilesPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/files
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFilesPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}/files
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectRootFilePatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/files/{fileId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectRootFileDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/files/{fileId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFilePatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}/files/{fileId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFileDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}/files/{fileId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectRootFileDownloadApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/files/{fileId}/download-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsProjectFileDownloadApi:
+          Type: Api
+          Properties:
+            Path: /documents/projects/{projectId}/folders/{folderId}/files/{fileId}/download-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalEmailGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalEmailPatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalEmailDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFoldersGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFolderGetApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFolderPatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFolderDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalRootSubfoldersPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/subfolders
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalSubfoldersPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}/subfolders
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalRootFilesPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/files
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFilesPostApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}/files
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalRootFilePatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/files/{fileId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalRootFileDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/files/{fileId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFilePatchApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}/files/{fileId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFileDeleteApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}/files/{fileId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalRootFileDownloadApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/files/{fileId}/download-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsPersonalFileDownloadApi:
+          Type: Api
+          Properties:
+            Path: /documents/personal/{email}/folders/{folderId}/files/{fileId}/download-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DocumentsNotificationsFeedApi:
+          Type: Api
+          Properties:
+            Path: /documents/notifications/feed
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        DocumentsNotificationsMarkSeenApi:
+          Type: Api
+          Properties:
+            Path: /documents/notifications/mark-seen
+            Method: POST
             RestApiId: !Ref ApiGateway
 
   AnnouncementsFunction:

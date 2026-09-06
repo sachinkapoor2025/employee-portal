@@ -761,3 +761,94 @@ export const fetchDocumentHistory = (documentType, email) => {
   if (email) qs.set("email", email);
   return api(`/documents?${qs.toString()}`, "GET");
 };
+
+function projectFolderPath(projectId, folderId, suffix = "") {
+  const base =
+    !folderId || folderId === "root"
+      ? `/documents/projects/${encodeURIComponent(projectId)}`
+      : `/documents/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}`;
+  return `${base}${suffix}`;
+}
+
+export const fetchDocumentProjects = () => api("/documents/projects", "GET");
+export const createDocumentProject = (name) =>
+  api("/documents/projects", "POST", { name });
+export const renameDocumentProject = (projectId, name) =>
+  api(`/documents/projects/${encodeURIComponent(projectId)}`, "PATCH", { name });
+export const deleteDocumentProject = (projectId) =>
+  api(`/documents/projects/${encodeURIComponent(projectId)}`, "DELETE");
+export const fetchDocumentProjectFolder = (projectId, folderId) =>
+  api(projectFolderPath(projectId, folderId, folderId && folderId !== "root" ? "" : "/folders"), "GET");
+export const createDocumentProjectSubfolder = (projectId, folderId, name) =>
+  api(projectFolderPath(projectId, folderId, "/subfolders"), "POST", { name });
+export const uploadDocumentProjectFiles = (projectId, folderId, payload) =>
+  api(projectFolderPath(projectId, folderId, "/files"), "POST", payload);
+export const renameDocumentProjectFolder = (projectId, folderId, name) =>
+  api(
+    `/documents/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}`,
+    "PATCH",
+    { name }
+  );
+export const deleteDocumentProjectFolder = (projectId, folderId) =>
+  api(
+    `/documents/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}`,
+    "DELETE"
+  );
+export const renameDocumentProjectFile = (projectId, folderId, fileId, name) =>
+  api(`${projectFolderPath(projectId, folderId)}/files/${encodeURIComponent(fileId)}`, "PATCH", {
+    name,
+  });
+export const deleteDocumentProjectFile = (projectId, folderId, fileId) =>
+  api(`${projectFolderPath(projectId, folderId)}/files/${encodeURIComponent(fileId)}`, "DELETE");
+export const getDocumentProjectDownloadUrl = (projectId, folderId, fileId) =>
+  api(
+    `${projectFolderPath(projectId, folderId)}/files/${encodeURIComponent(fileId)}/download-url`,
+    "POST",
+    {}
+  );
+
+function personalFolderPath(email, folderId, suffix = "") {
+  const owner = String(email || "").trim().toLowerCase();
+  const base = owner
+    ? `/documents/personal/${encodeURIComponent(owner)}`
+    : `/documents/personal`;
+  if (!folderId || folderId === "root") return `${base}${suffix}`;
+  return `${base}/folders/${encodeURIComponent(folderId)}${suffix}`;
+}
+
+export const fetchDocumentPersonalFolder = (email, folderId) =>
+  api(personalFolderPath(email, folderId), "GET");
+export const createDocumentPersonalSubfolder = (email, folderId, name) =>
+  api(personalFolderPath(email, folderId, "/subfolders"), "POST", { name });
+export const uploadDocumentPersonalFiles = (email, folderId, payload) =>
+  api(personalFolderPath(email, folderId, "/files"), "POST", payload);
+export const renameDocumentPersonalFolder = (email, folderId, name) =>
+  api(
+    `/documents/personal/${encodeURIComponent(email)}/folders/${encodeURIComponent(folderId)}`,
+    "PATCH",
+    { name }
+  );
+export const deleteDocumentPersonalFolder = (email, folderId) =>
+  api(
+    `/documents/personal/${encodeURIComponent(email)}/folders/${encodeURIComponent(folderId)}`,
+    "DELETE"
+  );
+export const renameDocumentPersonalFile = (email, folderId, fileId, name) =>
+  api(`${personalFolderPath(email, folderId)}/files/${encodeURIComponent(fileId)}`, "PATCH", {
+    name,
+  });
+export const deleteDocumentPersonalFile = (email, folderId, fileId) =>
+  api(`${personalFolderPath(email, folderId)}/files/${encodeURIComponent(fileId)}`, "DELETE");
+export const getDocumentPersonalDownloadUrl = (email, folderId, fileId) =>
+  api(
+    `${personalFolderPath(email, folderId)}/files/${encodeURIComponent(fileId)}/download-url`,
+    "POST",
+    {}
+  );
+
+export const fetchDocumentNotificationFeed = () =>
+  apiOptional("/documents/notifications/feed", "GET");
+export const markDocumentNotificationsSeen = (lastSeenAt) =>
+  apiOptional("/documents/notifications/mark-seen", "POST", {
+    lastSeenAt: lastSeenAt || new Date().toISOString(),
+  });

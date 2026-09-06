@@ -38,3 +38,32 @@ export function relativeTime(value) {
 export function unreadCount(items) {
   return (items || []).filter((n) => n && n.read !== true).length;
 }
+
+export function isDocumentEventUnread(event, lastSeenAt) {
+  const ms = Date.parse(event?.timestamp || "");
+  if (!Number.isFinite(ms)) return false;
+  if (!lastSeenAt) return true;
+  const seen = Date.parse(lastSeenAt);
+  if (!Number.isFinite(seen)) return true;
+  return ms > seen;
+}
+
+export function documentEventTitle(event) {
+  return String(event?.projectName || "").trim() || "Project files";
+}
+
+export function documentEventBody(event) {
+  const count = Number(event?.fileCount) || 0;
+  const files = `${count} file${count === 1 ? "" : "s"}`;
+  const path = String(event?.folderPath || event?.projectName || "").trim();
+  const by = String(event?.uploadedBy || "").trim();
+  const parts = [];
+  if (path) parts.push(path);
+  parts.push(`${files} uploaded`);
+  if (by) parts.push(`by ${by}`);
+  return parts.join(" · ");
+}
+
+export function notificationDocumentPath(employeeView) {
+  return employeeView ? "/documents" : "/admin/documents";
+}

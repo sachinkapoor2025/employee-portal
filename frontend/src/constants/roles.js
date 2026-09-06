@@ -30,6 +30,12 @@ export function isAdminPortalRole(role) {
   );
 }
 
+/** Documents project writes: Admin / Super Admin only — not Manager. */
+export function canManageProjectDocuments(role) {
+  const r = normalizeRole(role);
+  return r === ROLES.SUPER_ADMIN || r === ROLES.ADMIN;
+}
+
 export function roleLabel(role) {
   const r = normalizeRole(role);
   const found = ROLE_OPTIONS.find((o) => o.value === r);

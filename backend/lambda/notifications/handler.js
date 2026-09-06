@@ -339,7 +339,6 @@ async function processTraining(employee) {
 async function runNotifications() {
   const todayKey = dateKeyInTimeZone(new Date());
   const employees = await listActiveEmployees();
-  const types = await listDocTypes();
   const summary = {
     employees: employees.length,
     attendanceSent: 0,
@@ -356,12 +355,7 @@ async function runNotifications() {
     } catch (err) {
       console.error("ATTENDANCE_NOTIFY_ERROR", employee.email, err?.name);
     }
-    try {
-      const docs = await processDocuments(employee, types);
-      summary.documentsSent += docs.sent || 0;
-    } catch (err) {
-      console.error("DOCUMENT_NOTIFY_ERROR", employee.email, err?.name);
-    }
+    // Documents v1 dropped the missing-required-document reminder email.
     try {
       const training = await processTraining(employee);
       if (training.status === "SENT") summary.trainingSent += 1;
