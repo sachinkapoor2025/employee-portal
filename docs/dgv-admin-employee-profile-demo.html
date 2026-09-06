@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DGV — Admin employee profile (demo)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --dgv-font: "Inter", "Segoe UI", sans-serif;
+      --dgv-font-display: "Plus Jakarta Sans", Inter, sans-serif;
+      --dgv-bg: #F6F7F9;
+      --dgv-surface: #FFFFFF;
+      --dgv-text: #172033;
+      --dgv-text-secondary: #475569;
+      --dgv-text-muted: #7B8494;
+      --dgv-border: #E2E6EC;
+      --dgv-sidebar: #FFFFFF;
+      --dgv-danger: #DC2626;
+      --dgv-success: #15803D;
+      --dgv-accent: #8B5CF6;
+    }
+    [data-theme="dark"] {
+      --dgv-bg: #101720;
+      --dgv-surface: #172033;
+      --dgv-text: #F6F7F9;
+      --dgv-text-secondary: #C5CDD8;
+      --dgv-text-muted: #8B93A3;
+      --dgv-border: #2A3548;
+      --dgv-sidebar: #121A28;
+      --dgv-danger: #F87171;
+      --dgv-success: #4ADE80;
+      --dgv-accent: #A78BFA;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: var(--dgv-font); background: var(--dgv-bg); color: var(--dgv-text); }
+    .app { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
+    .main { min-width: 0; }
+    .sidebar { background: var(--dgv-sidebar); border-right: 1px solid var(--dgv-border); padding: 20px 14px; }
+    .brand { font-family: var(--dgv-font-display); font-weight: 700; margin: 0 8px 6px; }
+    .portal { margin: 0 8px 16px; font-size: 11px; font-weight: 700; color: var(--dgv-text-muted); letter-spacing: 0.06em; text-transform: uppercase; }
+    .nav-title { margin: 14px 8px 6px; font-size: 11px; font-weight: 700; color: var(--dgv-text-muted); letter-spacing: 0.05em; text-transform: uppercase; }
+    .nav { padding: 8px 12px; border-radius: 10px; color: var(--dgv-text-muted); font-weight: 600; font-size: 14px; }
+    .nav.active { background: rgba(139, 92, 246, 0.12); color: #7C3AED; }
+    [data-theme="dark"] .nav.active { color: #C4B5FD; }
+    .top { height: 64px; background: var(--dgv-surface); border-bottom: 1px solid var(--dgv-border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+    .note { background: #EEF2FF; color: #312E81; font-size: 13px; padding: 10px 24px; }
+    [data-theme="dark"] .note { background: #1E293B; color: #C7D2FE; }
+    .content { padding: 32px; max-width: 1280px; margin: 0 auto; width: 100%; }
+    .muted { color: var(--dgv-text-muted); font-size: 13px; }
+    .seg { display: flex; background: var(--dgv-bg); border-radius: 10px; padding: 3px; }
+    .seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-weight: 600; color: var(--dgv-text-muted); }
+    .seg button.on { background: var(--dgv-surface); color: var(--dgv-text); }
+
+    .page-card { background: var(--dgv-surface); border: 1px solid var(--dgv-border); border-radius: 14px; padding: 24px; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+    .page-header h1 { font-family: var(--dgv-font-display); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
+    .page-header p { margin: 0; font-size: 14px; color: var(--dgv-text-muted); }
+    .page-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+    .crumb { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 13px; font-weight: 600; color: var(--dgv-text-muted); }
+    .crumb button { border: 0; background: none; padding: 0; color: var(--dgv-text-secondary); font-weight: 600; cursor: pointer; }
+    .editing-dot { display: none; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; font-weight: 500; color: var(--dgv-text-secondary); }
+    .is-editing .editing-dot { display: inline-flex; }
+    .editing-dot i { width: 6px; height: 6px; border-radius: 999px; background: #2563EB; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 8px 0 24px; }
+    .stat { border: 1px solid var(--dgv-border); border-radius: 14px; padding: 16px; background: var(--dgv-bg); }
+    .stat label { display: block; font-size: 13px; color: var(--dgv-text-muted); font-weight: 500; margin-bottom: 6px; }
+    .stat strong { font-size: 24px; font-weight: 700; }
+
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
+    .filters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0 16px; }
+    .list-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+    .help { font-size: 12px; color: var(--dgv-text-muted); margin: 0 0 8px; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--dgv-border); vertical-align: middle; }
+    th { font-size: 12px; font-weight: 600; color: var(--dgv-text-muted); }
+    .email-link { border: 0; background: none; padding: 0; color: var(--dgv-accent); font-weight: 600; cursor: pointer; text-align: left; }
+    .name { font-weight: 600; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge-ok { background: rgba(21, 128, 61, 0.1); color: var(--dgv-success); }
+    .badge-off { background: rgba(220, 38, 38, 0.1); color: var(--dgv-danger); }
+    .role-select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--dgv-border); background: var(--dgv-surface); color: var(--dgv-text); max-width: 130px; }
+    .action-btns { display: flex; gap: 8px; align-items: center; }
+    .menu { position: relative; }
+    .dropdown {
+      position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+      min-width: 180px; background: var(--dgv-surface); border: 1px solid var(--dgv-border);
+      border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(23, 32, 51, 0.08);
+    }
+    .dropdown button {
+      display: block; width: 100%; text-align: left; border: 0; background: none;
+      padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--dgv-text);
+    }
+    .dropdown button:hover { background: var(--dgv-bg); }
+    .dropdown button.is-danger { color: var(--dgv-danger); }
+
+    .card { background: #FFFFFF; border: 1px solid #E2E6EC; border-radius: 14px; padding: 24px; }
+    [data-theme="dark"] .card { background: var(--dgv-surface); border-color: var(--dgv-border); }
+    .identity { display: flex; gap: 20px; align-items: flex-start; }
+    .avatar { width: 88px; height: 88px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #EEF0F3; color: #172033; font-weight: 700; font-size: 26px; flex-shrink: 0; }
+    [data-theme="dark"] .avatar { background: #243044; color: #F6F7F9; }
+    .identity h2 { font-family: var(--dgv-font-display); font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+    .meta { font-size: 14px; font-weight: 500; color: var(--dgv-text-secondary); margin: 0 0 6px; }
+    .role-line { font-size: 15px; }
+    .block { margin-top: 32px; }
+    .block h3 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+    .block .desc { font-size: 13px; color: var(--dgv-text-muted); margin: 0 0 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; }
+    .item label, .field label { display: block; font-size: 13px; font-weight: 500; color: #7B8494; margin: 0 0 4px; }
+    .item .value { font-size: 15px; font-weight: 500; }
+
+    input, select {
+      width: 100%; border: 1px solid #E2E6EC; border-radius: 8px; padding: 9px 12px;
+      min-height: 40px; background: #FFFFFF; color: #172033; font-size: 15px; font-family: inherit;
+    }
+    [data-theme="dark"] input, [data-theme="dark"] select { background: var(--dgv-surface); color: var(--dgv-text); border-color: var(--dgv-border); }
+    input:focus, select:focus { outline: none; border-color: #2563EB; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28); }
+    input:disabled { background: #F6F7F9; color: #475569; cursor: not-allowed; }
+    [data-theme="dark"] input:disabled { background: #101720; color: var(--dgv-text-secondary); }
+
+    .btn { border: 0; border-radius: 8px; height: 40px; padding: 0 16px; font-weight: 600; font-size: 14px; cursor: pointer; font-family: inherit; }
+    .btn-primary { background: #172033; color: #FFFFFF; }
+    [data-theme="dark"] .btn-primary { background: #F6F7F9; color: #172033; }
+    .btn-ghost { background: #FFFFFF; color: #172033; border: 1px solid #E2E6EC; }
+    [data-theme="dark"] .btn-ghost { background: transparent; color: var(--dgv-text); border-color: var(--dgv-border); }
+    .btn-soft { background: var(--dgv-bg); color: var(--dgv-text); border: 1px solid var(--dgv-border); }
+    .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
+    .btn-on { border-color: #172033; }
+    .toast { margin: 0 0 16px; padding: 12px 16px; border-radius: 8px; background: rgba(21, 128, 61, 0.1); color: var(--dgv-success); font-weight: 600; font-size: 14px; }
+    .toast-err { background: rgba(220, 38, 38, 0.1); color: var(--dgv-danger); }
+
+    @media (max-width: 960px) {
+      .stats, .filters { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .content { padding: 16px; }
+      .stats, .filters { grid-template-columns: 1fr; }
+      .page-header { flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .identity { flex-direction: column; align-items: center; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <p class="brand">DGV Portal</p>
+      <p class="portal">Admin</p>
+      <div class="nav-title">Overview</div>
+      <div class="nav">Dashboard</div>
+      <div class="nav-title">People</div>
+      <div class="nav active">Employees</div>
+      <div class="nav-title">Work Management</div>
+      <div class="nav">Tasks</div>
+      <div class="nav">Attendance</div>
+      <div class="nav">Leave</div>
+      <div class="nav-title">Company</div>
+      <div class="nav">Documents</div>
+      <div class="nav">Announcements</div>
+      <div class="nav">Training</div>
+      <div class="nav">Meetings</div>
+      <div class="nav">Software Center</div>
+      <div class="nav-title">Administration</div>
+      <div class="nav">Activity</div>
+      <div class="nav">Resignations</div>
+      <div class="nav">Settings</div>
+    </aside>
+    <div class="main">
+      <header class="top">
+        <span class="muted">Demo only — full Employees page + new profile/edit. Local Admin is unchanged.</span>
+        <div class="seg">
+          <button type="button" id="light" class="on">Day</button>
+          <button type="button" id="dark">Night</button>
+        </div>
+      </header>
+      <div class="note">
+        All current Employees actions are here: Add Employee, filters, email link, role dropdown, Edit menu (Edit profile / View / Activate-Deactivate / Reset password / Delete), and Track. Edit profile and View now open the new profile page instead of the small modal.
+      </div>
+      <main class="content">
+        <div id="toast" hidden></div>
+
+        <section id="listView" class="page-card">
+          <div class="page-header">
+            <div>
+              <h1>Employees</h1>
+              <p id="overviewDate">Overview</p>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><label>Total Employees</label><strong id="statTotal">0</strong></div>
+            <div class="stat"><label>Active</label><strong id="statActive">0</strong></div>
+            <div class="stat"><label>Inactive</label><strong id="statInactive">0</strong></div>
+            <div class="stat"><label>Admins</label><strong id="statAdmins">0</strong></div>
+          </div>
+          <div class="toolbar">
+            <button type="button" class="btn btn-primary" id="addBtn">+ Add Employee</button>
+            <button type="button" class="btn btn-soft" data-quick="">All Employees</button>
+            <button type="button" class="btn btn-ghost" data-quick="ACTIVE">Active</button>
+            <button type="button" class="btn btn-ghost" data-quick="BLOCKED">Inactive</button>
+          </div>
+          <h3 class="list-title">Employee List</h3>
+          <div class="filters">
+            <input id="search" type="search" placeholder="Search name, email, ID…" aria-label="Search employees" />
+            <select id="filterDept" aria-label="Filter by department"><option value="">All departments</option></select>
+            <select id="filterDesig" aria-label="Filter by designation"><option value="">All designations</option></select>
+            <select id="filterStatus" aria-label="Filter by status">
+              <option value="">All statuses</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="BLOCKED">BLOCKED</option>
+              <option value="PENDING">PENDING</option>
+            </select>
+          </div>
+          <p class="help"><strong>Edit</strong> menu se profile, activate/deactivate, reset password aur delete. <strong>Track</strong> se employee tracking khulega.</p>
+          <p id="emptyList" class="muted" hidden>No employees found.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Name</th>
+                  <th>Employee ID</th>
+                  <th>Department</th>
+                  <th>Designation</th>
+                  <th>Status</th>
+                  <th>Joining Date</th>
+                  <th>Role</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="employeeRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="profileView" hidden>
+          <nav class="crumb">
+            <button type="button" id="backList">← Employees</button>
+            <span>→</span>
+            <span id="crumbLabel">Employee Profile</span>
+          </nav>
+          <div class="page-header">
+            <div>
+              <h1 id="profileTitle">Employee Profile</h1>
+              <p id="pageSubtitle">Employee information and account details</p>
+              <span class="editing-dot"><i></i> Editing</span>
+            </div>
+            <div class="page-actions">
+              <button type="button" class="btn btn-ghost" id="trackFromProfile">Track</button>
+              <button type="button" class="btn btn-primary" id="editBtn">Edit Employee</button>
+              <button type="button" class="btn btn-ghost" id="cancelBtn" hidden>Cancel</button>
+              <button type="button" class="btn btn-primary" id="saveBtn" hidden>Save Changes</button>
+            </div>
+          </div>
+
+          <section class="card identity">
+            <div class="avatar" id="avatar">NB</div>
+            <div>
+              <h2 id="hdrName">—</h2>
+              <p class="meta role-line" id="hdrRoleLine"></p>
+              <p class="meta" id="hdrEmail"></p>
+              <p class="meta" id="hdrReports"></p>
+            </div>
+          </section>
+
+          <section class="block" id="viewPersonal">
+            <h3>Personal Information</h3>
+            <p class="desc">Basic employee identification and contact details</p>
+            <div class="card">
+              <div class="grid">
+                <div class="item"><label>Full Name</label><div class="value" data-view="name"></div></div>
+                <div class="item"><label>Employee ID</label><div class="value" data-view="empId"></div></div>
+                <div class="item"><label>Email</label><div class="value" data-view="email"></div></div>
+                <div class="item"><label>Phone</label><div class="value" data-view="phone"></div></div>
+              </div>
+            </div>
+          </section>
+          <section class="block" id="viewWork">
+            <h3>Work Information</h3>
+            <p class="desc">Role, department, skills and reporting structure</p>
+            <div class="card">
+              <div class="grid">
+                <div class="item"><label>Department</label><div class="value" data-view="department"></div></div>
+                <div class="item"><label>Designation</label><div class="value" data-view="designation"></div></div>
+                <div class="item"><label>Skill</label><div class="value" data-view="skillName"></div></div>
+                <div class="item"><label>Manager</label><div class="value" data-view="manager"></div></div>
+                <div class="item"><label>Group Lead</label><div class="value" data-view="groupLead"></div></div>
+                <div class="item"><label>Date of Joining</label><div class="value" data-view="dojLabel"></div></div>
+              </div>
+            </div>
+          </section>
+          <section class="block" id="viewAccount">
+            <h3>Account / Access Information</h3>
+            <p class="desc">Existing administrative controls already available to Admin</p>
+            <div class="card">
+              <div class="grid">
+                <div class="item"><label>Role</label><div class="value" data-view="roleLabel"></div></div>
+                <div class="item"><label>Status</label><div class="value" data-view="status"></div></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="block" id="editPersonal" hidden>
+            <h3>Personal Information</h3>
+            <p class="desc">Basic employee identification and contact details</p>
+            <div class="card">
+              <div class="grid">
+                <div class="field"><label for="name">Full Name</label><input id="name" /></div>
+                <div class="field"><label for="empId">Employee ID</label><input id="empId" placeholder="DGV001" /></div>
+                <div class="field"><label for="email">Email</label><input id="email" placeholder="name@mydgv.com" /></div>
+                <div class="field"><label for="phone">Phone</label><input id="phone" /></div>
+              </div>
+            </div>
+          </section>
+          <section class="block" id="editWork" hidden>
+            <h3>Work Information</h3>
+            <p class="desc">Role, department, skills and reporting structure</p>
+            <div class="card">
+              <div class="grid">
+                <div class="field"><label for="department">Department</label><input id="department" /></div>
+                <div class="field"><label for="designation">Designation</label><input id="designation" /></div>
+                <div class="field">
+                  <label for="skill">Skill</label>
+                  <select id="skill">
+                    <option value="">Select Skill</option>
+                    <option value="SKILL#SEO">SEO</option>
+                    <option value="SKILL#REACT">React / Node.js</option>
+                    <option value="SKILL#QA">QA</option>
+                  </select>
+                </div>
+                <div class="field"><label for="manager">Manager</label><input id="manager" /></div>
+                <div class="field"><label for="groupLead">Group Lead</label><input id="groupLead" /></div>
+                <div class="field"><label for="doj">Date of Joining</label><input id="doj" type="date" /></div>
+              </div>
+            </div>
+          </section>
+          <section class="block" id="editAccount" hidden>
+            <h3>Account / Access Information</h3>
+            <p class="desc">Existing administrative controls already available to Admin</p>
+            <div class="card">
+              <div class="grid">
+                <div class="field">
+                  <label for="role">Role</label>
+                  <select id="role">
+                    <option value="SUPER_ADMIN">Super Admin</option>
+                    <option value="ADMIN">Admin</option>
+                    <option value="MANAGER">Manager</option>
+                    <option value="EMPLOYEE">Employee</option>
+                  </select>
+                </div>
+                <div class="item">
+                  <label>Status</label>
+                  <div class="value" id="editStatus">ACTIVE</div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section id="trackView" hidden>
+          <nav class="crumb">
+            <button type="button" id="backFromTrack">← Employees</button>
+            <span>→</span>
+            <span>Employee Tracking</span>
+          </nav>
+          <div class="page-card">
+            <h1 style="margin:0 0 8px;font-size:28px;">Employee Tracking</h1>
+            <p class="muted" id="trackText">Existing Track page would open here for this employee. Demo only — tracking APIs are unchanged.</p>
+            <div style="margin-top:16px;display:flex;gap:8px;">
+              <button type="button" class="btn btn-primary" id="trackToProfile">Open Profile</button>
+              <button type="button" class="btn btn-ghost" id="trackBack">Back to Employees</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script>
+    const CURRENT_ADMIN = "sachin@mydgv.com";
+    const SKILLS = { "SKILL#SEO": "SEO", "SKILL#REACT": "React / Node.js", "SKILL#QA": "QA" };
+    const ROLES = { SUPER_ADMIN: "Super Admin", ADMIN: "Admin", MANAGER: "Manager", EMPLOYEE: "Employee" };
+    const empty = { email: "", name: "", empId: "", department: "", designation: "", skill: "", manager: "", groupLead: "", phone: "", doj: "", role: "EMPLOYEE", status: "ACTIVE" };
+
+    let employees = [
+      { email: "sachin@mydgv.com", name: "Sachin Kapoor", empId: "DGV001", department: "Leadership", designation: "Founder", skill: "SKILL#REACT", manager: "—", groupLead: "—", phone: "9650457697", doj: "2020-01-10", role: "SUPER_ADMIN", status: "ACTIVE" },
+      { email: "nitin.bhatt@mydgv.com", name: "Nitin Bhatt", empId: "DGV009", department: "IT", designation: "IT", skill: "SKILL#SEO", manager: "Sachin", groupLead: "Priya", phone: "8787366847", doj: "2026-08-20", role: "EMPLOYEE", status: "ACTIVE" },
+      { email: "priya.nair@mydgv.com", name: "Priya Nair", empId: "DGV004", department: "Delivery", designation: "Group Lead", skill: "SKILL#REACT", manager: "Sachin", groupLead: "—", phone: "9810011122", doj: "2023-03-14", role: "ADMIN", status: "ACTIVE" },
+      { email: "rahul.sharma@mydgv.com", name: "Rahul Sharma", empId: "DGV012", department: "Delivery", designation: "Software Engineer", skill: "SKILL#QA", manager: "Priya", groupLead: "Priya", phone: "9876543210", doj: "2024-04-12", role: "EMPLOYEE", status: "BLOCKED" },
+      { email: "anita.verma@mydgv.com", name: "Anita Verma", empId: "DGV018", department: "IT", designation: "Analyst", skill: "SKILL#SEO", manager: "Sachin", groupLead: "Priya", phone: "9900112233", doj: "2026-07-01", role: "EMPLOYEE", status: "PENDING" },
+    ];
+
+    let current = null;
+    let mode = "EDIT";
+    let openMenu = "";
+    let search = "";
+    let filterDept = "";
+    let filterDesig = "";
+    let filterStatus = "";
+
+    function initials(name) {
+      const parts = String(name || "").trim().split(/\s+/);
+      if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      return (parts[0] || "?").slice(0, 2).toUpperCase();
+    }
+    function formatDate(value) {
+      if (!value) return "—";
+      const d = new Date(`${value}T12:00:00`);
+      return Number.isFinite(d.getTime())
+        ? d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+        : value;
+    }
+    function display(v) { return String(v || "").trim() || "—"; }
+    function toast(msg, err) {
+      const el = document.getElementById("toast");
+      el.hidden = false;
+      el.className = err ? "toast toast-err" : "toast";
+      el.textContent = msg;
+      setTimeout(() => { el.hidden = true; }, 2800);
+    }
+
+    function filtered() {
+      return employees.filter((u) => {
+        if (filterStatus && u.status !== filterStatus) return false;
+        if (filterDept && (u.department || "") !== filterDept) return false;
+        if (filterDesig && (u.designation || "") !== filterDesig) return false;
+        if (!search) return true;
+        return [u.name, u.email, u.empId, u.department, u.designation, u.role].join(" ").toLowerCase().includes(search);
+      });
+    }
+
+    function renderStats() {
+      document.getElementById("statTotal").textContent = employees.length;
+      document.getElementById("statActive").textContent = employees.filter((u) => u.status === "ACTIVE").length;
+      document.getElementById("statInactive").textContent = employees.filter((u) => u.status === "BLOCKED" || u.status === "PENDING").length;
+      document.getElementById("statAdmins").textContent = employees.filter((u) => ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(u.role)).length;
+    }
+
+    function fillFilters() {
+      const depts = [...new Set(employees.map((u) => u.department).filter(Boolean))].sort();
+      const desigs = [...new Set(employees.map((u) => u.designation).filter(Boolean))].sort();
+      const deptEl = document.getElementById("filterDept");
+      const desigEl = document.getElementById("filterDesig");
+      deptEl.innerHTML = `<option value="">All departments</option>` + depts.map((d) => `<option ${d === filterDept ? "selected" : ""}>${d}</option>`).join("");
+      desigEl.innerHTML = `<option value="">All designations</option>` + desigs.map((d) => `<option ${d === filterDesig ? "selected" : ""}>${d}</option>`).join("");
+      document.getElementById("filterStatus").value = filterStatus;
+    }
+
+    function renderList() {
+      renderStats();
+      fillFilters();
+      const rows = filtered();
+      document.getElementById("emptyList").hidden = rows.length > 0;
+      document.getElementById("employeeRows").innerHTML = rows.map((u) => `
+        <tr>
+          <td><button type="button" class="email-link" data-act="edit" data-email="${u.email}" title="Edit employee">${u.email}</button></td>
+          <td class="name">${display(u.name)}</td>
+          <td>${display(u.empId)}</td>
+          <td>${display(u.department)}</td>
+          <td>${display(u.designation)}</td>
+          <td><span class="badge ${u.status === "ACTIVE" ? "badge-ok" : "badge-off"}">${u.status}</span></td>
+          <td>${formatDate(u.doj)}</td>
+          <td>
+            <select class="role-select" data-act="role" data-email="${u.email}">
+              ${Object.entries(ROLES).map(([v, l]) => `<option value="${v}" ${u.role === v ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </td>
+          <td>
+            <div class="action-btns">
+              <div class="menu">
+                <button type="button" class="btn btn-primary btn-sm" data-act="menu" data-email="${u.email}">Edit ▾</button>
+                ${openMenu === u.email ? `
+                  <div class="dropdown">
+                    <button type="button" data-act="edit" data-email="${u.email}">Edit profile</button>
+                    <button type="button" data-act="view" data-email="${u.email}">View</button>
+                    ${u.status === "ACTIVE"
+                      ? `<button type="button" data-act="deactivate" data-email="${u.email}">Deactivate</button>`
+                      : `<button type="button" data-act="activate" data-email="${u.email}">Activate</button>`}
+                    <button type="button" data-act="reset" data-email="${u.email}">Reset password</button>
+                    ${u.email !== CURRENT_ADMIN ? `<button type="button" class="is-danger" data-act="delete" data-email="${u.email}">Delete</button>` : ""}
+                  </div>` : ""}
+              </div>
+              <button type="button" class="btn btn-soft btn-sm" data-act="track" data-email="${u.email}">Track</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    function fillView(emp) {
+      const view = { ...emp, skillName: SKILLS[emp.skill] || emp.skill, roleLabel: ROLES[emp.role] || emp.role, dojLabel: formatDate(emp.doj) };
+      document.querySelectorAll("[data-view]").forEach((el) => { el.textContent = display(view[el.dataset.view]); });
+      document.getElementById("avatar").textContent = initials(emp.name || emp.email);
+      document.getElementById("hdrName").textContent = display(emp.name);
+      document.getElementById("hdrRoleLine").textContent = `${display(emp.designation)} · Employee ID: ${display(emp.empId)}`;
+      document.getElementById("hdrEmail").textContent = display(emp.email);
+      document.getElementById("hdrReports").textContent = `Manager: ${display(emp.manager)} · Group Lead: ${display(emp.groupLead)}`;
+    }
+
+    function fillForm(emp) {
+      ["name", "empId", "email", "phone", "department", "designation", "skill", "manager", "groupLead", "doj", "role"].forEach((key) => {
+        document.getElementById(key).value = emp[key] || "";
+      });
+      document.getElementById("email").disabled = mode === "EDIT";
+      document.getElementById("editStatus").textContent = emp.status || "ACTIVE";
+    }
+
+    function readForm() {
+      return {
+        ...(current || empty),
+        name: document.getElementById("name").value,
+        empId: document.getElementById("empId").value,
+        email: document.getElementById("email").value.trim().toLowerCase(),
+        phone: document.getElementById("phone").value,
+        department: document.getElementById("department").value,
+        designation: document.getElementById("designation").value,
+        skill: document.getElementById("skill").value,
+        manager: document.getElementById("manager").value,
+        groupLead: document.getElementById("groupLead").value,
+        doj: document.getElementById("doj").value,
+        role: document.getElementById("role").value,
+        status: current?.status || "ACTIVE",
+      };
+    }
+
+    function showOnly(id) {
+      ["listView", "profileView", "trackView"].forEach((x) => {
+        document.getElementById(x).hidden = x !== id;
+      });
+    }
+
+    function setEditing(on) {
+      document.getElementById("profileView").classList.toggle("is-editing", on);
+      document.getElementById("pageSubtitle").textContent = mode === "CREATE"
+        ? "Create a new employee account"
+        : on ? "Editing employee information" : "Employee information and account details";
+      document.getElementById("profileTitle").textContent = mode === "CREATE" ? "Add Employee" : "Employee Profile";
+      document.getElementById("crumbLabel").textContent = mode === "CREATE" ? "Add Employee" : "Employee Profile";
+      ["viewPersonal", "viewWork", "viewAccount"].forEach((id) => { document.getElementById(id).hidden = on; });
+      ["editPersonal", "editWork", "editAccount"].forEach((id) => { document.getElementById(id).hidden = !on; });
+      document.getElementById("editBtn").hidden = on || mode === "CREATE";
+      document.getElementById("trackFromProfile").hidden = mode === "CREATE";
+      document.getElementById("cancelBtn").hidden = !on;
+      document.getElementById("saveBtn").hidden = !on;
+    }
+
+    function openProfile(email, startEditing) {
+      const emp = employees.find((u) => u.email === email);
+      if (!emp) return;
+      mode = "EDIT";
+      current = { ...emp };
+      fillView(current);
+      fillForm(current);
+      showOnly("profileView");
+      setEditing(!!startEditing);
+      openMenu = "";
+    }
+
+    function openCreate() {
+      mode = "CREATE";
+      current = { ...empty };
+      fillView(current);
+      fillForm(current);
+      showOnly("profileView");
+      setEditing(true);
+    }
+
+    function openTrack(email) {
+      current = employees.find((u) => u.email === email) || current;
+      document.getElementById("trackText").textContent =
+        `Existing Track page would open here for ${current.email}. Demo only — tracking APIs and /admin/employees/:email/track are unchanged.`;
+      showOnly("trackView");
+      openMenu = "";
+    }
+
+    function showList() {
+      current = null;
+      mode = "EDIT";
+      openMenu = "";
+      showOnly("listView");
+      renderList();
+    }
+
+    document.getElementById("overviewDate").textContent =
+      "Overview for " + new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+    document.getElementById("employeeRows").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const email = btn.dataset.email;
+      if (act === "menu") {
+        openMenu = openMenu === email ? "" : email;
+        renderList();
+        return;
+      }
+      if (act === "edit") openProfile(email, true);
+      if (act === "view") openProfile(email, false);
+      if (act === "track") openTrack(email);
+      if (act === "activate") {
+        employees = employees.map((u) => u.email === email ? { ...u, status: "ACTIVE" } : u);
+        toast(`Activated ${email}`);
+        renderList();
+      }
+      if (act === "deactivate") {
+        employees = employees.map((u) => u.email === email ? { ...u, status: "BLOCKED" } : u);
+        toast(`Deactivated ${email}`);
+        renderList();
+      }
+      if (act === "reset") {
+        if (confirm(`Reset password for ${email}? A temporary password will be shown once.`)) {
+          alert(`Temporary password for ${email}:\n\nTemp#${Math.random().toString(36).slice(2, 10)}\n\nDemo only. Live app still uses resetUserPassword.`);
+        }
+      }
+      if (act === "delete") {
+        if (email === CURRENT_ADMIN) {
+          alert("You cannot delete your own account.");
+          return;
+        }
+        if (confirm(`Delete ${email}? This removes Cognito login, access, and profile permanently.`)) {
+          employees = employees.filter((u) => u.email !== email);
+          toast(`Deleted ${email}`);
+          renderList();
+        }
+      }
+    });
+    document.getElementById("employeeRows").addEventListener("change", (e) => {
+      const sel = e.target.closest("[data-act='role']");
+      if (!sel) return;
+      employees = employees.map((u) => u.email === sel.dataset.email ? { ...u, role: sel.value } : u);
+      toast(`Role updated for ${sel.dataset.email}. Live app still uses updateUserRole.`);
+      renderList();
+    });
+
+    document.getElementById("addBtn").onclick = openCreate;
+    document.getElementById("search").oninput = (e) => { search = e.target.value.trim().toLowerCase(); renderList(); };
+    document.getElementById("filterDept").onchange = (e) => { filterDept = e.target.value; renderList(); };
+    document.getElementById("filterDesig").onchange = (e) => { filterDesig = e.target.value; renderList(); };
+    document.getElementById("filterStatus").onchange = (e) => { filterStatus = e.target.value; renderList(); };
+    document.querySelectorAll("[data-quick]").forEach((btn) => {
+      btn.onclick = () => { filterStatus = btn.dataset.quick; renderList(); };
+    });
+    document.getElementById("backList").onclick = showList;
+    document.getElementById("backFromTrack").onclick = showList;
+    document.getElementById("trackBack").onclick = showList;
+    document.getElementById("trackFromProfile").onclick = () => openTrack(current.email);
+    document.getElementById("trackToProfile").onclick = () => openProfile(current.email, false);
+    document.getElementById("editBtn").onclick = () => { fillForm(current); setEditing(true); };
+    document.getElementById("cancelBtn").onclick = () => {
+      if (mode === "CREATE") { showList(); return; }
+      fillForm(current);
+      setEditing(false);
+    };
+    document.getElementById("saveBtn").onclick = () => {
+      const next = readForm();
+      if (!next.email || !next.skill) {
+        toast("Email and Skill are required", true);
+        return;
+      }
+      if (!next.email.endsWith("@mydgv.com")) {
+        toast("Only @mydgv.com email addresses are allowed.", true);
+        return;
+      }
+      const idx = employees.findIndex((u) => u.email === (current.email || next.email));
+      if (mode === "CREATE") {
+        if (employees.some((u) => u.email === next.email)) {
+          toast("That employee already exists.", true);
+          return;
+        }
+        employees.push(next);
+        toast("Employee created. Demo only — live app still uses saveUserProfile CREATE.");
+      } else {
+        employees[idx] = { ...employees[idx], ...next };
+        toast("Employee updated. Demo only — live app still uses saveUserProfile + updateUserRole.");
+      }
+      current = { ...next };
+      mode = "EDIT";
+      fillView(current);
+      setEditing(false);
+    };
+
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".menu") && openMenu) {
+        openMenu = "";
+        if (!document.getElementById("listView").hidden) renderList();
+      }
+    });
+
+    const root = document.documentElement;
+    document.getElementById("light").onclick = () => {
+      root.setAttribute("data-theme", "light");
+      document.getElementById("light").classList.add("on");
+      document.getElementById("dark").classList.remove("on");
+    };
+    document.getElementById("dark").onclick = () => {
+      root.setAttribute("data-theme", "dark");
+      document.getElementById("dark").classList.add("on");
+      document.getElementById("light").classList.remove("on");
+    };
+
+    renderList();
+  </script>
+</body>
+</html>

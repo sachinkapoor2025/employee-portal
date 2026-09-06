@@ -24,6 +24,7 @@ import RequestAccess from "./pages/RequestAccess";
 import Blocked from "./pages/Blocked";
 
 import ManageUsers from "./pages/Admin/ManageUsers";
+import AdminEmployeeProfile from "./pages/Admin/AdminEmployeeProfile";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import TaskDetails from "./pages/Admin/TaskDetails";
 import Resignations from "./pages/Admin/Resignations";
@@ -265,10 +266,26 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/employees/new"
+          element={
+            <RequireAuth adminOnly>
+              <AdminEmployeeProfile />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/admin/employees/:email/track"
           element={
             <RequireAuth adminOnly>
               <EmployeeTracking />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/employees/:email"
+          element={
+            <RequireAuth adminOnly>
+              <AdminEmployeeProfile />
             </RequireAuth>
           }
         />

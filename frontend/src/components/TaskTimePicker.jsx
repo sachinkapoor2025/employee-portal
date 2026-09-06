@@ -1,5 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { formLabel, formInput } from "../theme";
+import { createPortal } from "react-dom";
+import { Clock } from "lucide-react";
+import { formLabel } from "../theme";
+import { bindPickerDismiss, positionFixedPopover } from "../utils/pickerPopover";
 
 const HOURS = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"];
 const MINUTES = ["00", "15", "30", "45"];
@@ -77,6 +80,8 @@ export default function TaskTimePicker({
   const autoId = useId();
   const fieldId = id || autoId;
   const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
   const hourRefs = useRef({});
   const [open, setOpen] = useState(false);
 
@@ -87,17 +92,20 @@ export default function TaskTimePicker({
 
   useEffect(() => {
     if (!open) return undefined;
-    const onPointer = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
-    };
-    const onKey = (event) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
+    const place = () =>
+      positionFixedPopover(triggerRef.current, panelRef.current, { width: 280 });
+    const raf = window.requestAnimationFrame(place);
+    const onWin = () => place();
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    const unbind = bindPickerDismiss(() => setOpen(false), {
+      ignoreEls: [rootRef.current, panelRef.current],
+    });
     return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+      unbind();
     };
   }, [open]);
 
@@ -119,100 +127,104 @@ export default function TaskTimePicker({
   };
 
   return (
-    <div className="dgv-task-time" ref={rootRef}>
+    <div className="dgv-task-picker dgv-task-time" ref={rootRef}>
       <label style={formLabel} htmlFor={fieldId}>
         {label}
       </label>
-      <div className="dgv-task-time__box">
-        <button
-          id={fieldId}
-          type="button"
-          className="dgv-task-time__trigger"
-          style={{
-            ...formInput,
-            marginBottom: 0,
-            textAlign: "left",
-            cursor: "pointer",
-            border: error
-              ? "1px solid var(--dgv-danger)"
-              : formInput.border,
-          }}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          onClick={() => (open ? setOpen(false) : openPicker())}
-        >
+      <button
+        ref={triggerRef}
+        id={fieldId}
+        type="button"
+        className={`dgv-task-picker__trigger${error ? " is-error" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={label}
+        onClick={() => (open ? setOpen(false) : openPicker())}
+      >
+        <span className={value ? "" : "is-placeholder"}>
           {formatDisplay(value) || "Select time"}
-        </button>
-        {open ? (
-          <div className="dgv-task-time__panel" role="group" aria-label={label}>
-            <div className="dgv-task-time__col" role="listbox" aria-label="Hour">
-              {HOURS.map((hour) => (
+        </span>
+        <Clock size={18} strokeWidth={1.75} aria-hidden="true" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={panelRef}
+              className="dgv-task-picker__panel dgv-task-time__panel"
+              role="dialog"
+              aria-label={label}
+            >
+              <p className="dgv-task-picker__heading">Select time</p>
+              <div className="dgv-task-time__cols">
+                <div className="dgv-task-time__col" role="listbox" aria-label="Hour">
+                  <span className="dgv-task-time__col-label">Hour</span>
+                  {HOURS.map((hour) => (
+                    <button
+                      key={hour}
+                      type="button"
+                      ref={(node) => {
+                        hourRefs.current[hour] = node;
+                      }}
+                      role="option"
+                      aria-selected={selected.hour === hour}
+                      className={`dgv-task-time__opt ${
+                        selected.hour === hour ? "is-selected" : ""
+                      }`}
+                      onClick={() => commit({ ...selected, hour })}
+                    >
+                      {hour}
+                    </button>
+                  ))}
+                </div>
+                <div className="dgv-task-time__col" role="listbox" aria-label="Minute">
+                  <span className="dgv-task-time__col-label">Minute</span>
+                  {MINUTES.map((minute) => (
+                    <button
+                      key={minute}
+                      type="button"
+                      role="option"
+                      aria-selected={selected.minute === minute}
+                      className={`dgv-task-time__opt ${
+                        selected.minute === minute ? "is-selected" : ""
+                      }`}
+                      onClick={() => commit({ ...selected, minute })}
+                    >
+                      {minute}
+                    </button>
+                  ))}
+                </div>
+                <div className="dgv-task-time__col" role="listbox" aria-label="AM or PM">
+                  <span className="dgv-task-time__col-label">Period</span>
+                  {PERIODS.map((period) => (
+                    <button
+                      key={period}
+                      type="button"
+                      role="option"
+                      aria-selected={selected.period === period}
+                      className={`dgv-task-time__opt ${
+                        selected.period === period ? "is-selected" : ""
+                      }`}
+                      onClick={() => commit({ ...selected, period })}
+                    >
+                      {period}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="dgv-task-time__footer">
                 <button
-                  key={hour}
                   type="button"
-                  ref={(node) => {
-                    hourRefs.current[hour] = node;
-                  }}
-                  role="option"
-                  aria-selected={selected.hour === hour}
-                  className={`dgv-task-time__opt ${
-                    selected.hour === hour ? "is-selected" : ""
-                  }`}
-                  onClick={() => commit({ ...selected, hour })}
+                  className="dgv-btn dgv-btn--primary dgv-task-time__done"
+                  onClick={() => setOpen(false)}
                 >
-                  {hour}
+                  Done
                 </button>
-              ))}
-            </div>
-            <div className="dgv-task-time__col" role="listbox" aria-label="Minute">
-              {MINUTES.map((minute) => (
-                <button
-                  key={minute}
-                  type="button"
-                  role="option"
-                  aria-selected={selected.minute === minute}
-                  className={`dgv-task-time__opt ${
-                    selected.minute === minute ? "is-selected" : ""
-                  }`}
-                  onClick={() => commit({ ...selected, minute })}
-                >
-                  {minute}
-                </button>
-              ))}
-            </div>
-            <div className="dgv-task-time__col" role="listbox" aria-label="AM or PM">
-              {PERIODS.map((period) => (
-                <button
-                  key={period}
-                  type="button"
-                  role="option"
-                  aria-selected={selected.period === period}
-                  className={`dgv-task-time__opt ${
-                    selected.period === period ? "is-selected" : ""
-                  }`}
-                  onClick={() => commit({ ...selected, period })}
-                >
-                  {period}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-      {error ? (
-        <div
-          style={{
-            color: "var(--dgv-danger)",
-            fontSize: 12,
-            marginTop: 4,
-            marginBottom: 12,
-          }}
-        >
-          {error}
-        </div>
-      ) : (
-        <div style={{ marginBottom: 16 }} />
-      )}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+      {error ? <div className="dgv-field-error">{error}</div> : <div style={{ marginBottom: 16 }} />}
     </div>
   );
 }

@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
+import Modal, { confirmDiscardIfDirty } from "../../components/ui/Modal";
 import TaskTimePicker, {
   nextQuarterHourKolkata,
 } from "../../components/TaskTimePicker";
+import TaskDatePicker from "../../components/TaskDatePicker";
 import { fetchProjects, fetchTaskList, createProject, createTask, fetchUsers } from "../../services/api";
 import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
 import { displayNameFromEmail } from "../../utils/meetings";
@@ -303,13 +304,11 @@ export default function ManageTasks() {
     RED: 0,
     COMPLETED: 0,
   });
+  const emptyProjectForm = { name: "", client: "", description: "" };
   const [showProject, setShowProject] = useState(false);
   const [showTask, setShowTask] = useState(false);
-  const [projectForm, setProjectForm] = useState({
-    name: "",
-    client: "",
-    description: "",
-  });
+  const [projectForm, setProjectForm] = useState(emptyProjectForm);
+  const [taskBaseline, setTaskBaseline] = useState(null);
   const [taskForm, setTaskForm] = useState({
     title: "",
     description: "",
@@ -322,8 +321,7 @@ export default function ManageTasks() {
     dueTime: "",
     projectId: "",
   });
-  const [showInlineProject, setShowInlineProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
+  const [projectModalSource, setProjectModalSource] = useState("page");
   const [creatingProject, setCreatingProject] = useState(false);
   const [assigneeQuery, setAssigneeQuery] = useState("");
   const [showAllAssignees, setShowAllAssignees] = useState(false);
@@ -382,6 +380,26 @@ export default function ManageTasks() {
     writeFilter(FILTER_KEYS.employee, employeeFilter);
   }, [employeeFilter]);
 
+  const resumeTaskAfterProject = (project) => {
+    if (project?.projectId) {
+      setProjects((prev) =>
+        prev.some((p) => p.projectId === project.projectId)
+          ? prev
+          : [...prev, project]
+      );
+      setTaskForm((f) => ({ ...f, projectId: project.projectId }));
+      setFormErrors((e) => {
+        const next = { ...e };
+        delete next.projectId;
+        return next;
+      });
+    }
+    setShowProject(false);
+    setProjectForm(emptyProjectForm);
+    setProjectModalSource("page");
+    setShowTask(true);
+  };
+
   const saveProject = async () => {
     const name = String(projectForm.name || "").trim();
     if (!name) return;
@@ -389,16 +407,31 @@ export default function ManageTasks() {
       (p) => String(p.name || "").trim().toLowerCase() === name.toLowerCase()
     );
     if (existing) {
+      if (projectModalSource === "task") {
+        resumeTaskAfterProject(existing);
+        return;
+      }
       setProjectId(existing.projectId);
       setShowProject(false);
-      setProjectForm({ name: "", client: "", description: "" });
+      setProjectForm(emptyProjectForm);
       return;
     }
-    const created = await createProject({ ...projectForm, name });
-    setShowProject(false);
-    setProjectForm({ name: "", client: "", description: "" });
-    if (created?.projectId) setProjectId(created.projectId);
-    load();
+    setCreatingProject(true);
+    try {
+      const created = await createProject({ ...projectForm, name });
+      if (projectModalSource === "task") {
+        resumeTaskAfterProject(created);
+        return;
+      }
+      setShowProject(false);
+      setProjectForm(emptyProjectForm);
+      if (created?.projectId) setProjectId(created.projectId);
+      load();
+    } catch (err) {
+      alert(err?.message || "Unable to create project.");
+    } finally {
+      setCreatingProject(false);
+    }
   };
 
   const emptyTaskForm = {
@@ -477,8 +510,6 @@ export default function ManageTasks() {
       setTaskForm(emptyTaskForm);
       setAssigneeQuery("");
       setShowAllAssignees(false);
-      setShowInlineProject(false);
-      setNewProjectName("");
       load();
     } catch (err) {
       setFormErrors({
@@ -491,52 +522,11 @@ export default function ManageTasks() {
 
   const CREATE_PROJECT_VALUE = "__create_project__";
 
-  const createProjectFromTaskForm = async () => {
-    const name = newProjectName.trim();
-    if (!name) {
-      setFormErrors((e) => ({ ...e, projectId: "Project name is required." }));
-      return;
-    }
-    const existing = projects.find(
-      (p) => String(p.name || "").trim().toLowerCase() === name.toLowerCase()
-    );
-    if (existing) {
-      setTaskForm((f) => ({ ...f, projectId: existing.projectId }));
-      setShowInlineProject(false);
-      setNewProjectName("");
-      setFormErrors((e) => {
-        const next = { ...e };
-        delete next.projectId;
-        return next;
-      });
-      return;
-    }
-    setCreatingProject(true);
-    try {
-      const created = await createProject({ name });
-      if (created?.projectId) {
-        setProjects((prev) =>
-          prev.some((p) => p.projectId === created.projectId)
-            ? prev
-            : [...prev, created]
-        );
-        setTaskForm((f) => ({ ...f, projectId: created.projectId }));
-      }
-      setShowInlineProject(false);
-      setNewProjectName("");
-      setFormErrors((e) => {
-        const next = { ...e };
-        delete next.projectId;
-        return next;
-      });
-    } catch (err) {
-      setFormErrors((e) => ({
-        ...e,
-        projectId: err.message || "Unable to create project.",
-      }));
-    } finally {
-      setCreatingProject(false);
-    }
+  const openProjectFromTask = () => {
+    setProjectModalSource("task");
+    setProjectForm(emptyProjectForm);
+    setShowTask(false);
+    setShowProject(true);
   };
 
   const toggleAssignee = (email) => {
@@ -595,6 +585,27 @@ export default function ManageTasks() {
     });
   };
 
+  const projectDirty = Boolean(
+    String(projectForm.name || "").trim() ||
+      String(projectForm.client || "").trim() ||
+      String(projectForm.description || "").trim()
+  );
+  const taskDirty =
+    !!taskBaseline && JSON.stringify(taskForm) !== JSON.stringify(taskBaseline);
+
+  const closeProjectModal = () => {
+    const fromTask = projectModalSource === "task";
+    setShowProject(false);
+    setProjectForm(emptyProjectForm);
+    setProjectModalSource("page");
+    if (fromTask) setShowTask(true);
+  };
+
+  const closeTaskModal = () => {
+    if (savingTask) return;
+    setShowTask(false);
+  };
+
   return (
     <Layout>
       <div style={{ ...pageCard, maxWidth: 1200 }}>
@@ -611,7 +622,11 @@ export default function ManageTasks() {
             <button
               type="button"
               className="dgv-btn dgv-btn--secondary"
-              onClick={() => setShowProject(true)}
+              onClick={() => {
+                setProjectModalSource("page");
+                setProjectForm(emptyProjectForm);
+                setShowProject(true);
+              }}
             >
               + Project
             </button>
@@ -619,17 +634,17 @@ export default function ManageTasks() {
               type="button"
               className="dgv-btn dgv-btn--primary"
               onClick={() => {
-                setTaskForm({
+                const next = {
                   ...emptyTaskForm,
                   projectId: projectId || "",
                   startTime: nextQuarterHourKolkata(),
                   dueTime: nextQuarterHourKolkata(),
-                });
+                };
+                setTaskForm(next);
+                setTaskBaseline(next);
                 setFormErrors({});
                 setAssigneeQuery("");
                 setShowAllAssignees(false);
-                setShowInlineProject(false);
-                setNewProjectName("");
                 setShowTask(true);
               }}
             >
@@ -851,8 +866,37 @@ export default function ManageTasks() {
         )}
       </div>
 
-      {showProject && (
-        <Modal title="New Project" onClose={() => setShowProject(false)}>
+      <Modal
+        open={showProject}
+        title="New Project"
+        dirty={projectDirty}
+        closeDisabled={creatingProject}
+        onClose={closeProjectModal}
+        footer={
+          <>
+            <button
+              type="button"
+              className="dgv-btn dgv-btn--outline"
+              disabled={creatingProject}
+              onClick={() => {
+                if (creatingProject) return;
+                if (!confirmDiscardIfDirty(projectDirty)) return;
+                closeProjectModal();
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="dgv-btn dgv-btn--primary"
+              onClick={saveProject}
+              disabled={creatingProject}
+            >
+              {creatingProject ? "Creating..." : "Create"}
+            </button>
+          </>
+        }
+      >
           <Field
             label="Name"
             value={projectForm.name}
@@ -870,22 +914,40 @@ export default function ManageTasks() {
               setProjectForm({ ...projectForm, description: v })
             }
           />
-          <button type="button" className="dgv-btn dgv-btn--primary" onClick={saveProject}>
-            Create
-          </button>
-        </Modal>
-      )}
+      </Modal>
 
-      {showTask && (
-        <Modal
-          title="New Task"
-          maxWidth={720}
-          onClose={() =>
-            !savingTask &&
-            !creatingProject &&
-            setShowTask(false)
-          }
-        >
+      <Modal
+        open={showTask}
+        title="New Task"
+        maxWidth={720}
+        dirty={taskDirty}
+        closeDisabled={savingTask}
+        onClose={closeTaskModal}
+        footer={
+          <>
+            <button
+              type="button"
+              className="dgv-btn dgv-btn--outline"
+              disabled={savingTask}
+              onClick={() => {
+                if (savingTask) return;
+                if (!confirmDiscardIfDirty(taskDirty)) return;
+                closeTaskModal();
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="dgv-btn dgv-btn--primary"
+              onClick={saveTask}
+              disabled={savingTask}
+            >
+              {savingTask ? "Creating..." : "Create Task"}
+            </button>
+          </>
+        }
+      >
           {formErrors.form ? (
             <div className="dgv-alert dgv-alert--error" style={{ marginBottom: 12 }}>
               {formErrors.form}
@@ -914,21 +976,13 @@ export default function ManageTasks() {
                     ? "1px solid var(--dgv-danger)"
                     : formSelect.border,
                 }}
-                value={showInlineProject ? CREATE_PROJECT_VALUE : taskForm.projectId}
+                value={taskForm.projectId}
                 onChange={(e) => {
                   const value = e.target.value;
                   if (value === CREATE_PROJECT_VALUE) {
-                    setShowInlineProject(true);
-                    setTaskForm({ ...taskForm, projectId: "" });
-                    setFormErrors((err) => {
-                      const next = { ...err };
-                      delete next.projectId;
-                      return next;
-                    });
+                    openProjectFromTask();
                     return;
                   }
-                  setShowInlineProject(false);
-                  setNewProjectName("");
                   setTaskForm({ ...taskForm, projectId: value });
                 }}
               >
@@ -940,51 +994,6 @@ export default function ManageTasks() {
                 ))}
                 <option value={CREATE_PROJECT_VALUE}>+ Create New Project</option>
               </select>
-              {showInlineProject ? (
-                <div
-                  style={{
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 16,
-                  }}
-                >
-                  <label style={formLabel}>New Project Name</label>
-                  <input
-                    style={formInput}
-                    placeholder="Enter project name"
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                  />
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      style={{
-                        ...buttonPrimary,
-                        background: "transparent",
-                        color: colors.text,
-                        border: `1px solid ${colors.border}`,
-                        boxShadow: "none",
-                      }}
-                      onClick={() => {
-                        setShowInlineProject(false);
-                        setNewProjectName("");
-                      }}
-                      disabled={creatingProject}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="dgv-btn dgv-btn--primary"
-                      onClick={createProjectFromTaskForm}
-                      disabled={creatingProject}
-                    >
-                      {creatingProject ? "Creating..." : "Create Project"}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
               {formErrors.projectId ? (
                 <div
                   style={{
@@ -1161,9 +1170,9 @@ export default function ManageTasks() {
                 ))}
               </select>
             </div>
-            <Field
+            <TaskDatePicker
+              id="task-start-date"
               label="Start Date *"
-              type="date"
               value={taskForm.startDate}
               error={formErrors.startDate}
               onChange={(v) => setTaskForm({ ...taskForm, startDate: v })}
@@ -1175,9 +1184,9 @@ export default function ManageTasks() {
               error={formErrors.startTime}
               onChange={(v) => setTaskForm({ ...taskForm, startTime: v })}
             />
-            <Field
+            <TaskDatePicker
+              id="task-deadline-date"
               label="Deadline Date *"
-              type="date"
               value={taskForm.dueDate}
               error={formErrors.dueDate}
               onChange={(v) => setTaskForm({ ...taskForm, dueDate: v })}
@@ -1207,59 +1216,8 @@ export default function ManageTasks() {
               ) : null}
             </div>
           </div>
-          <button
-            type="button"
-            className="dgv-btn dgv-btn--primary"
-            style={{ marginTop: 4 }}
-            onClick={saveTask}
-            disabled={savingTask || creatingProject}
-          >
-            {savingTask ? "Creating..." : "Create Task"}
-          </button>
-        </Modal>
-      )}
+      </Modal>
     </Layout>
-  );
-}
-
-function Modal({ title, children, onClose, maxWidth = 440 }) {
-  return createPortal(
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: "rgba(0,0,0,0.5)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 2000,
-        padding: 16,
-        overflowY: "auto",
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          background: "var(--dgv-card)",
-          color: "var(--dgv-text)",
-          padding: 24,
-          borderRadius: 12,
-          width: "100%",
-          maxWidth,
-          border: `1px solid ${colors.border}`,
-          maxHeight: "calc(100vh - 32px)",
-          overflowY: "auto",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 style={{ marginTop: 0 }}>{title}</h3>
-        {children}
-      </div>
-    </div>,
-    document.body
   );
 }
 

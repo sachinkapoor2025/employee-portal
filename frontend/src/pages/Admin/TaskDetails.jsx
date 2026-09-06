@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Button from "../../components/ui/Button";
+import Modal from "../../components/ui/Modal";
 import {
   fetchTaskById,
   fetchTaskActivity,
@@ -923,17 +924,6 @@ function InfoRow({ label, value, danger }) {
   );
 }
 
-function Modal({ title, children, onClose }) {
-  return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>{title}</h3>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 const sectionBox = {
   padding: 18,
   borderRadius: 12,
@@ -947,30 +937,6 @@ const sectionTitle = {
   fontWeight: 700,
   letterSpacing: 0.5,
   color: colors.textMuted,
-};
-
-const overlayStyle = {
-  position: "fixed",
-  inset: 0,
-  background: "rgba(0,0,0,0.5)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  zIndex: 2000,
-  padding: 16,
-};
-
-const modalStyle = {
-  background: "var(--dgv-card)",
-  color: "var(--dgv-text)",
-  padding: 24,
-  borderRadius: 12,
-  maxHeight: "90vh",
-  overflowY: "auto",
-  width: "100%",
-  maxWidth: 480,
-  border: "1px solid var(--dgv-border)",
-  boxShadow: "var(--dgv-shadow-lg)",
 };
 
 const modalActions = {

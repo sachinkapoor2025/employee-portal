@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
 import {
@@ -9,17 +10,66 @@ import {
 } from "../services/api";
 import { getLoggedInEmail } from "../services/auth";
 import { s3KeyFromFileUrl } from "../utils/documentView";
-import {
-  colors,
-  pageCard,
-  pageTitle,
-  pageSubtitle,
-  formLabel,
-  formInput,
-  buttonPrimary,
-  alertSuccess,
-  alertError,
-} from "../theme";
+import { alertSuccess, alertError } from "../theme";
+
+function displayValue(value) {
+  const text = String(value ?? "").trim();
+  return text || "—";
+}
+
+function profileInitials(name, email) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+  if (parts[0]?.length >= 2) return parts[0].slice(0, 2).toUpperCase();
+  if (parts[0]) return parts[0][0].toUpperCase();
+  const local = String(email || "")
+    .split("@")[0]
+    .replace(/[^a-zA-Z0-9]/g, "");
+  return (local.slice(0, 2) || "?").toUpperCase();
+}
+
+const PERSONAL_FIELDS = [
+  { key: "name", label: "Full Name", editable: true },
+  { key: "empId", label: "Employee ID", editable: false },
+  { key: "email", label: "Email", editable: false },
+  { key: "phone", label: "Phone", editable: true },
+];
+
+const WORK_FIELDS = [
+  { key: "designation", label: "Designation", editable: true },
+  { key: "skill", label: "Skill", editable: true },
+  { key: "manager", label: "Manager", editable: false },
+  { key: "groupLead", label: "Group Lead", editable: false },
+  { key: "doj", label: "Date of Joining", editable: false },
+];
+
+function ProfileFieldGrid({ fields, editing, profile, draft, onDraftChange }) {
+  return (
+    <div className="dgv-profile-grid">
+      {fields.map(({ key, label, editable }) => {
+        const canEdit = editing && editable;
+        const raw = canEdit ? draft[key] : profile[key];
+        return (
+          <div key={key} className="dgv-profile-item">
+            <label htmlFor={editing ? `profile-${key}` : undefined}>{label}</label>
+            {editing ? (
+              <input
+                id={`profile-${key}`}
+                disabled={!canEdit}
+                value={raw || ""}
+                onChange={(e) => onDraftChange(key, e.target.value)}
+              />
+            ) : (
+              <div className="dgv-profile-value">{displayValue(raw)}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function imageContentType(file) {
   const t = String(file?.type || "").trim();
@@ -87,6 +137,7 @@ async function resolveProfilePhotoSrc(data) {
 }
 
 export default function Profile() {
+  const navigate = useNavigate();
   const [profile, setProfile] = useState({});
   const [loading, setLoading] = useState(true);
   const [preview, setPreview] = useState(null);
@@ -233,138 +284,146 @@ export default function Profile() {
     }
   };
 
+  const updateDraft = (key, value) => {
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  };
+
   if (loading) {
     return (
       <Layout>
-        <div style={pageCard}>
-          <p style={{ color: colors.textMuted }}>Loading profile...</p>
+        <div className="dgv-profile-page">
+          <p className="dgv-profile-loading">Loading profile...</p>
         </div>
       </Layout>
     );
   }
 
-  const fields = [
-    { key: "name", label: "Full Name", editable: true },
-    { key: "empId", label: "Employee ID", editable: false },
-    { key: "email", label: "Email", editable: false },
-    { key: "designation", label: "Designation", editable: true },
-    { key: "skill", label: "Skill", editable: true },
-    { key: "manager", label: "Manager", editable: false },
-    { key: "groupLead", label: "Group Lead", editable: false },
-    { key: "phone", label: "Phone", editable: true },
-    { key: "doj", label: "Date of Joining", editable: false },
-  ];
-
   return (
     <Layout>
-      <div style={pageCard}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
+      <div className={`dgv-profile-page${editing ? " is-editing" : ""}`}>
+        <div className="dgv-profile-page-header">
           <div>
-            <h2 style={pageTitle}>My Profile</h2>
-            <p style={pageSubtitle}>Your employee information at DGV.</p>
+            <h1>Profile</h1>
+            <p>
+              {editing
+                ? "Editing employee information"
+                : "Your employee information at DGV."}
+            </p>
+            {editing ? (
+              <span className="dgv-profile-editing-dot">
+                <i /> Editing
+              </span>
+            ) : null}
           </div>
-          {editing ? (
-            <div style={{ display: "flex", gap: 8 }}>
-              <Button variant="ghost" onClick={cancelEdit} disabled={saving}>
-                Cancel
-              </Button>
-              <Button onClick={saveEdit} loading={saving}>
-                Save
-              </Button>
-            </div>
-          ) : (
-            <Button onClick={startEdit}>Edit</Button>
-          )}
+          <div className="dgv-profile-page-actions">
+            {editing ? (
+              <>
+                <Button variant="ghost" onClick={cancelEdit} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button onClick={saveEdit} loading={saving}>
+                  Save Changes
+                </Button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="dgv-exit-btn"
+                onClick={() => navigate("/exit")}
+              >
+                Exit Organization
+              </button>
+            )}
+          </div>
         </div>
 
-        {message ? <div style={alertSuccess}>{message}</div> : null}
-        {error ? <div style={alertError}>{error}</div> : null}
+        {message ? (
+          <div style={{ ...alertSuccess, marginTop: 0, marginBottom: 16 }}>{message}</div>
+        ) : null}
+        {error ? (
+          <div style={{ ...alertError, marginTop: 0, marginBottom: 16 }}>{error}</div>
+        ) : null}
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            gap: 32,
-          }}
-        >
-          <div style={{ textAlign: "center" }}>
-            <label style={{ ...formLabel, textAlign: "left" }}>Profile Image</label>
+        <section className="dgv-profile-card dgv-profile-identity">
+          {!editing ? (
+            <div className="dgv-profile-identity-actions">
+              <Button className="dgv-profile-edit" onClick={startEdit}>
+                Edit Profile
+              </Button>
+            </div>
+          ) : null}
+          <div className="dgv-profile-avatar-wrap">
             <div
-              style={{
-                margin: "10px auto 16px",
-                width: 140,
-                height: 140,
-                borderRadius: "50%",
-                border: `3px solid ${colors.primary}`,
-                overflow: "hidden",
-                background: colors.background,
-              }}
+              className="dgv-profile-avatar"
+              aria-hidden={preview ? undefined : true}
             >
               {preview ? (
                 <img
                   src={preview}
-                  alt="profile"
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  alt={profile.name ? `${profile.name} profile photo` : "Profile photo"}
                   onError={() => setPreview(null)}
                 />
               ) : (
-                <div
-                  style={{
-                    height: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: colors.textMuted,
-                    fontSize: 13,
-                  }}
-                >
-                  No Image
-                </div>
+                <span>{profileInitials(profile.name, email)}</span>
               )}
             </div>
-
             {editing ? (
-              <label style={{ ...buttonPrimary, display: "inline-block", cursor: "pointer" }}>
-                {uploading ? "Uploading..." : "Change Photo"}
+              <label className="dgv-profile-change-photo">
+                {uploading ? "Uploading..." : "Change photo"}
                 <input
                   type="file"
                   accept="image/*"
                   onChange={handleImageChange}
                   disabled={uploading}
-                  style={{ display: "none" }}
                 />
               </label>
             ) : null}
           </div>
-
-          <div>
-            {fields.map(({ key, label, editable }) => {
-              const canEdit = editing && editable;
-              const value = canEdit ? draft[key] : profile[key];
-              return (
-                <div key={key} style={{ marginBottom: 14 }}>
-                  <label style={formLabel}>{label}</label>
-                  <input
-                    disabled={!canEdit}
-                    value={value || ""}
-                    style={formInput}
-                    onChange={(e) =>
-                      setDraft((prev) => ({ ...prev, [key]: e.target.value }))
-                    }
-                  />
-                </div>
-              );
-            })}
+          <div className="dgv-profile-identity__body">
+            <h2>{displayValue(profile.name)}</h2>
+            <p className="dgv-profile-role">
+              {displayValue(profile.designation)} · Employee ID:{" "}
+              {displayValue(profile.empId)}
+            </p>
+            <p className="dgv-profile-email">{displayValue(profile.email || email)}</p>
+            <p className="dgv-profile-reports">
+              Manager: {displayValue(profile.manager)} · Group Lead:{" "}
+              {displayValue(profile.groupLead)}
+            </p>
           </div>
-        </div>
+        </section>
+
+        <section className="dgv-profile-block">
+          <h2>Personal Information</h2>
+          <p className="dgv-profile-section-desc">
+            Basic employee identification and contact details
+          </p>
+          <div className="dgv-profile-card">
+            <ProfileFieldGrid
+              fields={PERSONAL_FIELDS}
+              editing={editing}
+              profile={profile}
+              draft={draft}
+              onDraftChange={updateDraft}
+            />
+          </div>
+        </section>
+
+        <section className="dgv-profile-block">
+          <h2>Work Information</h2>
+          <p className="dgv-profile-section-desc">
+            Role, skills and reporting structure
+          </p>
+          <div className="dgv-profile-card">
+            <ProfileFieldGrid
+              fields={WORK_FIELDS}
+              editing={editing}
+              profile={profile}
+              draft={draft}
+              onDraftChange={updateDraft}
+            />
+          </div>
+        </section>
       </div>
     </Layout>
   );

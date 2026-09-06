@@ -6,44 +6,26 @@ import Button from "../../components/ui/Button";
 import { StatCard } from "../../components/ui/Card";
 import {
   fetchUsers,
-  fetchSkills,
   fetchUserProfile,
-  saveUserProfile,
   updateUserStatus,
   updateUserRole,
   deleteUser,
   resetUserPassword,
 } from "../../services/api";
 import { getLoggedInEmail } from "../../services/auth";
-import { ROLE_OPTIONS, normalizeRole, roleLabel } from "../../constants/roles";
+import { ROLE_OPTIONS, normalizeRole } from "../../constants/roles";
 import {
   colors,
   pageCard,
   pageTitle,
   pageSubtitle,
-  formLabel,
   formInput,
   formSelect,
 } from "../../theme";
 
-const emptyForm = {
-  email: "",
-  name: "",
-  empId: "",
-  department: "",
-  designation: "",
-  skill: "",
-  manager: "",
-  groupLead: "",
-  phone: "",
-  doj: "",
-  role: "EMPLOYEE",
-};
-
 export default function ManageUsers() {
   const navigate = useNavigate();
   const [users, setUsers] = useState([]);
-  const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -52,15 +34,8 @@ export default function ManageUsers() {
   const [filterStatus, setFilterStatus] = useState("");
   const [editMenuEmail, setEditMenuEmail] = useState("");
 
-  const [profileView, setProfileView] = useState(null);
-  const [showModal, setShowModal] = useState(false);
-  const [mode, setMode] = useState("CREATE");
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-
   useEffect(() => {
     loadUsers();
-    loadSkills();
   }, []);
 
   useEffect(() => {
@@ -120,15 +95,6 @@ export default function ManageUsers() {
     }
   };
 
-  const loadSkills = async () => {
-    try {
-      const data = await fetchSkills();
-      setSkills(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   const departments = useMemo(() => {
     const set = new Set(
       users.map((u) => u.department).filter((d) => d && String(d).trim())
@@ -143,129 +109,16 @@ export default function ManageUsers() {
     return Array.from(set).sort();
   }, [users]);
 
-  const openProfileView = async (email) => {
-    try {
-      const profile = await fetchUserProfile(email);
-      const row = users.find((u) => u.email === email);
-      setProfileView({
-        ...profile,
-        email,
-        role: row?.role,
-        status: row?.status,
-        department: profile?.department || row?.department,
-      });
-    } catch (err) {
-      alert(err.message || "Failed to load profile");
-    }
+  const openProfileView = (email) => {
+    navigate(`/admin/employees/${encodeURIComponent(email)}`);
   };
 
   const openCreateUser = () => {
-    setMode("CREATE");
-    setForm(emptyForm);
-    setShowModal(true);
+    navigate("/admin/employees/new");
   };
 
-  const openEditUser = async (email) => {
-    setMode("EDIT");
-    const profile = await fetchUserProfile(email);
-    const row = users.find((u) => u.email === email);
-    setForm({
-      email,
-      name: profile?.name || "",
-      empId: profile?.empId || "",
-      department: profile?.department || row?.department || "",
-      designation: profile?.designation || "",
-      skill: profile?.skill || "",
-      manager: profile?.manager || "",
-      groupLead: profile?.groupLead || "",
-      phone: profile?.phone || "",
-      doj: profile?.doj || "",
-      role: normalizeRole(row?.role || "EMPLOYEE"),
-    });
-    setShowModal(true);
-  };
-
-  const handleChange = (e) =>
-    setForm({ ...form, [e.target.name]: e.target.value });
-
-  const saveProfile = async () => {
-    const email = (form.email || "").trim().toLowerCase();
-
-    if (!email || !form.skill) {
-      alert("Email and Skill are required");
-      return;
-    }
-    if (!email.endsWith("@mydgv.com")) {
-      alert("Only @mydgv.com email addresses are allowed.");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const result = await saveUserProfile({
-        mode,
-        email,
-        role: normalizeRole(form.role),
-        profile: {
-          email,
-          name: form.name || "",
-          empId: form.empId || "",
-          department: form.department || "",
-          designation: form.designation || "",
-          skill: form.skill || "",
-          manager: form.manager || "",
-          groupLead: form.groupLead || "",
-          phone: form.phone || "",
-          doj: form.doj || "",
-        },
-      });
-
-      if (mode === "EDIT") {
-        await updateUserRole(email, normalizeRole(form.role));
-      }
-
-      if (result?.temporaryPassword) {
-        alert(
-          `Employee created successfully.\n\nTemporary password:\n${result.temporaryPassword}\n\nShare this with the employee.`
-        );
-      } else if (result?.warning) {
-        alert(result.warning);
-      }
-
-      // Show saved fields immediately (don't wait only on list API shape)
-      setUsers((prev) => {
-        const next = {
-          email,
-          name: form.name || "",
-          empId: form.empId || "",
-          department: form.department || "",
-          designation: form.designation || "",
-          skill: form.skill || "",
-          manager: form.manager || "",
-          groupLead: form.groupLead || "",
-          phone: form.phone || "",
-          doj: form.doj || "",
-          role: normalizeRole(form.role),
-          status: "ACTIVE",
-        };
-        const idx = prev.findIndex(
-          (u) => String(u.email).toLowerCase() === email
-        );
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = { ...copy[idx], ...next };
-          return copy;
-        }
-        return [...prev, next];
-      });
-
-      setShowModal(false);
-      await loadUsers();    } catch (err) {
-      console.error(err);
-      alert(err?.message || "Failed to save employee.");
-    } finally {
-      setSaving(false);
-    }
+  const openEditUser = (email) => {
+    navigate(`/admin/employees/${encodeURIComponent(email)}?edit=1`);
   };
 
   const handleDeleteUser = async (email) => {
@@ -717,217 +570,6 @@ export default function ManageUsers() {
           </>
         )}
       </div>
-
-      {profileView ? (
-        <div style={overlayStyle}>
-          <div style={modalStyle}>
-            <h3 style={{ marginTop: 0 }}>Employee Profile</h3>
-            <ProfileRow label="Name" value={profileView.name} />
-            <ProfileRow label="Employee ID" value={profileView.empId} />
-            <ProfileRow label="Email" value={profileView.email} />
-            <ProfileRow label="Department" value={profileView.department} />
-            <ProfileRow label="Designation" value={profileView.designation} />
-            <ProfileRow label="Skill" value={profileView.skill} />
-            <ProfileRow label="Manager" value={profileView.manager} />
-            <ProfileRow label="Group Lead" value={profileView.groupLead} />
-            <ProfileRow label="Phone" value={profileView.phone} />
-            <ProfileRow label="Date of Joining" value={profileView.doj} />
-            <ProfileRow label="Role" value={roleLabel(profileView.role)} />
-            <ProfileRow label="Status" value={profileView.status} />
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 8,
-                marginTop: 16,
-              }}
-            >
-              <Button
-                type="button"
-                variant="primary"
-                onClick={() => {
-                  setProfileView(null);
-                  navigate(
-                    `/admin/employees/${encodeURIComponent(profileView.email)}/track`
-                  );
-                }}
-              >
-                Track
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setProfileView(null)}
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showModal ? (
-        <div style={overlayStyle}>
-          <div style={{ ...modalStyle, maxWidth: 560, width: "100%" }}>
-            <h3 style={{ marginTop: 0 }}>
-              {mode === "CREATE" ? "Add Employee" : "Edit Employee"}
-            </h3>
-
-            <label style={formLabel}>Email</label>
-            <input
-              name="email"
-              disabled={mode === "EDIT"}
-              value={form.email}
-              onChange={handleChange}
-              style={formInput}
-              placeholder="name@mydgv.com"
-            />
-
-            <label style={formLabel}>Full Name</label>
-            <input
-              name="name"
-              value={form.name}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Employee ID</label>
-            <input
-              name="empId"
-              value={form.empId}
-              onChange={handleChange}
-              style={formInput}
-              placeholder="DGV001"
-            />
-
-            <label style={formLabel}>Department</label>
-            <input
-              name="department"
-              value={form.department}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Designation</label>
-            <input
-              name="designation"
-              value={form.designation}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Skill</label>
-            <select
-              name="skill"
-              value={form.skill}
-              onChange={handleChange}
-              style={formSelect}
-            >
-              <option value="">Select Skill</option>
-              {skills.map((s) => (
-                <option key={s.code} value={s.code}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-
-            <label style={formLabel}>Role</label>
-            <select
-              name="role"
-              value={form.role}
-              onChange={handleChange}
-              style={formSelect}
-            >
-              {ROLE_OPTIONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-
-            <label style={formLabel}>Manager</label>
-            <input
-              name="manager"
-              value={form.manager}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Group Lead</label>
-            <input
-              name="groupLead"
-              value={form.groupLead}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Phone</label>
-            <input
-              name="phone"
-              value={form.phone}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <label style={formLabel}>Date of Joining</label>
-            <input
-              type="date"
-              name="doj"
-              value={form.doj}
-              onChange={handleChange}
-              style={formInput}
-            />
-
-            <div style={{ textAlign: "right", marginTop: 12 }}>
-              <Button
-                type="button"
-                variant="outline"
-                style={{ marginRight: 8 }}
-                onClick={() => setShowModal(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                variant="success"
-                loading={saving}
-                disabled={saving}
-                onClick={saveProfile}
-              >
-                {saving ? "Saving…" : "Save"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </Layout>
   );
 }
-
-const overlayStyle = {
-  position: "fixed",
-  inset: 0,
-  background: "rgba(0,0,0,0.5)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  zIndex: 2000,
-  padding: 16,
-};
-
-const modalStyle = {
-  background: "var(--dgv-card)",
-  color: "var(--dgv-text)",
-  padding: 24,
-  borderRadius: 12,
-  maxHeight: "90vh",
-  overflowY: "auto",
-  border: "1px solid var(--dgv-border)",
-  boxShadow: "var(--dgv-shadow-lg)",
-};
-
-const ProfileRow = ({ label, value }) => (
-  <p style={{ margin: "6px 0", fontSize: 14 }}>
-    <b>{label}:</b> {value || "—"}
-  </p>
-);

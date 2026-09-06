@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import Layout from "../components/Layout";
 import {
-  pageCard,
   pageTitle,
   formLabel,
   formInput,
@@ -41,6 +42,7 @@ function statusClass(status) {
 }
 
 export default function Exit() {
+  const navigate = useNavigate();
   const [reason, setReason] = useState("");
   const [lastWorkingDay, setLastWorkingDay] = useState("");
   const [loading, setLoading] = useState(false);
@@ -86,8 +88,19 @@ export default function Exit() {
 
   return (
     <Layout>
-      <div style={{ ...pageCard, maxWidth: 600 }}>
-        <h2 style={pageTitle}>Exit Organization</h2>
+      <div className="dgv-exit-page">
+        <div className="dgv-exit-panel">
+        <button
+          type="button"
+          className="dgv-exit-back"
+          onClick={() => navigate("/profile")}
+        >
+          <ArrowLeft size={16} />
+          Back to Profile
+        </button>
+        <h2 className="dgv-exit-panel__title" style={{ ...pageTitle, marginBottom: 8 }}>
+          Exit Organization
+        </h2>
 
         <label style={formLabel}>Last Working Day</label>
         <input
@@ -168,6 +181,7 @@ export default function Exit() {
             </table>
           </div>
         )}
+        </div>
       </div>
     </Layout>
   );

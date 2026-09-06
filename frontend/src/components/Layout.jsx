@@ -11,7 +11,6 @@ import {
   TrendingUp,
   Wallet,
   LogOut,
-  DoorOpen,
   Users,
   Activity,
   ClipboardList,
@@ -65,7 +64,6 @@ const EMPLOYEE_NAV = [
   { label: "Meetings", path: "/meetings", icon: Video },
   { label: "Performance", path: "/performance", icon: TrendingUp },
   { label: "Payroll", path: "/payroll", icon: Wallet },
-  { label: "Exit", path: "/exit", icon: DoorOpen },
 ];
 
 /** Grouped Admin IA — existing features wired; new modules use coming-soon routes */
