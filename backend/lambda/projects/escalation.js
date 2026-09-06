@@ -1,10 +1,14 @@
 /**
- * Task assignment zones: Green → Orange (24h from deadline) → Red.
+ * Task assignment zones: Green → Orange (from deadline) → Red.
+ * TEST: Orange lasts 10 minutes. Set TASK_ORANGE_MS=86400000 for 24 hours.
  * Zone is always derived from the original deadline instant, never from
  * detection time. Completed assignments freeze their zone.
  */
 
-const ORANGE_MS = 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const parsedOrange = Number(process.env.TASK_ORANGE_MS);
+const ORANGE_MS =
+  Number.isFinite(parsedOrange) && parsedOrange > 0 ? parsedOrange : 10 * 60 * 1000;
 
 const ZONES = {
   NONE: "NONE",
@@ -722,14 +726,18 @@ function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = 
   return false;
 }
 
-/** Employees may complete Green/Orange assignments. Red requires an admin. */
-function employeeMayComplete(assignment, dueDate, nowMs = Date.now()) {
+/** Employees may change status in Green/Orange. Red is admin-only. */
+function employeeMayChangeStatus(assignment, dueDate, nowMs = Date.now()) {
   if (!assignment || assignment.removed || isCancelled(assignment.status)) {
     return false;
   }
   if (isComplete(assignment.status)) return false;
   const view = computeAssignmentView(assignment, dueDate, nowMs);
   return view.zone !== ZONES.RED;
+}
+
+function employeeMayComplete(assignment, dueDate, nowMs = Date.now()) {
+  return employeeMayChangeStatus(assignment, dueDate, nowMs);
 }
 
 module.exports = {
@@ -781,5 +789,7 @@ module.exports = {
   creatorDisplayName,
   redAdminNotifyStatusOf,
   needsRedAdminNotify,
+  employeeMayChangeStatus,
   employeeMayComplete,
+  DAY_MS,
 };

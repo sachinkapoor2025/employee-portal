@@ -48,27 +48,27 @@ assert.strictEqual(t1Later.zone, ZONES.GREEN);
 assert.strictEqual(t1Later.completed, true);
 assert.strictEqual(t1Later.reachedRed, false);
 
-// Test 2 — becomes Orange at 6:00 PM same day
+// Test 2 — becomes Orange immediately after deadline
 const t2 = computeAssignmentView(
   { email: "amit@mydgv.com", status: "TODO" },
   DEADLINE,
-  Date.parse("2026-08-25T12:30:00.000Z") // 18:00 IST
+  DEADLINE_MS + 5 * 60 * 1000
 );
 assert.strictEqual(t2.zone, ZONES.ORANGE);
 assert.strictEqual(t2.completed, false);
 
-// Detection at 5:10 PM still Orange since 5:00 PM (not detection+24h)
+// Detection a few minutes after deadline is still Orange
 const lateDetect = detectTransitions(
   { email: "amit@mydgv.com", status: "TODO", recordedZone: "GREEN" },
   DEADLINE,
-  Date.parse("2026-08-25T11:40:00.000Z")
+  DEADLINE_MS + 5 * 60 * 1000
 );
 assert.strictEqual(lateDetect.assignment.recordedZone, ZONES.ORANGE);
 assert.strictEqual(lateDetect.events[0].action, "zone_orange");
 assert.strictEqual(lateDetect.events[0].timestamp, DEADLINE);
 
 // Test 3 — completed during Orange never becomes Red
-const t3Now = Date.parse("2026-08-26T09:30:00.000Z"); // next day 15:00 IST
+const t3Now = DEADLINE_MS + 5 * 60 * 1000;
 const t3Done = completeAssignment(
   { email: "priya@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
   DEADLINE,
@@ -231,7 +231,7 @@ assert.deepStrictEqual(
 );
 assert.ok(!filteredCompleted[0].matchedAssignments.some((a) => a.email === "dev@mydgv.com"));
 
-const orangeNow = Date.parse("2026-08-25T12:30:00.000Z");
+const orangeNow = DEADLINE_MS + 5 * 60 * 1000;
 const orangeTask = decorateTask(
   {
     title: "Monthly Report",
@@ -322,28 +322,28 @@ assert.strictEqual(
   null
 );
 
-assert.strictEqual(displayNameFromEmail("nitesh.kumar@mydgv.com"), "Nitesh Kumar");
+assert.strictEqual(displayNameFromEmail("rahul.verma@mydgv.com"), "Rahul Verma");
 assert.strictEqual(
-  creatorDisplayName({ createdBy: "nitesh.kumar@mydgv.com" }),
-  "Nitesh Kumar"
+  creatorDisplayName({ createdBy: "rahul.verma@mydgv.com" }),
+  "Rahul Verma"
 );
 assert.strictEqual(
   creatorDisplayName({
-    createdBy: "nitesh.kumar@mydgv.com",
-    createdByName: "Nitesh Kumar",
+    createdBy: "rahul.verma@mydgv.com",
+    createdByName: "Rahul Verma",
   }),
-  "Nitesh Kumar"
+  "Rahul Verma"
 );
 assert.strictEqual(
   decorateTask({
-    createdBy: "nitesh.kumar@mydgv.com",
-    createdByName: "Nitesh Kumar",
+    createdBy: "rahul.verma@mydgv.com",
+    createdByName: "Rahul Verma",
     status: "TODO",
   }).createdByName,
-  "Nitesh Kumar"
+  "Rahul Verma"
 );
 
-const { needsRedAdminNotify, employeeMayComplete } = require("./escalation");
+const { needsRedAdminNotify, employeeMayComplete, employeeMayChangeStatus } = require("./escalation");
 assert.strictEqual(needsRedAdminNotify({}, {}, false), false);
 assert.strictEqual(needsRedAdminNotify({}, {}, true), true);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, true), false);
@@ -443,6 +443,18 @@ assert.strictEqual(
   true
 );
 
+assert.strictEqual(
+  employeeMayChangeStatus({ email: "amit@mydgv.com", status: "TODO" }, DEADLINE, DEADLINE_MS - 1),
+  true
+);
+assert.strictEqual(
+  employeeMayChangeStatus(
+    { email: "amit@mydgv.com", status: "TODO" },
+    DEADLINE,
+    DEADLINE_MS + ORANGE_MS
+  ),
+  false
+);
 assert.strictEqual(
   employeeMayComplete({ email: "amit@mydgv.com", status: "TODO" }, DEADLINE, DEADLINE_MS - 1),
   true

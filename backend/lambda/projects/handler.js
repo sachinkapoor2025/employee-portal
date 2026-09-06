@@ -16,7 +16,6 @@ const {
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
 const escalation = require("./escalation");
-const weekly = require("./redzoneWeekly");
 const { zoneNotifyCopy } = require("./zoneNotify");
 const { notifyAdminsTaskEnteredRed } = require("./redAdminNotify");
 const { activeAdminEmailsFromAccess } = require("../common/roles");
@@ -265,7 +264,7 @@ async function persistAssignmentsAndTask(task, assignments) {
   return merged;
 }
 
-async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}) {
+async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}, channels = {}) {
   if (!email || !type || !dedupKey) return;
   try {
     const { dispatchNotification } = require("../common/notify");
@@ -278,6 +277,8 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
       reason: type,
       dedupKey,
       extra,
+      emailEnabled: channels.emailEnabled !== false,
+      inAppEnabled: channels.inAppEnabled !== false,
     });
   } catch (err) {
     console.error("Task notification failed", err);
@@ -367,20 +368,8 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
           category: copy.category,
           deadline: task.dueDate || null,
           zoneStartedAt: ev.timestamp,
-        }
-      );
-    }
-    if (
-      escalation.approachingDeadline(task.dueDate, nowMs) &&
-      escalation.isOpenStatus(a.status)
-    ) {
-      await notifyTaskEvent(
-        a.email,
-        "TASK_DUE_SOON",
-        `Task due soon: ${task.title}`,
-        `"${task.title}" is approaching its deadline.`,
-        `${task.taskId}#${a.email}#due-soon#${task.dueDate || ""}`,
-        { taskId: task.taskId }
+        },
+        { emailEnabled: false, inAppEnabled: true }
       );
     }
   }
@@ -518,10 +507,6 @@ async function queryAllTasks() {
   return items;
 }
 
-function isRedZoneReportPath(path) {
-  return /\/tasks\/redzone-report\/?$/.test(String(path || ""));
-}
-
 async function scanAccessRows() {
   if (!process.env.USER_ACCESS_TABLE) return [];
   const items = [];
@@ -566,306 +551,6 @@ async function runEscalationSweep() {
     }
   }
   return json(200, { ok: true, processed });
-}
-
-async function scanProfiles() {
-  if (!process.env.USER_PROFILE_TABLE) return weekly.indexProfiles([]);
-  const items = [];
-  let lastKey;
-  do {
-    const res = await ddb.send(
-      new ScanCommand({
-        TableName: process.env.USER_PROFILE_TABLE,
-        ExclusiveStartKey: lastKey,
-      })
-    );
-    items.push(...(res.Items || []));
-    lastKey = res.LastEvaluatedKey;
-  } while (lastKey);
-  return weekly.indexProfiles(items);
-}
-
-async function loadWeeklyConfig() {
-  const res = await ddb.send(
-    new GetCommand({
-      TableName: process.env.WORK_TABLE,
-      Key: { PK: weekly.CONFIG_PK, SK: weekly.CONFIG_SK },
-    })
-  );
-  return weekly.normalizeConfig(res.Item);
-}
-
-async function saveWeeklyConfig(body, actor) {
-  const current = await loadWeeklyConfig();
-  const next = weekly.normalizeConfig({
-    enabled: body.enabled === undefined ? current.enabled : body.enabled,
-    weekday: body.weekday === undefined ? current.weekday : body.weekday,
-    sendTime: body.sendTime || current.sendTime,
-  });
-  const item = {
-    PK: weekly.CONFIG_PK,
-    SK: weekly.CONFIG_SK,
-    enabled: next.enabled,
-    weekday: next.weekday,
-    sendTime: next.sendTime,
-    dgvEmail: weekly.DGV_EMAIL,
-    updatedAt: new Date().toISOString(),
-    updatedBy: actor || "",
-  };
-  await ddb.send(
-    new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
-  );
-  return weekly.normalizeConfig(item);
-}
-
-async function getWeeklyReport(weekId) {
-  const res = await ddb.send(
-    new GetCommand({
-      TableName: process.env.WORK_TABLE,
-      Key: { PK: weekly.REPORT_PK, SK: `WEEK#${weekId}` },
-    })
-  );
-  return res.Item || null;
-}
-
-async function putWeeklyReport(item) {
-  await ddb.send(
-    new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
-  );
-}
-
-async function listWeeklyReports() {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: process.env.WORK_TABLE,
-      KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-      ExpressionAttributeValues: {
-        ":pk": weekly.REPORT_PK,
-        ":sk": "WEEK#",
-      },
-      ScanIndexForward: false,
-      Limit: 20,
-    })
-  );
-  return res.Items || [];
-}
-
-async function gatherRedZoneRows(nowMs) {
-  const tasks = await queryAllTasks();
-  const snaps = [];
-  for (const task of tasks) {
-    if (task.archived) continue;
-    const assignments = await resolveAssignments(task);
-    snaps.push(snapshotTask(task, assignments));
-  }
-  const profiles = await scanProfiles();
-  return weekly.enrichRows(
-    weekly.collectRedZoneRows(snaps, nowMs),
-    profiles,
-    nowMs
-  );
-}
-
-async function sendWeeklyEmail(email, rows, weekId) {
-  const { dispatchNotification } = require("../common/notify");
-  const subject = rows.length
-    ? "Weekly Red-Zone Ticket Report"
-    : "Weekly Red-Zone Ticket Report — none";
-  return dispatchNotification(ddb, {
-    email,
-    type: "TASK_REDZONE_WEEKLY",
-    title: subject,
-    subject,
-    message: weekly.buildReportText(rows),
-    html: weekly.buildReportHtml(rows, email),
-    reason: "WEEKLY_REDZONE",
-    dedupKey: `${weekId}#${email}`,
-    extra: { weekId, count: rows.length },
-  });
-}
-
-async function runWeeklyRedZoneReport({ source = "schedule" } = {}) {
-  const now = new Date();
-  const nowMs = now.getTime();
-  const config = await loadWeeklyConfig();
-  const tz = weekly.companyTimeZone();
-  const weekId = weekly.weekIdFor(now, tz, config.weekday);
-
-  console.log(
-    "REDZONE_WEEKLY_START",
-    JSON.stringify({
-      source,
-      weekId,
-      enabled: config.enabled,
-      weekday: config.weekday,
-      sendTime: config.sendTime,
-    })
-  );
-
-  if (source === "schedule" && !weekly.shouldSendNow(config, now, tz)) {
-    console.log(
-      "REDZONE_WEEKLY_SKIP",
-      JSON.stringify({ reason: "NOT_SCHEDULED", weekId })
-    );
-    return { skipped: true, reason: "NOT_SCHEDULED", weekId };
-  }
-
-  let existing = await getWeeklyReport(weekId);
-  if (existing && weekly.alreadySent(existing)) {
-    console.log(
-      "REDZONE_WEEKLY_SKIP",
-      JSON.stringify({ reason: "ALREADY_SENT", weekId, status: existing.status })
-    );
-    return { skipped: true, reason: "ALREADY_SENT", weekId, report: existing };
-  }
-  if (existing && weekly.isInFlight(existing, nowMs) && source === "schedule") {
-    console.log(
-      "REDZONE_WEEKLY_SKIP",
-      JSON.stringify({ reason: "IN_FLIGHT", weekId })
-    );
-    return { skipped: true, reason: "IN_FLIGHT", weekId };
-  }
-
-  const rows = await gatherRedZoneRows(nowMs);
-  const grouped = weekly.groupByRecipient(rows, config.dgvEmail);
-  const recipients = Object.keys(grouped);
-  const toSend = weekly.emailsToSend(grouped, existing);
-
-  console.log(
-    "REDZONE_WEEKLY_FOUND",
-    JSON.stringify({
-      redCount: rows.length,
-      recipients,
-      toSend,
-      weekId,
-    })
-  );
-
-  const pending = {
-    PK: weekly.REPORT_PK,
-    SK: `WEEK#${weekId}`,
-    weekId,
-    status: "PENDING",
-    source,
-    taskIds: [...new Set(rows.map((r) => r.taskId))],
-    redCount: rows.length,
-    recipients,
-    results: existing?.results || [],
-    createdAt: existing?.createdAt || now.toISOString(),
-    updatedAt: now.toISOString(),
-  };
-
-  if (!existing) {
-    try {
-      await ddb.send(
-        new PutCommand({
-          TableName: process.env.WORK_TABLE,
-          Item: pending,
-          ConditionExpression: "attribute_not_exists(PK)",
-        })
-      );
-    } catch (err) {
-      if (err.name === "ConditionalCheckFailedException") {
-        const raced = await getWeeklyReport(weekId);
-        if (
-          raced &&
-          (weekly.alreadySent(raced) || weekly.isInFlight(raced, nowMs))
-        ) {
-          return { skipped: true, reason: "RACE", weekId, report: raced };
-        }
-        existing = raced;
-      } else {
-        throw err;
-      }
-    }
-  } else {
-    await putWeeklyReport(pending);
-  }
-
-  const results = [];
-  for (const email of recipients) {
-    if (!toSend.includes(email)) {
-      const prev = (existing?.results || []).find(
-        (r) => escalation.normalizeEmail(r.email) === email
-      );
-      if (prev) results.push(prev);
-      continue;
-    }
-    const sendRows = grouped[email] || [];
-    try {
-      const result = await sendWeeklyEmail(email, sendRows, weekId);
-      results.push({
-        email,
-        status: result.status,
-        error: result.error || null,
-        messageId: result.messageId || null,
-        skipped: !!result.skipped,
-      });
-      if (result.status === "FAILED") {
-        console.error(
-          "REDZONE_WEEKLY_FAILED",
-          JSON.stringify({ email, weekId, error: result.error })
-        );
-      } else {
-        console.log(
-          "REDZONE_WEEKLY_SENT",
-          JSON.stringify({
-            email,
-            weekId,
-            count: sendRows.length,
-            status: result.status,
-          })
-        );
-      }
-    } catch (err) {
-      results.push({
-        email,
-        status: "FAILED",
-        error: err.name || "SEND_ERROR",
-      });
-      console.error(
-        "REDZONE_WEEKLY_FAILED",
-        JSON.stringify({ email, weekId, error: err.name })
-      );
-    }
-  }
-
-  const failed = results.filter((r) => r.status === "FAILED").length;
-  const sent = results.filter((r) => r.status === "SENT").length;
-  let status = "SENT";
-  if (!rows.length && sent) status = "EMPTY";
-  else if (failed && sent) status = "PARTIAL";
-  else if (failed && !sent) status = "FAILED";
-  else if (!sent && !failed) status = rows.length ? "FAILED" : "EMPTY";
-
-  const saved = {
-    ...pending,
-    status,
-    results,
-    sentAt: status === "FAILED" ? existing?.sentAt || null : now.toISOString(),
-    updatedAt: now.toISOString(),
-  };
-  await putWeeklyReport(saved);
-  console.log(
-    "REDZONE_WEEKLY_DONE",
-    JSON.stringify({
-      weekId,
-      status,
-      redCount: rows.length,
-      sent,
-      failed,
-      source,
-    })
-  );
-  return {
-    skipped: false,
-    weekId,
-    status,
-    redCount: rows.length,
-    sent,
-    failed,
-    report: saved,
-  };
 }
 
 async function getProjectName(projectId) {
@@ -950,13 +635,7 @@ async function listByPrefix(pk, prefix) {
 exports.handler = async (event) => {
   if (isScheduleEvent(event)) {
     try {
-      const sweep = await runEscalationSweep();
-      try {
-        await runWeeklyRedZoneReport({ source: "schedule" });
-      } catch (err) {
-        console.error("REDZONE_WEEKLY_ERROR", err);
-      }
-      return sweep;
+      return await runEscalationSweep();
     } catch (err) {
       console.error("Task escalation sweep error:", err);
       return json(500, { error: "Internal server error" });
@@ -972,40 +651,6 @@ exports.handler = async (event) => {
   const taskRoute = taskPathMatch(path);
 
   try {
-    if (isRedZoneReportPath(path)) {
-      if (!user.isAdmin) return json(403, { error: "Admin required" });
-
-      if (method === "GET") {
-        const config = await loadWeeklyConfig();
-        const history = await listWeeklyReports();
-        const weekId = weekly.weekIdFor(
-          new Date(),
-          weekly.companyTimeZone(),
-          config.weekday
-        );
-        const last = history[0] || (await getWeeklyReport(weekId));
-        return json(200, {
-          config,
-          weekId,
-          last: last || null,
-          history,
-          timezone: weekly.companyTimeZone(),
-        });
-      }
-
-      if (method === "PUT") {
-        const config = await saveWeeklyConfig(body, user.email);
-        return json(200, { config });
-      }
-
-      if (method === "POST") {
-        const result = await runWeeklyRedZoneReport({ source: "manual" });
-        return json(200, result);
-      }
-
-      return json(405, { error: "Method not allowed" });
-    }
-
     // ── TASK BY ID / COMMENTS / ACTIVITY / ATTACHMENTS ──
     if (taskRoute) {
       const { taskId, sub } = taskRoute;
@@ -1556,13 +1201,12 @@ exports.handler = async (event) => {
           if (mine) {
             if (
               !user.isAdmin &&
-              allowed.status === "DONE" &&
               !escalation.isComplete(mine.status) &&
-              !escalation.employeeMayComplete(mine, existing.dueDate, nowMs)
+              !escalation.employeeMayChangeStatus(mine, existing.dueDate, nowMs)
             ) {
               return json(403, {
                 error:
-                  "Employees cannot complete a Red Zone task. An administrator must complete it.",
+                  "Red Zone tasks can only be updated by an administrator.",
               });
             }
             if (

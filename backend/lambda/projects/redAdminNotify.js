@@ -2,7 +2,8 @@ const escalation = require("./escalation");
 const { redAdminNotifyCopy } = require("./zoneNotify");
 
 /**
- * Immediate Red Zone alert to every active portal admin.
+ * Red Zone alert email to every active portal admin.
+ * Email only — no in-app bell.
  * SENT is returned only when no admin send failed.
  */
 async function notifyAdminsTaskEnteredRed({
@@ -94,6 +95,8 @@ async function notifyAdminsTaskEnteredRed({
         html: copy.html,
         reason: "TASK_RED_ADMIN",
         dedupKey,
+        emailEnabled: true,
+        inAppEnabled: false,
         extra: {
           taskId,
           zone: "RED",

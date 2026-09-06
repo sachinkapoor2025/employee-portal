@@ -1,3 +1,5 @@
+const escalation = require("./escalation");
+
 const TZ = () => process.env.COMPANY_TIMEZONE || "Asia/Kolkata";
 
 function formatWhen(value, timeZone = TZ()) {
@@ -23,11 +25,16 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
+function orangePeriodLabel() {
+  if (escalation.ORANGE_MS === escalation.DAY_MS) return "24-hour";
+  return escalation.formatDuration(escalation.ORANGE_MS);
+}
+
 function redZoneStartedMs(deadline, redZoneStartedAt) {
   const fromRed = Date.parse(redZoneStartedAt);
   if (Number.isFinite(fromRed)) return fromRed;
   const deadlineMs = Date.parse(deadline);
-  if (Number.isFinite(deadlineMs)) return deadlineMs + 24 * 60 * 60 * 1000;
+  if (Number.isFinite(deadlineMs)) return deadlineMs + escalation.ORANGE_MS;
   return NaN;
 }
 
@@ -74,7 +81,7 @@ function redAdminNotifyCopy({
     : "";
   const subject = `🔴 Task Entered Red Zone – Action Required: ${taskName}`;
   const intro =
-    "A task assignment has remained incomplete for 24 hours after its original deadline and has now entered the Red Zone.";
+    `A task assignment has remained incomplete for ${orangePeriodLabel()} after its original deadline and has now entered the Red Zone.`;
   const action =
     "This assignment has not been completed within the required deadline. Please review the task and take the necessary action.";
   const link = optionalText(viewTaskUrl);
@@ -160,7 +167,7 @@ function zoneNotifyCopy({
     zone: "RED",
     title: "🚨 Task moved to Red Zone",
     message:
-      `Your task "${name}" has not been completed within the 24-hour Orange Zone period and has now moved to the Red Zone.\n\n` +
+      `Your task "${name}" has not been completed within the ${orangePeriodLabel()} Orange Zone period and has now moved to the Red Zone.\n\n` +
       `Deadline: ${deadlineLabel}\n` +
       `Red Zone started: ${startedLabel}`,
   };
