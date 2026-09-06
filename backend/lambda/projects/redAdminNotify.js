@@ -1,10 +1,9 @@
 const escalation = require("./escalation");
 const { redAdminNotifyCopy } = require("./zoneNotify");
+const { sendEmail } = require("../common/email");
 
 /**
- * Red Zone alert email to every active portal admin.
- * Email only — no in-app bell.
- * SENT is returned only when no admin send failed.
+ * Red Zone alert: SES email to every active admin. Never writes an in-app bell.
  */
 async function notifyAdminsTaskEnteredRed({
   task,
@@ -13,9 +12,10 @@ async function notifyAdminsTaskEnteredRed({
   adminEmails,
   getAssigneeProfile,
   getProjectName,
-  dispatchNotification,
+  sendEmail: sendEmailFn,
   nowMs = Date.now(),
 }) {
+  const mailer = typeof sendEmailFn === "function" ? sendEmailFn : sendEmail;
   const taskId = task.taskId;
   const title = task.title || "";
   const assignmentEmail = escalation.normalizeEmail(assignment.email);
@@ -70,7 +70,6 @@ async function notifyAdminsTaskEnteredRed({
     description: task.description || "",
     viewTaskUrl,
   });
-  const dedupKey = `${taskId}#${assignmentEmail}#red-admin#${task.dueDate || ""}`;
   console.log(
     "RED_ADMIN_NOTIFY_TRIGGERED",
     JSON.stringify({
@@ -82,29 +81,16 @@ async function notifyAdminsTaskEnteredRed({
   );
 
   let failed = 0;
-  let skipped = 0;
   let sent = 0;
   for (const email of emails) {
     try {
-      const result = await dispatchNotification({
-        email,
-        type: copy.type,
-        title: copy.title,
+      const result = await mailer({
+        to: email,
         subject: copy.subject || copy.title,
-        message: copy.message,
+        text: copy.message,
         html: copy.html,
-        reason: "TASK_RED_ADMIN",
-        dedupKey,
-        channel: "email",
-        extra: {
-          taskId,
-          zone: "RED",
-          deadline: task.dueDate || null,
-          zoneStartedAt: redAt || null,
-          assignmentEmail,
-        },
       });
-      if (result.status === "FAILED") {
+      if (!result || !result.ok || !result.messageId) {
         failed += 1;
         console.error(
           "EMAIL_SEND_FAILED",
@@ -112,15 +98,21 @@ async function notifyAdminsTaskEnteredRed({
             taskId,
             assignmentEmail,
             title,
-            recipient: email,
+            recipient: String(email || "").toLowerCase(),
             status: "FAILED",
-            error: result.error || null,
+            error: result?.error || "EMAIL_NO_MESSAGE_ID",
           })
         );
-      } else if (result.skipped) {
-        skipped += 1;
-      } else if (result.status === "SENT") {
+      } else {
         sent += 1;
+        console.log(
+          "RED_ADMIN_EMAIL_SENT",
+          JSON.stringify({
+            taskId,
+            recipient: String(email || "").toLowerCase(),
+            messageId: result.messageId,
+          })
+        );
       }
     } catch (err) {
       failed += 1;
@@ -130,7 +122,7 @@ async function notifyAdminsTaskEnteredRed({
           taskId,
           assignmentEmail,
           title,
-          recipient: email,
+          recipient: String(email || "").toLowerCase(),
           status: "FAILED",
         })
       );
@@ -146,32 +138,22 @@ async function notifyAdminsTaskEnteredRed({
         assignmentEmail,
         title,
         status: "FAILED",
+        sent,
+        failed,
       })
     );
     return "FAILED";
   }
-  if (skipped === emails.length) {
-    console.log(
-      "RED_ADMIN_NOTIFY_SKIPPED",
-      JSON.stringify({
-        taskId,
-        assignmentEmail,
-        title,
-        reason: "already sent",
-      })
-    );
-  } else {
-    console.log(
-      "RED_ADMIN_NOTIFY_SENT",
-      JSON.stringify({
-        taskId,
-        assignmentEmail,
-        title,
-        recipients: emails.length,
-        sent,
-      })
-    );
-  }
+  console.log(
+    "RED_ADMIN_NOTIFY_SENT",
+    JSON.stringify({
+      taskId,
+      assignmentEmail,
+      title,
+      recipients: emails.length,
+      sent,
+    })
+  );
   return "SENT";
 }
 

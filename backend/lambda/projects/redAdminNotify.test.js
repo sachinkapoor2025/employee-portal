@@ -17,25 +17,34 @@ async function run() {
     adminEmails: ["admin@mydgv.com"],
     getAssigneeProfile: async () => ({ name: "Amit Sharma" }),
     getProjectName: async () => "Sample Project",
-    dispatchNotification: async (opts) => {
+    sendEmail: async (opts) => {
       calls.push(opts);
-      return { status: "SENT" };
+      return { ok: true, messageId: "ses-1" };
     },
   });
   assert.strictEqual(status, "SENT");
   assert.strictEqual(calls.length, 1);
-  assert.strictEqual(calls[0].email, "admin@mydgv.com");
-  assert.strictEqual(calls[0].channel, "email");
-  assert.ok(calls[0].message.includes("Amit Sharma"));
-  assert.ok(calls[0].message.includes("amit@mydgv.com"));
+  assert.strictEqual(calls[0].to, "admin@mydgv.com");
+  assert.ok(calls[0].subject.includes("Task Entered Red Zone"));
+  assert.ok(calls[0].text.includes("Amit Sharma"));
+  assert.ok(calls[0].text.includes("amit@mydgv.com"));
+  assert.ok(calls[0].html);
 
   const empty = await notifyAdminsTaskEnteredRed({
     task: { taskId: "task-2", title: "x" },
     assignment: { email: "a@mydgv.com", status: "TODO" },
     adminEmails: [],
-    dispatchNotification: async () => ({ status: "SENT" }),
+    sendEmail: async () => ({ ok: true, messageId: "x" }),
   });
   assert.strictEqual(empty, "FAILED");
+
+  const failed = await notifyAdminsTaskEnteredRed({
+    task: { taskId: "task-3", title: "x" },
+    assignment: { email: "a@mydgv.com", status: "TODO" },
+    adminEmails: ["admin@mydgv.com"],
+    sendEmail: async () => ({ ok: false, error: "MessageRejected" }),
+  });
+  assert.strictEqual(failed, "FAILED");
 
   const handlerSrc = require("fs").readFileSync(require.resolve("./handler.js"), "utf8");
   assert.ok(handlerSrc.includes("notifyAdminsTaskEnteredRed"));

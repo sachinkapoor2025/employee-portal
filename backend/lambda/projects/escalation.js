@@ -1,6 +1,6 @@
 /**
  * Task assignment zones: Green → Orange (from deadline) → Red.
- * TEST: Orange lasts 10 minutes. Set TASK_ORANGE_MS=86400000 for 24 hours.
+ * TEST: Orange lasts 2 minutes. Set TASK_ORANGE_MS=86400000 for 24 hours.
  * Zone is always derived from the original deadline instant, never from
  * detection time. Completed assignments freeze their zone.
  */
@@ -8,7 +8,7 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 const parsedOrange = Number(process.env.TASK_ORANGE_MS);
 const ORANGE_MS =
-  Number.isFinite(parsedOrange) && parsedOrange > 0 ? parsedOrange : 10 * 60 * 1000;
+  Number.isFinite(parsedOrange) && parsedOrange > 0 ? parsedOrange : 2 * 60 * 1000;
 
 const ZONES = {
   NONE: "NONE",

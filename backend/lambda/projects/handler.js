@@ -446,7 +446,6 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   for (const a of pendingAdmin) {
     const email = escalation.normalizeEmail(a.email);
     try {
-      const { dispatchNotification } = require("../common/notify");
       const notifyStatus = await notifyAdminsTaskEnteredRed({
         task: saved,
         assignment: a,
@@ -454,7 +453,6 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
         adminEmails,
         getAssigneeProfile,
         getProjectName,
-        dispatchNotification: (opts) => dispatchNotification(ddb, opts),
       });
       if (a.redAdminNotifyStatus !== notifyStatus) {
         a.redAdminNotifyStatus = notifyStatus;
