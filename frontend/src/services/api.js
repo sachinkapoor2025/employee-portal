@@ -235,12 +235,6 @@ export const updateTask = (data) => api("/tasks", "PUT", data);
 export const archiveTask = (taskId) =>
   api("/tasks", "DELETE", { taskId });
 
-export const fetchRedZoneWeekly = () => api("/tasks/redzone-report", "GET");
-export const saveRedZoneWeekly = (data) =>
-  api("/tasks/redzone-report", "PUT", data);
-export const runRedZoneWeekly = () =>
-  api("/tasks/redzone-report", "POST", { action: "run" });
-
 export const fetchTaskById = async (taskId) => {
   try {
     return await api(`/tasks/${encodeURIComponent(taskId)}`, "GET");

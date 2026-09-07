@@ -419,6 +419,14 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
       typeof resolveAdmins === "function"
         ? await resolveAdmins()
         : resolveAdmins || [];
+    console.log(
+      "RED_ADMIN_RECIPIENTS",
+      JSON.stringify({
+        taskId: task.taskId,
+        count: adminEmails.length,
+        recipients: adminEmails,
+      })
+    );
   } catch (err) {
     console.error(
       "RED_ADMIN_EMAIL_FAILED",

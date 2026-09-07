@@ -7,7 +7,7 @@ import {
   formatTaskDuration,
   getTaskTiming,
   getTaskZone,
-  employeeCanComplete,
+  employeeCanChangeStatus,
   priorityLabel,
   applyClientZoneFilter,
   countZones,
@@ -102,11 +102,10 @@ export default function Work() {
   const changeStatus = async (task, status) => {
     const mine = task.myAssignment;
     if (
-      status === "DONE" &&
       !canAccessAdmin() &&
-      !employeeCanComplete(mine || task, task.dueDate)
+      !employeeCanChangeStatus(mine || task, task.dueDate)
     ) {
-      alert("Red Zone tasks can only be completed by an administrator.");
+      alert("Red Zone tasks can only be updated by an administrator.");
       return;
     }
     if (status === "DONE") {
@@ -201,8 +200,8 @@ export default function Work() {
           const status = mine?.status || task.status || "TODO";
           const taskZone = mine?.zone || getTaskZone(task);
           const timing = mine?.timing || getTaskTiming(task);
-          const allowComplete =
-            canAccessAdmin() || employeeCanComplete(mine || task, task.dueDate);
+          const allowStatusChange =
+            canAccessAdmin() || employeeCanChangeStatus(mine || task, task.dueDate);
           const zoneClass =
             String(status).toUpperCase() === "DONE"
               ? ""
@@ -274,14 +273,16 @@ export default function Work() {
                   value={status}
                   onChange={(e) => changeStatus(task, e.target.value)}
                   style={{ maxWidth: 240, marginBottom: 0 }}
-                  disabled={String(status).toUpperCase() === "DONE"}
+                  disabled={
+                    String(status).toUpperCase() === "DONE" || !allowStatusChange
+                  }
                   aria-label="Update task status"
                 >
                   {STATUSES.map((s) => (
                     <option
                       key={s}
                       value={s}
-                      disabled={s === "DONE" && !allowComplete}
+                      disabled={!allowStatusChange}
                     >
                       {s.replace("_", " ")}
                     </option>

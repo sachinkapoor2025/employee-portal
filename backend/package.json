@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "node lambda/meetings/logic.test.js && node lambda/notifications/logic.test.js && node lambda/common/notify.test.js && node lambda/common/documentsStorage.test.js && node lambda/documents/projectsLogic.test.js && node lambda/documents/personalLogic.test.js && node lambda/documents/notificationsLogic.test.js && node lambda/documents/kycMigration.test.js && node lambda/projects/escalation.test.js && node lambda/projects/redzoneWeekly.test.js && node lambda/projects/zoneNotify.test.js && node lambda/projects/redAdminNotify.test.js && node lambda/announcements/logic.test.js",
+    "test": "node lambda/meetings/logic.test.js && node lambda/notifications/logic.test.js && node lambda/common/notify.test.js && node lambda/common/documentsStorage.test.js && node lambda/documents/projectsLogic.test.js && node lambda/documents/personalLogic.test.js && node lambda/documents/notificationsLogic.test.js && node lambda/documents/kycMigration.test.js && node lambda/projects/escalation.test.js && node lambda/projects/zoneNotify.test.js && node lambda/projects/redAdminNotify.test.js && node lambda/announcements/logic.test.js",
     "migrate:kyc": "node scripts/migrate-kyc-to-required-documents.js"
   },
   "dependencies": {

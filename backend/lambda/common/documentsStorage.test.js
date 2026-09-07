@@ -166,7 +166,7 @@ async function run() {
   const missing = await readManifest(s3, bucket, projectRootKey("does-not-exist"));
   assert.strictEqual(missing, null);
 
-  const personalKey = personalRootKey("nitesh.kumar@mydgv.com");
+  const personalKey = personalRootKey("rahul.verma@mydgv.com");
   await writeManifest(s3, bucket, personalKey, emptyManifest({ id: "root", name: "Personal" }));
   const personal = await readManifest(s3, bucket, personalKey);
   assert.strictEqual(personal.manifest.name, "Personal");

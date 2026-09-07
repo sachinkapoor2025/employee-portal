@@ -27,7 +27,6 @@ import {
   ChevronRight,
   FileText,
   Video,
-  Settings,
 } from "lucide-react";
 import {
   logout,
@@ -105,7 +104,6 @@ const ADMIN_NAV_SECTIONS = [
     items: [
       { label: "Activity", path: "/admin/activity", icon: Activity },
       { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
-      { label: "Settings", path: "/admin/settings", icon: Settings },
     ],
   },
 ];

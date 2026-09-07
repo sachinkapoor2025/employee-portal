@@ -107,7 +107,7 @@ const ok = validateMeetingPayload({
   endTime: "12:00",
   meetingType: "Zoom",
   meetingLink: "https://zoom.us/j/abc",
-  participantEmails: ["nitesh@mydgv.com"],
+  participantEmails: ["rahul@mydgv.com"],
 });
 assert.strictEqual(ok.error, null);
 assert.strictEqual(ok.value.meetingType, "ZOOM");

@@ -37,7 +37,6 @@ import AttendanceActivity from "./pages/Admin/AttendanceActivity";
 import EmployeeTracking from "./pages/Admin/EmployeeTracking";
 import EmployeeTrackingHub from "./pages/Admin/EmployeeTrackingHub";
 import ComingSoon from "./pages/Admin/ComingSoon";
-import AdminSettings from "./pages/Admin/AdminSettings";
 import Leave from "./pages/Leave";
 import SoftwareCenter from "./pages/SoftwareCenter";
 import ConsentGate from "./components/ConsentGate";
@@ -338,14 +337,6 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ComingSoon title="Audit Logs" phase="Phase 5" />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/admin/settings"
-          element={
-            <RequireAuth adminOnly>
-              <AdminSettings />
             </RequireAuth>
           }
         />

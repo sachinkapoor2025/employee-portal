@@ -19,30 +19,30 @@ assert.ok(logic.isPubliclyVisible({ title: "legacy" }, now));
 
 assert.strictEqual(logic.withAnnouncementStatus({ expiresAt: null }, now).status, "NO_EXPIRY");
 
-assert.strictEqual(logic.displayNameFromEmail("nitesh.kumar@mydgv.com"), "Nitesh Kumar");
+assert.strictEqual(logic.displayNameFromEmail("rahul.verma@mydgv.com"), "Rahul Verma");
 assert.strictEqual(
   logic.resolveAuthorName({
-    profileName: "Nitesh Kumar",
-    claimsName: "Nitesh",
-    email: "nitesh.kumar@mydgv.com",
+    profileName: "Rahul Verma",
+    claimsName: "Rahul",
+    email: "rahul.verma@mydgv.com",
   }),
-  "Nitesh Kumar"
+  "Rahul Verma"
 );
 assert.strictEqual(
-  logic.resolveAuthorName({ email: "nitesh.kumar@mydgv.com" }),
-  "Nitesh Kumar"
+  logic.resolveAuthorName({ email: "rahul.verma@mydgv.com" }),
+  "Rahul Verma"
 );
 assert.strictEqual(
-  logic.withAnnouncementStatus({ createdBy: "nitesh.kumar@mydgv.com" }, now)
+  logic.withAnnouncementStatus({ createdBy: "rahul.verma@mydgv.com" }, now)
     .createdByName,
-  "Nitesh Kumar"
+  "Rahul Verma"
 );
 assert.strictEqual(
   logic.withAnnouncementStatus(
-    { createdBy: "nitesh.kumar@mydgv.com", createdByName: "Nitesh Kumar" },
+    { createdBy: "rahul.verma@mydgv.com", createdByName: "Rahul Verma" },
     now
   ).createdByName,
-  "Nitesh Kumar"
+  "Rahul Verma"
 );
 
 console.log("announcement logic tests passed");

@@ -44,11 +44,24 @@ async function getReminder(ddb, email, type, dedupKey) {
   return res.Item || null;
 }
 
-function shouldSkip(existing, cooldownMs, nowMs) {
+function resolveChannels({ channel, emailEnabled, inAppEnabled }) {
+  const mode = String(channel || "").toLowerCase();
+  if (mode === "email") return { emailEnabled: true, inAppEnabled: false };
+  if (mode === "inapp" || mode === "in-app") {
+    return { emailEnabled: false, inAppEnabled: true };
+  }
+  return {
+    emailEnabled: emailEnabled !== false,
+    inAppEnabled: inAppEnabled !== false,
+  };
+}
+
+function shouldSkip(existing, cooldownMs, nowMs, { requireMessageId = false } = {}) {
   if (!existing) return false;
   const attempts = Number(existing.attempts || 0);
   const status = String(existing.status || "").toUpperCase();
   if (status === "SENT") {
+    if (requireMessageId && !existing.messageId) return false;
     if (!cooldownMs) return true;
     const sentAt = existing.sentAt ? Date.parse(existing.sentAt) : 0;
     return Number.isFinite(sentAt) && nowMs - sentAt < cooldownMs;
@@ -82,7 +95,11 @@ async function dispatchNotification(ddb, {
   dedupKey,
   cooldownMs = 0,
   extra = {},
+  channel,
+  emailEnabled,
+  inAppEnabled,
 }) {
+  const channels = resolveChannels({ channel, emailEnabled, inAppEnabled });
   const normalized = String(email || "").trim().toLowerCase();
   if (!normalized || !type || !dedupKey) {
     return { skipped: true, status: "FAILED", error: "INVALID_NOTIFICATION" };
@@ -93,7 +110,7 @@ async function dispatchNotification(ddb, {
   const nowMs = now.getTime();
   const existing = await getReminder(ddb, normalized, type, dedupKey);
 
-  if (shouldSkip(existing, cooldownMs, nowMs)) {
+  if (shouldSkip(existing, cooldownMs, nowMs, { requireMessageId: channels.emailEnabled })) {
     console.log(
       "NOTIFICATION_SKIPPED",
       JSON.stringify({
@@ -120,19 +137,38 @@ async function dispatchNotification(ddb, {
     updatedAt: nowIso,
     createdAt: existing?.createdAt || nowIso,
     inAppWritten: existing?.inAppWritten || false,
-    ...extra,
+    channel: channels.emailEnabled && channels.inAppEnabled
+      ? "both"
+      : channels.emailEnabled
+        ? "email"
+        : "inapp",
+    meta: extra,
   };
 
   await saveReminder(ddb, baseItem);
 
-  const result = await sendEmail({
-    to: normalized,
-    subject: subject || title,
-    text: message,
-    html,
-  });
+  let result = { ok: true, messageId: "" };
+  if (channels.emailEnabled) {
+    result = await sendEmail({
+      to: normalized,
+      subject: subject || title,
+      text: message,
+      html,
+    });
+    console.log(
+      "EMAIL_ATTEMPT",
+      JSON.stringify({
+        type,
+        employee: normalized,
+        reason,
+        ok: !!result.ok,
+        error: result.error || null,
+        messageId: result.messageId || null,
+      })
+    );
+  }
 
-  if (!baseItem.inAppWritten) {
+  if (channels.inAppEnabled && !baseItem.inAppWritten) {
     try {
       await writeInAppNotification(ddb, normalized, {
         type,
@@ -146,12 +182,15 @@ async function dispatchNotification(ddb, {
     }
   }
 
-  if (!result.ok) {
+  const emailOk = !channels.emailEnabled || result.ok;
+  const inAppOk = !channels.inAppEnabled || baseItem.inAppWritten;
+  if (!emailOk || !inAppOk) {
+    const error = result.error || (!inAppOk ? "IN_APP_NOTIFY_FAILED" : "SEND_FAILED");
     await saveReminder(ddb, {
       ...baseItem,
       status: "FAILED",
-      lastError: result.error,
-      messageId: null,
+      lastError: error,
+      messageId: result.messageId || null,
     });
     console.error(
       "NOTIFICATION_FAILED",
@@ -160,19 +199,19 @@ async function dispatchNotification(ddb, {
         employee: normalized,
         reason,
         status: "FAILED",
-        messageId: null,
-        error: result.error,
+        messageId: result.messageId || null,
+        error,
         attempts,
       })
     );
-    return { skipped: false, status: "FAILED", error: result.error, attempts };
+    return { skipped: false, status: "FAILED", error, attempts };
   }
 
   await saveReminder(ddb, {
     ...baseItem,
     status: "SENT",
     sentAt: nowIso,
-    messageId: result.messageId,
+    messageId: result.messageId || null,
     lastError: null,
   });
 

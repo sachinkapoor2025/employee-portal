@@ -309,6 +309,12 @@ const ZONE_STYLE = {
   },
 };
 
+/** TEST window: 2 minutes. Set REACT_APP_TASK_ORANGE_MS=86400000 for 24 hours. */
+export const ORANGE_MS = (() => {
+  const n = Number(process.env.REACT_APP_TASK_ORANGE_MS);
+  return Number.isFinite(n) && n > 0 ? n : 2 * 60 * 1000;
+})();
+
 function parseDeadlineMs(dueDate) {
   if (!dueDate) return null;
   const raw = String(dueDate);
@@ -337,7 +343,7 @@ export function computeZoneFallback(taskOrAssignment, dueDate, now = Date.now())
   const deadline = parseDeadlineMs(dueDate || taskOrAssignment?.dueDate);
   if (!deadline) return "NONE";
   if (now < deadline) return "GREEN";
-  if (now < deadline + 24 * 60 * 60 * 1000) return "ORANGE";
+  if (now < deadline + ORANGE_MS) return "ORANGE";
   return "RED";
 }
 
@@ -352,7 +358,7 @@ export function getTaskZone(task) {
   return computeZoneFallback(task, task?.dueDate);
 }
 
-export function employeeCanComplete(taskOrAssignment, dueDate) {
+export function employeeCanChangeStatus(taskOrAssignment, dueDate) {
   const status = String(
     taskOrAssignment?.status ||
       taskOrAssignment?.myAssignment?.status ||
@@ -364,6 +370,10 @@ export function employeeCanComplete(taskOrAssignment, dueDate) {
     dueDate || taskOrAssignment?.dueDate
   );
   return zone !== "RED";
+}
+
+export function employeeCanComplete(taskOrAssignment, dueDate) {
+  return employeeCanChangeStatus(taskOrAssignment, dueDate);
 }
 
 export function zoneDisplay(zone, status) {

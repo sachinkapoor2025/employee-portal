@@ -931,6 +931,7 @@ Resources:
           TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
           COMPANY_TIMEZONE: Asia/Kolkata
           COMPANY_TZ_OFFSET: "+05:30"
+          TASK_ORANGE_MS: "120000"
           NOTIFICATION_FROM_EMAIL: !Ref NotificationFromEmail
           NOTIFICATION_FROM_NAME: DGV Portal
           PORTAL_URL: !Sub "https://${FrontendDomainName}"
@@ -986,24 +987,6 @@ Resources:
           Properties:
             Path: /tasks
             Method: DELETE
-            RestApiId: !Ref ApiGateway
-        RedZoneWeeklyGetApi:
-          Type: Api
-          Properties:
-            Path: /tasks/redzone-report
-            Method: GET
-            RestApiId: !Ref ApiGateway
-        RedZoneWeeklyPutApi:
-          Type: Api
-          Properties:
-            Path: /tasks/redzone-report
-            Method: PUT
-            RestApiId: !Ref ApiGateway
-        RedZoneWeeklyPostApi:
-          Type: Api
-          Properties:
-            Path: /tasks/redzone-report
-            Method: POST
             RestApiId: !Ref ApiGateway
         TaskByIdGetApi:
           Type: Api
