@@ -44,7 +44,16 @@ async function getReminder(ddb, email, type, dedupKey) {
   return res.Item || null;
 }
 
-function resolveChannels({ channel, emailEnabled, inAppEnabled }) {
+const TASK_IN_APP_ONLY_TYPES = new Set([
+  "TASK_ASSIGNED",
+  "TASK_ORANGE",
+  "TASK_RED",
+]);
+
+function resolveChannels({ channel, emailEnabled, inAppEnabled, type }) {
+  if (TASK_IN_APP_ONLY_TYPES.has(type)) {
+    return { emailEnabled: false, inAppEnabled: true };
+  }
   const mode = String(channel || "").toLowerCase();
   if (mode === "email") return { emailEnabled: true, inAppEnabled: false };
   if (mode === "inapp" || mode === "in-app") {
@@ -99,7 +108,7 @@ async function dispatchNotification(ddb, {
   emailEnabled,
   inAppEnabled,
 }) {
-  const channels = resolveChannels({ channel, emailEnabled, inAppEnabled });
+  const channels = resolveChannels({ channel, emailEnabled, inAppEnabled, type });
   const normalized = String(email || "").trim().toLowerCase();
   if (!normalized || !type || !dedupKey) {
     return { skipped: true, status: "FAILED", error: "INVALID_NOTIFICATION" };
@@ -240,5 +249,7 @@ module.exports = {
   writeInAppNotification,
   reminderKey,
   shouldSkip,
+  resolveChannels,
+  TASK_IN_APP_ONLY_TYPES,
   MAX_ATTEMPTS,
 };
