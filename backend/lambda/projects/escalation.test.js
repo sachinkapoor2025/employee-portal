@@ -20,6 +20,8 @@ const {
 
 const DEADLINE = "2026-08-25T11:30:00.000Z"; // 17:00 IST
 const DEADLINE_MS = Date.parse(DEADLINE);
+// 1 minute after deadline — still inside the 2-minute Orange window
+const DURING_ORANGE_MS = DEADLINE_MS + 60 * 1000;
 
 assert.strictEqual(parseDeadlineMs(DEADLINE), DEADLINE_MS);
 assert.ok(parseDeadlineMs("2026-08-25") > Date.parse("2026-08-25T18:29:00.000Z"));
@@ -52,23 +54,23 @@ assert.strictEqual(t1Later.reachedRed, false);
 const t2 = computeAssignmentView(
   { email: "amit@mydgv.com", status: "TODO" },
   DEADLINE,
-  DEADLINE_MS + 5 * 60 * 1000
+  DURING_ORANGE_MS
 );
 assert.strictEqual(t2.zone, ZONES.ORANGE);
 assert.strictEqual(t2.completed, false);
 
-// Detection a few minutes after deadline is still Orange
+// Detection still inside the Orange window remains Orange
 const lateDetect = detectTransitions(
   { email: "amit@mydgv.com", status: "TODO", recordedZone: "GREEN" },
   DEADLINE,
-  DEADLINE_MS + 5 * 60 * 1000
+  DURING_ORANGE_MS
 );
 assert.strictEqual(lateDetect.assignment.recordedZone, ZONES.ORANGE);
 assert.strictEqual(lateDetect.events[0].action, "zone_orange");
 assert.strictEqual(lateDetect.events[0].timestamp, DEADLINE);
 
 // Test 3 — completed during Orange never becomes Red
-const t3Now = DEADLINE_MS + 5 * 60 * 1000;
+const t3Now = DURING_ORANGE_MS;
 const t3Done = completeAssignment(
   { email: "priya@mydgv.com", status: "TODO", recordedZone: "ORANGE" },
   DEADLINE,
@@ -231,7 +233,7 @@ assert.deepStrictEqual(
 );
 assert.ok(!filteredCompleted[0].matchedAssignments.some((a) => a.email === "dev@mydgv.com"));
 
-const orangeNow = DEADLINE_MS + 5 * 60 * 1000;
+const orangeNow = DURING_ORANGE_MS;
 const orangeTask = decorateTask(
   {
     title: "Monthly Report",
@@ -343,7 +345,7 @@ assert.strictEqual(
   "Rahul Verma"
 );
 
-const { needsRedAdminNotify, employeeMayComplete, employeeMayChangeStatus } = require("./escalation");
+const { needsRedAdminNotify, employeeMayComplete, employeeMayChangeStatus, canClaimRedAdminStatus, RED_ADMIN_CLAIM_STALE_MS } = require("./escalation");
 assert.strictEqual(needsRedAdminNotify({}, {}, false), false);
 assert.strictEqual(needsRedAdminNotify({}, {}, true), true);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, true), false);
@@ -401,6 +403,56 @@ assert.strictEqual(
     redNow + 5 * 60 * 1000
   ),
   false
+);
+
+assert.strictEqual(
+  canClaimRedAdminStatus(null, null, redNow),
+  true
+);
+assert.strictEqual(canClaimRedAdminStatus("PENDING", null, redNow), true);
+assert.strictEqual(canClaimRedAdminStatus("FAILED", null, redNow), true);
+assert.strictEqual(canClaimRedAdminStatus("SENT", null, redNow), false);
+assert.strictEqual(
+  canClaimRedAdminStatus("SENDING", new Date(redNow).toISOString(), redNow),
+  false
+);
+assert.strictEqual(
+  canClaimRedAdminStatus(
+    "SENDING",
+    new Date(redNow - RED_ADMIN_CLAIM_STALE_MS - 1).toISOString(),
+    redNow
+  ),
+  true
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    {
+      email: "a@mydgv.com",
+      status: "TODO",
+      recordedZone: "RED",
+      redAdminNotifyStatus: "SENDING",
+      redAdminNotifyClaimedAt: new Date(redNow).toISOString(),
+    },
+    false,
+    redNow
+  ),
+  false
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    taskDue,
+    {
+      email: "a@mydgv.com",
+      status: "TODO",
+      recordedZone: "RED",
+      redAdminNotifyStatus: "SENDING",
+      redAdminNotifyClaimedAt: new Date(redNow - RED_ADMIN_CLAIM_STALE_MS - 1).toISOString(),
+    },
+    false,
+    redNow
+  ),
+  true
 );
 
 // TEST 3 — only the Red assignment notifies; Orange/DONE peers do not

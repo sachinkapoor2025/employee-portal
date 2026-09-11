@@ -17,7 +17,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
 const escalation = require("./escalation");
 const { zoneNotifyCopy } = require("./zoneNotify");
-const { notifyAdminsTaskEnteredRed } = require("./redAdminNotify");
+const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify, persistRedAdminRecipient, isConditionalCheckFailed } = require("./redAdminNotify");
 const { activeAdminEmailsFromAccess } = require("../common/roles");
 
 const ddb = DynamoDBDocumentClient.from(
@@ -193,7 +193,7 @@ async function loadAssignmentItems(taskId) {
   return listByPrefix(`TASK#${taskId}`, "ASSIGNMENT#");
 }
 
-async function writeAssignment(taskId, assignment) {
+async function writeAssignment(taskId, assignment, options = {}) {
   const email = escalation.normalizeEmail(assignment.email);
   if (!email) return null;
   const item = {
@@ -212,13 +212,39 @@ async function writeAssignment(taskId, assignment) {
     recordedZone: assignment.recordedZone || null,
     zoneReachedAt: assignment.zoneReachedAt || null,
     redAdminNotifyStatus: assignment.redAdminNotifyStatus || null,
+    redAdminNotifyClaimedAt: assignment.redAdminNotifyClaimedAt || null,
     redAdminNotifiedAt: assignment.redAdminNotifiedAt || null,
+    redAdminNotifyRecipients: assignment.redAdminNotifyRecipients || {},
     removed: !!assignment.removed,
   };
-  await ddb.send(
-    new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
-  );
-  return item;
+  const params = {
+    TableName: process.env.WORK_TABLE,
+    Item: item,
+  };
+  if (options.preserveNotify) {
+    const incoming = escalation.redAdminNotifyStatusOf(assignment);
+    params.ConditionExpression =
+      "attribute_not_exists(redAdminNotifyStatus) OR attribute_type(redAdminNotifyStatus, :nullType) OR redAdminNotifyStatus = :incoming OR (redAdminNotifyStatus <> :sent AND redAdminNotifyStatus <> :sending)";
+    params.ExpressionAttributeValues = {
+      ":nullType": "NULL",
+      ":incoming": incoming || "PENDING",
+      ":sent": "SENT",
+      ":sending": "SENDING",
+    };
+  }
+  try {
+    await ddb.send(new PutCommand(params));
+    return item;
+  } catch (err) {
+    if (options.preserveNotify && isConditionalCheckFailed(err)) {
+      console.log(
+        "ASSIGNMENT_PRESERVE_SKIPPED",
+        JSON.stringify({ taskId, email })
+      );
+      return null;
+    }
+    throw err;
+  }
 }
 
 async function resolveAssignments(task) {
@@ -247,16 +273,18 @@ function snapshotTask(task, assignments) {
       recordedZone: a.recordedZone || null,
       zoneReachedAt: a.zoneReachedAt || null,
       redAdminNotifyStatus: a.redAdminNotifyStatus || null,
+      redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
       redAdminNotifiedAt: a.redAdminNotifiedAt || null,
+      redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
       removed: !!a.removed,
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
   };
 }
 
-async function persistAssignmentsAndTask(task, assignments) {
+async function persistAssignmentsAndTask(task, assignments, options = {}) {
   for (const a of assignments) {
-    await writeAssignment(task.taskId, a);
+    await writeAssignment(task.taskId, a, options);
   }
   const merged = snapshotTask(task, assignments);
   merged.updatedAt = new Date().toISOString();
@@ -284,19 +312,6 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
   } catch (err) {
     console.error("Task notification failed", err);
   }
-}
-
-async function persistAssignmentNotifyStatus(task, assignment, status) {
-  const nextAssignment = {
-    ...assignment,
-    redAdminNotifyStatus: status,
-  };
-  if (status === "SENT") {
-    nextAssignment.redAdminNotifiedAt =
-      assignment.redAdminNotifiedAt || new Date().toISOString();
-  }
-  await writeAssignment(task.taskId, nextAssignment);
-  return nextAssignment;
 }
 
 async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
@@ -381,25 +396,9 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
       ).toISOString()
     : new Date(nowMs).toISOString();
 
-  for (const a of next) {
-    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
-      continue;
-    }
-    const email = escalation.normalizeEmail(a.email);
-    const enteredRed = enteredRedEmails.has(email);
-    if (!escalation.needsRedAdminNotify(task, a, enteredRed, nowMs)) continue;
-    if (
-      escalation.redAdminNotifyStatusOf(a) !== "PENDING" &&
-      escalation.redAdminNotifyStatusOf(a) !== "SENT"
-    ) {
-      a.redAdminNotifyStatus = "PENDING";
-      changed = true;
-    }
-  }
-
   let saved;
   if (changed) {
-    saved = await persistAssignmentsAndTask(task, next);
+    saved = await persistAssignmentsAndTask(task, next, { preserveNotify: true });
   } else {
     saved = snapshotTask(task, next);
   }
@@ -433,65 +432,116 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
       JSON.stringify({ taskId: task.taskId, status: "FAILED" })
     );
     console.error(err);
-    let notifyChanged = false;
-    for (const a of next) {
-      if (!pendingAdmin.includes(a)) continue;
-      a.redAdminNotifyStatus = "FAILED";
-      notifyChanged = true;
-    }
-    if (notifyChanged) {
-      try {
-        return await persistAssignmentsAndTask(saved, next);
-      } catch (persistErr) {
-        console.error(persistErr);
-        return saved;
-      }
-    }
     return saved;
   }
 
-  let notifyChanged = false;
+  const tableName = process.env.WORK_TABLE;
+  const nowIso = new Date(nowMs).toISOString();
   for (const a of pendingAdmin) {
     const email = escalation.normalizeEmail(a.email);
+    const assignmentItem = {
+      PK: `TASK#${task.taskId}`,
+      SK: `ASSIGNMENT#${email}`,
+      type: "ASSIGNMENT",
+      taskId: task.taskId,
+      email,
+      status: a.status || "TODO",
+      assignedAt: a.assignedAt || nowIso,
+      assignedBy: a.assignedBy || "",
+      completedAt: a.completedAt || null,
+      completedDate: a.completedDate || null,
+      completedZone: a.completedZone || null,
+      highestZone: a.highestZone || null,
+      recordedZone: a.recordedZone || null,
+      zoneReachedAt: a.zoneReachedAt || null,
+      redAdminNotifyStatus: a.redAdminNotifyStatus || null,
+      redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
+      redAdminNotifiedAt: a.redAdminNotifiedAt || null,
+      redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
+      removed: !!a.removed,
+    };
+    let claimed;
     try {
-      const notifyStatus = await notifyAdminsTaskEnteredRed({
-        task: saved,
-        assignment: a,
-        redAt: redAtByEmail[email] || redStartedFallback,
-        adminEmails,
-        getAssigneeProfile,
-        getProjectName,
+      claimed = await claimRedAdminNotify(ddb, {
+        tableName,
+        item: assignmentItem,
+        nowIso,
+        nowMs,
       });
-      if (a.redAdminNotifyStatus !== notifyStatus) {
-        a.redAdminNotifyStatus = notifyStatus;
-        if (notifyStatus === "SENT") {
-          a.redAdminNotifiedAt = a.redAdminNotifiedAt || new Date().toISOString();
-        }
-        notifyChanged = true;
-      }
-      await persistAssignmentNotifyStatus(saved, a, notifyStatus);
     } catch (err) {
       console.error(
         "RED_ADMIN_EMAIL_FAILED",
         JSON.stringify({ taskId: task.taskId, status: "FAILED" })
       );
       console.error(err);
-      a.redAdminNotifyStatus = "FAILED";
-      notifyChanged = true;
-      try {
-        await persistAssignmentNotifyStatus(saved, a, "FAILED");
-      } catch (persistErr) {
-        console.error(persistErr);
+      continue;
+    }
+    if (!claimed.ok) {
+      console.log(
+        "RED_ADMIN_NOTIFY_SKIPPED",
+        JSON.stringify({
+          taskId: task.taskId,
+          assignmentEmail: email,
+          reason: claimed.reason || "already claimed or sent",
+        })
+      );
+      continue;
+    }
+    a.redAdminNotifyStatus = "SENDING";
+    a.redAdminNotifyClaimedAt = nowIso;
+    a.redAdminNotifyRecipients = claimed.item.redAdminNotifyRecipients || {};
+    let notifyStatus = "FAILED";
+    try {
+      notifyStatus = await notifyAdminsTaskEnteredRed({
+        task: saved,
+        assignment: a,
+        redAt: redAtByEmail[email] || redStartedFallback,
+        adminEmails,
+        getAssigneeProfile,
+        getProjectName,
+        existingRecipients: a.redAdminNotifyRecipients,
+        persistRecipient: async (recipient, entry) => {
+          await persistRedAdminRecipient(ddb, {
+            tableName,
+            key: { PK: assignmentItem.PK, SK: assignmentItem.SK },
+            email: recipient,
+            messageId: entry.messageId,
+            notifiedAt: entry.notifiedAt,
+          });
+        },
+        nowMs,
+        nowIso,
+      });
+    } catch (err) {
+      console.error(
+        "RED_ADMIN_EMAIL_FAILED",
+        JSON.stringify({ taskId: task.taskId, status: "FAILED" })
+      );
+      console.error(err);
+      notifyStatus = "FAILED";
+    }
+    try {
+      const finalized = await finalizeRedAdminNotify(ddb, {
+        tableName,
+        item: claimed.item,
+        status: notifyStatus,
+        nowIso,
+      });
+      if (finalized.ok) {
+        a.redAdminNotifyStatus = finalized.status;
+        if (finalized.status === "SENT") {
+          a.redAdminNotifiedAt = finalized.item.redAdminNotifiedAt || nowIso;
+        }
       }
+    } catch (persistErr) {
+      console.error(persistErr);
     }
   }
 
-  if (notifyChanged) {
-    try {
-      saved = await persistAssignmentsAndTask(saved, next);
-    } catch (err) {
-      console.error(err);
-    }
+  try {
+    saved = snapshotTask(saved, next);
+  } catch (err) {
+    console.error(err);
   }
   return saved;
 }
@@ -1057,7 +1107,8 @@ exports.handler = async (event) => {
             `New task assigned: ${item.title}`,
             `You have been assigned "${item.title}".`,
             `${id}#${email}#assigned#${now}`,
-            { taskId: id }
+            { taskId: id },
+            { channel: "inapp" }
           );
         }
       }
@@ -1290,7 +1341,8 @@ exports.handler = async (event) => {
               `New task assigned: ${merged.title}`,
               `You have been assigned "${merged.title}".`,
               `${taskId}#${email}#assigned#${nowIso}`,
-              { taskId }
+              { taskId },
+              { channel: "inapp" }
             );
           } else if (existingA.removed) {
             existingA.removed = false;
@@ -1316,7 +1368,8 @@ exports.handler = async (event) => {
               `New task assigned: ${merged.title}`,
               `You have been assigned "${merged.title}".`,
               `${taskId}#${email}#assigned#${nowIso}`,
-              { taskId }
+              { taskId },
+              { channel: "inapp" }
             );
           }
         }

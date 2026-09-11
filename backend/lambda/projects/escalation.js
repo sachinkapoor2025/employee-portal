@@ -697,10 +697,41 @@ function redAdminNotifyStatusOf(task = {}) {
   return String(task.redAdminNotifyStatus || "").toUpperCase();
 }
 
+/** Claim TTL: longer than ProjectsFunction timeout (120s), shorter than EventBridge (5m). */
+const RED_ADMIN_CLAIM_STALE_MS = 3 * 60 * 1000;
+
+function isRedAdminClaimStale(
+  claimedAt,
+  nowMs = Date.now(),
+  staleMs = RED_ADMIN_CLAIM_STALE_MS
+) {
+  const claimedMs = Date.parse(claimedAt);
+  if (!Number.isFinite(claimedMs)) return true;
+  return nowMs - claimedMs >= staleMs;
+}
+
 /**
- * Immediate Red-zone admin email: send on first RED transition, retry FAILED/PENDING,
- * never resend after SENT. Independent of recorded zone so email failure cannot
- * block the Red state, and later sweeps cannot duplicate a successful send.
+ * Atomic claim gate for assignment-level Red admin email.
+ * SENT is never reclaimed. Fresh SENDING is exclusive. Stale SENDING may retry
+ * after a crashed invocation. PENDING/FAILED/missing may claim.
+ */
+function canClaimRedAdminStatus(
+  status,
+  claimedAt,
+  nowMs = Date.now(),
+  staleMs = RED_ADMIN_CLAIM_STALE_MS
+) {
+  const current = String(status || "").toUpperCase();
+  if (current === "SENT") return false;
+  if (current === "SENDING") return isRedAdminClaimStale(claimedAt, nowMs, staleMs);
+  return true;
+}
+
+/**
+ * Immediate Red-zone admin email: send on first RED transition, retry FAILED/PENDING
+ * (and stale SENDING), never resend after SENT. Independent of recorded zone so
+ * email failure cannot block the Red state, and later sweeps cannot duplicate a
+ * successful send.
  */
 function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = Date.now()) {
   if (assignment.removed || isComplete(assignment.status) || isCancelled(assignment.status)) {
@@ -708,6 +739,12 @@ function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = 
   }
   const assignmentStatus = redAdminNotifyStatusOf(assignment);
   if (assignmentStatus === "SENT") return false;
+  if (
+    assignmentStatus === "SENDING" &&
+    !isRedAdminClaimStale(assignment.redAdminNotifyClaimedAt, nowMs)
+  ) {
+    return false;
+  }
 
   const hasEmail = !!normalizeEmail(assignment.email);
   const taskStatus = redAdminNotifyStatusOf(task);
@@ -716,6 +753,7 @@ function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = 
 
   if (enteredRed) return true;
   if (assignmentStatus === "FAILED" || assignmentStatus === "PENDING") return true;
+  if (assignmentStatus === "SENDING") return true;
   if (!hasEmail && (taskStatus === "FAILED" || taskStatus === "PENDING")) {
     return true;
   }
@@ -789,6 +827,9 @@ module.exports = {
   creatorDisplayName,
   redAdminNotifyStatusOf,
   needsRedAdminNotify,
+  canClaimRedAdminStatus,
+  isRedAdminClaimStale,
+  RED_ADMIN_CLAIM_STALE_MS,
   employeeMayChangeStatus,
   employeeMayComplete,
   DAY_MS,
