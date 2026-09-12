@@ -1208,13 +1208,18 @@ exports.handler = async (event) => {
             user.email,
             { assignmentEmail: target.email, zone: completed.completedZone }
           );
+          const completedForOther =
+            !!user.isAdmin &&
+            escalation.normalizeEmail(target.email) !==
+              escalation.normalizeEmail(user.email);
           await notifyTaskEvent(
             target.email,
             "TASK_COMPLETED",
             `Task completed: ${merged.title}`,
             `"${merged.title}" was marked completed.`,
             `${taskId}#${target.email}#completed#${nowIso}`,
-            { taskId }
+            { taskId },
+            completedForOther ? { channel: "inapp" } : {}
           );
         } else {
           const prev = target.status;

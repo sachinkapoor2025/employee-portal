@@ -61,6 +61,14 @@ assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_ASSIGNED"));
 assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_ORANGE"));
 assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_RED"));
 assert.ok(!TASK_IN_APP_ONLY_TYPES.has("TASK_COMPLETED"));
+assert.deepStrictEqual(resolveChannels({ type: "TASK_COMPLETED" }), {
+  emailEnabled: true,
+  inAppEnabled: true,
+});
+assert.deepStrictEqual(resolveChannels({ type: "TASK_COMPLETED", channel: "inapp" }), {
+  emailEnabled: false,
+  inAppEnabled: true,
+});
 
 process.env.NOTIFICATION_FROM_EMAIL = "";
 const { sendEmail } = require("./email");

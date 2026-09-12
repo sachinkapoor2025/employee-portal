@@ -232,6 +232,24 @@ async function run() {
   assert.ok(content.message.includes("Update homepage banner and CTA."));
   assert.ok(content.html.includes("VIEW TASK"));
 
+  const completedDdb = createMemoryDdb();
+  const completed = await dispatchNotification(completedDdb, {
+    email: "doer@mydgv.com",
+    type: "TASK_COMPLETED",
+    title: "Task completed: Homepage Update",
+    message: '"Homepage Update" was marked completed.',
+    dedupKey: "task-1#doer@mydgv.com#completed",
+    extra: { taskId: "task-1" },
+    channel: "inapp",
+  });
+  assert.strictEqual(completed.status, "SENT");
+  assert.ok(!completed.messageId);
+  const completedBell = notifyItems(completedDdb);
+  assert.strictEqual(completedBell.length, 1);
+  assert.strictEqual(completedBell[0].type, "TASK_COMPLETED");
+  assert.strictEqual(completedBell[0].email, "doer@mydgv.com");
+  assert.strictEqual(reminderItems(completedDdb).pop().channel, "inapp");
+
   const handlerSrc = fs.readFileSync(require.resolve("./handler.js"), "utf8");
   const calls = notifyTaskEventCalls(handlerSrc);
   const assignedCalls = calls.filter((call) => call.includes('"TASK_ASSIGNED"'));
@@ -245,6 +263,15 @@ async function run() {
   const zoneCall = calls.find((call) => call.includes("copy.type"));
   assert.ok(zoneCall);
   assert.ok(zoneCall.includes('channel: "inapp"'));
+  const completedCalls = calls.filter((call) => call.includes('"TASK_COMPLETED"'));
+  assert.ok(completedCalls.length >= 1);
+  for (const call of completedCalls) {
+    assert.ok(
+      call.includes('channel: "inapp"'),
+      "admin-on-behalf TASK_COMPLETED must be in-app only"
+    );
+  }
+  assert.ok(handlerSrc.includes("completedForOther"));
   assert.ok(handlerSrc.includes("notifyAdminsTaskEnteredRed"));
   assert.ok(handlerSrc.includes("claimRedAdminNotify"));
   assert.ok(handlerSrc.includes("finalizeRedAdminNotify"));
