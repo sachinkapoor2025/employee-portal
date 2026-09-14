@@ -309,10 +309,10 @@ const ZONE_STYLE = {
   },
 };
 
-/** TEST window: 2 minutes. Set REACT_APP_TASK_ORANGE_MS=86400000 for 24 hours. */
+/** Orange grace period from the original deadline. Default 24 hours (86400000). */
 export const ORANGE_MS = (() => {
   const n = Number(process.env.REACT_APP_TASK_ORANGE_MS);
-  return Number.isFinite(n) && n > 0 ? n : 2 * 60 * 1000;
+  return Number.isFinite(n) && n > 0 ? n : 86400000;
 })();
 
 function parseDeadlineMs(dueDate) {
