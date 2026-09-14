@@ -12,8 +12,12 @@ import {
   deleteUser,
   resetUserPassword,
 } from "../../services/api";
-import { getLoggedInEmail } from "../../services/auth";
-import { ROLE_OPTIONS, normalizeRole } from "../../constants/roles";
+import { getLoggedInEmail, PORTAL_ROLE_KEY } from "../../services/auth";
+import {
+  normalizeRole,
+  canManageUserAccessLifecycle,
+  roleOptionsForActor,
+} from "../../constants/roles";
 import {
   colors,
   pageCard,
@@ -160,6 +164,11 @@ export default function ManageUsers() {
   };
 
   const currentEmail = getLoggedInEmail().toLowerCase();
+  const actorRole =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem(PORTAL_ROLE_KEY)
+      : "";
+  const canLifecycle = canManageUserAccessLifecycle(actorRole);
   const query = search.trim().toLowerCase();
 
   const filteredUsers = users.filter((u) => {
@@ -441,7 +450,7 @@ export default function ManageUsers() {
                                 )
                             }
                           >
-                            {ROLE_OPTIONS.map((r) => (
+                            {roleOptionsForActor(actorRole, u.role).map((r) => (
                               <option key={r.value} value={r.value}>
                                 {r.label}
                               </option>
@@ -491,7 +500,7 @@ export default function ManageUsers() {
                                   >
                                     View
                                   </button>
-                                  {u.status === "ACTIVE" ? (
+                                  {canLifecycle && u.status === "ACTIVE" ? (
                                     <button
                                       type="button"
                                       role="menuitem"
@@ -505,7 +514,8 @@ export default function ManageUsers() {
                                     >
                                       Deactivate
                                     </button>
-                                  ) : (
+                                  ) : null}
+                                  {canLifecycle && u.status !== "ACTIVE" ? (
                                     <button
                                       type="button"
                                       role="menuitem"
@@ -519,7 +529,7 @@ export default function ManageUsers() {
                                     >
                                       Activate
                                     </button>
-                                  )}
+                                  ) : null}
                                   <button
                                     type="button"
                                     role="menuitem"
@@ -530,7 +540,8 @@ export default function ManageUsers() {
                                   >
                                     Reset password
                                   </button>
-                                  {u.email.toLowerCase() !== currentEmail ? (
+                                  {canLifecycle &&
+                                  u.email.toLowerCase() !== currentEmail ? (
                                     <button
                                       type="button"
                                       role="menuitem"

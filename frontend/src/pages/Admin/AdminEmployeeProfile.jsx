@@ -9,7 +9,8 @@ import {
   saveUserProfile,
   updateUserRole,
 } from "../../services/api";
-import { ROLE_OPTIONS, normalizeRole, roleLabel } from "../../constants/roles";
+import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole } from "../../constants/roles";
+import { PORTAL_ROLE_KEY } from "../../services/auth";
 import { alertSuccess, alertError } from "../../theme";
 
 const emptyForm = {
@@ -76,6 +77,10 @@ export default function AdminEmployeeProfile() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const actorRole =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem(PORTAL_ROLE_KEY)
+      : "";
 
   useEffect(() => {
     let cancelled = false;
@@ -191,7 +196,13 @@ export default function AdminEmployeeProfile() {
       });
 
       if (!isCreate) {
-        await updateUserRole(email, normalizeRole(draft.role));
+        const nextRole = normalizeRole(draft.role);
+        if (
+          nextRole !== normalizeRole(profile.role) &&
+          canAssignPortalRole(actorRole, nextRole)
+        ) {
+          await updateUserRole(email, nextRole);
+        }
       }
 
       if (result?.temporaryPassword) {
@@ -418,7 +429,7 @@ export default function AdminEmployeeProfile() {
                     value={normalizeRole(draft.role)}
                     onChange={(e) => updateDraft("role", e.target.value)}
                   >
-                    {ROLE_OPTIONS.map((r) => (
+                    {roleOptionsForActor(actorRole, draft.role).map((r) => (
                       <option key={r.value} value={r.value}>
                         {r.label}
                       </option>

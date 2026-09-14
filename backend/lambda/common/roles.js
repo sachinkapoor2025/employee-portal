@@ -59,6 +59,21 @@ function isValidAssignableRole(role) {
   );
 }
 
+/** Activate / deactivate (ACTIVE ↔ BLOCKED) and permanent delete. */
+function canManageUserAccessLifecycle(actorRole) {
+  return isSuperAdminRole(actorRole);
+}
+
+/**
+ * SUPER_ADMIN may assign any valid portal role.
+ * ADMIN/MANAGER/EMPLOYEE keep existing role-management except SUPER_ADMIN.
+ */
+function canAssignPortalRole(actorRole, targetRole) {
+  if (!isValidAssignableRole(targetRole)) return false;
+  if (isSuperAdminRole(targetRole) && !isSuperAdminRole(actorRole)) return false;
+  return true;
+}
+
 /** Active portal administrators from UserAccess rows (no hardcoded emails). */
 function activeAdminEmailsFromAccess(rows = []) {
   const seen = new Set();
@@ -86,5 +101,7 @@ module.exports = {
   cognitoGroupForRole,
   accessGateForRole,
   isValidAssignableRole,
+  canManageUserAccessLifecycle,
+  canAssignPortalRole,
   activeAdminEmailsFromAccess,
 };

@@ -11,6 +11,8 @@ const {
   normalizeRole,
   cognitoGroupForRole,
   isValidAssignableRole,
+  canAssignPortalRole,
+  isSuperAdminRole,
 } = require("../common/roles");
 
 const cognito = new CognitoIdentityProviderClient({
@@ -94,6 +96,25 @@ async function createCognitoUser(email, name) {
   }
 }
 
+async function loadUserAccessRole(email) {
+  const table = process.env.USER_ACCESS_TABLE;
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!table || !normalized) return null;
+  try {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: table,
+        Key: { PK: normalized, SK: normalized },
+      })
+    );
+    return res.Item?.role || null;
+  } catch {
+    return null;
+  }
+}
+
 async function syncCognitoGroup(email, role) {
   const group = cognitoGroupForRole(role);
   const other = group === "Admin" ? "Employee" : "Admin";
@@ -169,6 +190,23 @@ exports.handler = async (event) => {
       }
     }
 
+    const actorRole = await loadUserAccessRole(user.email);
+    if (user.isAdmin && role && isValidAssignableRole(role)) {
+      if (!canAssignPortalRole(actorRole, userRole)) {
+        if (mode === "CREATE") {
+          return response(403, {
+            error: "Only Super Admin can assign the Super Admin role.",
+          });
+        }
+        const existingRole = await loadUserAccessRole(normalizedEmail);
+        if (!isSuperAdminRole(existingRole) || !isSuperAdminRole(userRole)) {
+          return response(403, {
+            error: "Only Super Admin can assign the Super Admin role.",
+          });
+        }
+      }
+    }
+
     if (mode === "CREATE") {
       try {
         createMeta = await createCognitoUser(
@@ -211,19 +249,21 @@ exports.handler = async (event) => {
     }
 
     if (mode === "EDIT" && user.isAdmin && role && isValidAssignableRole(role)) {
-      await syncCognitoGroup(normalizedEmail, userRole);
-      await ddb.send(
-        new UpdateCommand({
-          TableName: process.env.USER_ACCESS_TABLE,
-          Key: { PK: normalizedEmail, SK: normalizedEmail },
-          UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
-          ExpressionAttributeNames: { "#role": "role" },
-          ExpressionAttributeValues: {
-            ":role": userRole,
-            ":updatedAt": new Date().toISOString(),
-          },
-        })
-      );
+      if (canAssignPortalRole(actorRole, userRole)) {
+        await syncCognitoGroup(normalizedEmail, userRole);
+        await ddb.send(
+          new UpdateCommand({
+            TableName: process.env.USER_ACCESS_TABLE,
+            Key: { PK: normalizedEmail, SK: normalizedEmail },
+            UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
+            ExpressionAttributeNames: { "#role": "role" },
+            ExpressionAttributeValues: {
+              ":role": userRole,
+              ":updatedAt": new Date().toISOString(),
+            },
+          })
+        );
+      }
     }
 
     const profileData = { ...(profile || {}) };

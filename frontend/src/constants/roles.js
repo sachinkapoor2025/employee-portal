@@ -23,6 +23,10 @@ export function normalizeRole(role) {
   return ROLES.EMPLOYEE;
 }
 
+export function isSuperAdminRole(role) {
+  return normalizeRole(role) === ROLES.SUPER_ADMIN;
+}
+
 export function isAdminPortalRole(role) {
   const r = normalizeRole(role);
   return (
@@ -34,6 +38,27 @@ export function isAdminPortalRole(role) {
 export function canManageProjectDocuments(role) {
   const r = normalizeRole(role);
   return r === ROLES.SUPER_ADMIN || r === ROLES.ADMIN;
+}
+
+/** Activate / deactivate and permanent delete: Super Admin only. */
+export function canManageUserAccessLifecycle(role) {
+  return isSuperAdminRole(role);
+}
+
+/** ADMIN may still assign ADMIN/MANAGER/EMPLOYEE; SUPER_ADMIN grant is Super Admin only. */
+export function canAssignPortalRole(actorRole, targetRole) {
+  if (normalizeRole(targetRole) === ROLES.SUPER_ADMIN && !isSuperAdminRole(actorRole)) {
+    return false;
+  }
+  return true;
+}
+
+export function roleOptionsForActor(actorRole, currentRole) {
+  if (isSuperAdminRole(actorRole)) return ROLE_OPTIONS;
+  const current = normalizeRole(currentRole);
+  return ROLE_OPTIONS.filter(
+    (o) => o.value !== ROLES.SUPER_ADMIN || o.value === current
+  );
 }
 
 export function roleLabel(role) {

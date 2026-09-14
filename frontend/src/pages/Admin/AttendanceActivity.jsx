@@ -91,8 +91,16 @@ export function isAttendanceExemptRole(role) {
   return String(role || "").trim().toUpperCase() === "SUPER_ADMIN";
 }
 
+export function isActiveAttendanceStatus(status) {
+  return String(status || "").trim().toUpperCase() === "ACTIVE";
+}
+
 export function filterAttendanceSheetRoster(users) {
-  return (users || []).filter((u) => !isAttendanceExemptRole(u?.role));
+  return (users || []).filter((u) => {
+    if (isAttendanceExemptRole(u?.role)) return false;
+    if (!isActiveAttendanceStatus(u?.status)) return false;
+    return true;
+  });
 }
 
 async function enrichUsers(list) {
@@ -250,8 +258,8 @@ export default function AttendanceActivity() {
       let leaves = [];
       try {
         const list = await fetchUsers();
-        users = await enrichUsers(Array.isArray(list) ? list : []);
-        users = filterAttendanceSheetRoster(users);
+        users = filterAttendanceSheetRoster(Array.isArray(list) ? list : []);
+        users = await enrichUsers(users);
       } catch {
         users = [];
       }

@@ -4,11 +4,14 @@ const {
   isAdminPortalRole,
   cognitoGroupForRole,
   isValidAssignableRole,
+  canManageUserAccessLifecycle,
+  canAssignPortalRole,
 } = require("../common/roles");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
   ScanCommand,
+  GetCommand,
   UpdateCommand,
   DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
@@ -20,13 +23,37 @@ const {
   AdminSetUserPasswordCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
 
-const client = DynamoDBDocumentClient.from(
+let client = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
-const cognito = new CognitoIdentityProviderClient({
+let cognito = new CognitoIdentityProviderClient({
   region: process.env.AWS_REGION,
 });
+
+function setClientsForTests({ ddb, cognitoClient } = {}) {
+  if (ddb) client = ddb;
+  if (cognitoClient) cognito = cognitoClient;
+}
+
+async function loadUserAccessRole(email) {
+  const table = process.env.USER_ACCESS_TABLE;
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!table || !normalized) return null;
+  try {
+    const res = await client.send(
+      new GetCommand({
+        TableName: table,
+        Key: { PK: normalized, SK: normalized },
+      })
+    );
+    return res.Item?.role || null;
+  } catch {
+    return null;
+  }
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -159,8 +186,14 @@ exports.handler = async (event) => {
     const body = JSON.parse(event.body || "{}");
     const { email, action, role } = body;
     const normalizedEmail = email ? String(email).trim().toLowerCase() : "";
+    const actorRole = await loadUserAccessRole(adminUser.email);
 
     if (action === "delete") {
+      if (!canManageUserAccessLifecycle(actorRole)) {
+        return respond(403, {
+          error: "Only Super Admin can delete users.",
+        });
+      }
       if (!normalizedEmail) {
         return respond(400, { error: "Email required" });
       }
@@ -237,6 +270,11 @@ exports.handler = async (event) => {
       }
 
       const nextRole = normalizeRole(role);
+      if (!canAssignPortalRole(actorRole, nextRole)) {
+        return respond(403, {
+          error: "Only Super Admin can assign the Super Admin role.",
+        });
+      }
 
       try {
         await client.send(
@@ -280,6 +318,15 @@ exports.handler = async (event) => {
       updates.status = "BLOCKED";
     }
 
+    if (
+      Object.keys(updates).length > 0 &&
+      !canManageUserAccessLifecycle(actorRole)
+    ) {
+      return respond(403, {
+        error: "Only Super Admin can activate or deactivate users.",
+      });
+    }
+
     if (!normalizedEmail || Object.keys(updates).length === 0) {
       return respond(400, { error: "Invalid request" });
     }
@@ -313,3 +360,5 @@ exports.handler = async (event) => {
 
   return respond(405, { error: "Method not allowed" });
 };
+
+exports.setClientsForTests = setClientsForTests;
