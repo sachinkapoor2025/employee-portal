@@ -8,8 +8,9 @@ const {
   GetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { randomUUID } = require("crypto");
+const { isSuperAdminRole } = require("../common/roles");
 
-const ddb = DynamoDBDocumentClient.from(
+let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
@@ -197,8 +198,28 @@ async function getProfile(email) {
   }
 }
 
+async function loadUserAccessRole(email) {
+  const table = process.env.USER_ACCESS_TABLE;
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!table || !normalized) return null;
+  try {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: table,
+        Key: { PK: normalized, SK: normalized },
+      })
+    );
+    return res.Item?.role || null;
+  } catch {
+    return null;
+  }
+}
+
 async function applyAttendanceStatus(email, fromDate, toDate, status) {
   if (!process.env.ATTENDANCE_TABLE || !email) return;
+  if (isSuperAdminRole(await loadUserAccessRole(email))) return;
   const profile = await getProfile(email);
   const nowIso = new Date().toISOString();
   for (const date of eachDate(fromDate, toDate)) {
@@ -625,4 +646,9 @@ exports.handler = async (event) => {
     console.error("Leave error:", err);
     return json(500, { error: "Internal server error" });
   }
+};
+
+exports.applyAttendanceStatus = applyAttendanceStatus;
+exports.setDocumentClientForTests = (client) => {
+  ddb = client;
 };

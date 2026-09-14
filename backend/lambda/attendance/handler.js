@@ -9,8 +9,9 @@ const {
   QueryCommand,
   ScanCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { isSuperAdminRole } = require("../common/roles");
 
-const ddb = DynamoDBDocumentClient.from(
+let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
@@ -232,6 +233,33 @@ async function putRecord(item) {
   );
 }
 
+async function loadUserAccessRole(email) {
+  const table = process.env.USER_ACCESS_TABLE;
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!table || !normalized) return null;
+  try {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: table,
+        Key: { PK: normalized, SK: normalized },
+      })
+    );
+    return res.Item?.role || null;
+  } catch {
+    return null;
+  }
+}
+
+async function attendanceExemptResponse(email) {
+  const role = await loadUserAccessRole(email);
+  if (!isSuperAdminRole(role)) return null;
+  return json(403, {
+    error: "SUPER_ADMIN users do not participate in attendance.",
+  });
+}
+
 function isEmployeeLocked(item) {
   return Boolean(item?.submittedAt);
 }
@@ -418,6 +446,9 @@ exports.handler = async (event) => {
     // =====================================================
 
     if (method === "POST") {
+      const blocked = await attendanceExemptResponse(user.email);
+      if (blocked) return blocked;
+
       const body = JSON.parse(event.body || "null");
 
       // ---- Check-In ----
@@ -767,4 +798,8 @@ exports.handler = async (event) => {
     console.error("Attendance error:", error);
     return json(500, { error: "Internal server error" });
   }
+};
+
+exports.setDocumentClientForTests = (client) => {
+  ddb = client;
 };

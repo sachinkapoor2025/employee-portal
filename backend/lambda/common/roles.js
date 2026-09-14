@@ -29,6 +29,10 @@ function isAdminPortalRole(role) {
   return ADMIN_PORTAL_ROLES.has(normalizeRole(role));
 }
 
+function isSuperAdminRole(role) {
+  return normalizeRole(role) === ROLES.SUPER_ADMIN;
+}
+
 /** Documents project writes + browsing another user's Personal folder. */
 function canManageProjectDocuments(role) {
   const r = normalizeRole(role);
@@ -77,6 +81,7 @@ module.exports = {
   ADMIN_PORTAL_ROLES,
   normalizeRole,
   isAdminPortalRole,
+  isSuperAdminRole,
   canManageProjectDocuments,
   cognitoGroupForRole,
   accessGateForRole,

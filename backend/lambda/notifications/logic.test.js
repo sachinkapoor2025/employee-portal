@@ -6,6 +6,7 @@ const {
   isMissedRequiredDay,
   findMissedWorkingStreak,
   overlayStatusForDate,
+  shouldReceiveMissedAttendanceReminder,
 } = require("./logic");
 
 // 2026-08-10 = Monday, 2026-08-11 = Tuesday, 2026-08-14 = Friday,
@@ -152,5 +153,22 @@ assert.strictEqual(
   });
   assert.strictEqual(result.shouldNotify, false);
 }
+
+assert.strictEqual(
+  shouldReceiveMissedAttendanceReminder({ role: "SUPER_ADMIN", status: "ACTIVE" }),
+  false
+);
+assert.strictEqual(
+  shouldReceiveMissedAttendanceReminder({ role: "ADMIN", status: "ACTIVE" }),
+  true
+);
+assert.strictEqual(
+  shouldReceiveMissedAttendanceReminder({ role: "MANAGER", status: "ACTIVE" }),
+  true
+);
+assert.strictEqual(
+  shouldReceiveMissedAttendanceReminder({ role: "EMPLOYEE", status: "ACTIVE" }),
+  true
+);
 
 console.log("notifications logic tests passed");

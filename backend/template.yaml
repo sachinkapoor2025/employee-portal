@@ -439,6 +439,8 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref UserProfileTable
         - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+        - DynamoDBReadPolicy:
             TableName: !Ref WorkTasksTable
       Events:
         AttendancePostApi:
@@ -1078,6 +1080,8 @@ Resources:
             TableName: !Ref AttendanceTable
         - DynamoDBReadPolicy:
             TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
       Events:
         LeaveGetApi:
           Type: Api

@@ -87,6 +87,14 @@ async function loadAttendanceForEmails(emails, start, end, userByEmail) {
   return collected;
 }
 
+export function isAttendanceExemptRole(role) {
+  return String(role || "").trim().toUpperCase() === "SUPER_ADMIN";
+}
+
+export function filterAttendanceSheetRoster(users) {
+  return (users || []).filter((u) => !isAttendanceExemptRole(u?.role));
+}
+
 async function enrichUsers(list) {
   return Promise.all(
     (list || []).map(async (u) => {
@@ -120,7 +128,7 @@ async function enrichUsers(list) {
   );
 }
 
-function buildDayRows(users, records, leaves, day) {
+export function buildDayRows(users, records, leaves, day) {
   const byEmail = {};
   (records || []).forEach((row) => {
     const email = String(row.email || "").toLowerCase();
@@ -243,6 +251,7 @@ export default function AttendanceActivity() {
       try {
         const list = await fetchUsers();
         users = await enrichUsers(Array.isArray(list) ? list : []);
+        users = filterAttendanceSheetRoster(users);
       } catch {
         users = [];
       }

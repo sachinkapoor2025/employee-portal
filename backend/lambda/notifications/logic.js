@@ -1,3 +1,4 @@
+const { ROLES, normalizeRole } = require("../common/roles");
 const DEFAULT_TZ = "Asia/Kolkata";
 const LOOKBACK_DAYS = 21;
 
@@ -198,6 +199,10 @@ function trainingEmail({ employeeName, titles, portalUrl }) {
   return { subject, message };
 }
 
+function shouldReceiveMissedAttendanceReminder(employee) {
+  return normalizeRole(employee?.role) !== ROLES.SUPER_ADMIN;
+}
+
 module.exports = {
   DEFAULT_TZ,
   LOOKBACK_DAYS,
@@ -214,4 +219,5 @@ module.exports = {
   attendanceEmail,
   documentEmail,
   trainingEmail,
+  shouldReceiveMissedAttendanceReminder,
 };

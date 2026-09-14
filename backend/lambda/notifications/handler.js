@@ -15,6 +15,7 @@ const {
   attendanceEmail,
   documentEmail,
   trainingEmail,
+  shouldReceiveMissedAttendanceReminder,
 } = require("./logic");
 
 const ddb = DynamoDBDocumentClient.from(
@@ -349,9 +350,11 @@ async function runNotifications() {
 
   for (const employee of employees) {
     try {
-      const attendance = await processAttendance(employee, todayKey);
-      if (attendance.status === "SENT") summary.attendanceSent += 1;
-      if (attendance.status === "FAILED") summary.attendanceFailed += 1;
+      if (shouldReceiveMissedAttendanceReminder(employee)) {
+        const attendance = await processAttendance(employee, todayKey);
+        if (attendance.status === "SENT") summary.attendanceSent += 1;
+        if (attendance.status === "FAILED") summary.attendanceFailed += 1;
+      }
     } catch (err) {
       console.error("ATTENDANCE_NOTIFY_ERROR", employee.email, err?.name);
     }
