@@ -61,6 +61,30 @@ export function roleOptionsForActor(actorRole, currentRole) {
   );
 }
 
+/** Live UserAccess.role for the logged-in actor, with optional session fallback. */
+export function resolveActorRoleFromUsers(users, currentEmail, fallbackRole = "") {
+  const email = String(currentEmail || "").trim().toLowerCase();
+  if (email) {
+    const me = (users || []).find(
+      (u) => String(u.email || "").toLowerCase() === email
+    );
+    if (me?.role) return me.role;
+  }
+  return fallbackRole || "";
+}
+
+export function manageUsersMenuFlags(actorRole, user, currentEmail) {
+  const canLifecycle = canManageUserAccessLifecycle(actorRole);
+  const status = String(user?.status || "");
+  const target = String(user?.email || "").toLowerCase();
+  const self = String(currentEmail || "").toLowerCase();
+  return {
+    showDeactivate: canLifecycle && status === "ACTIVE",
+    showActivate: canLifecycle && status !== "ACTIVE",
+    showDelete: canLifecycle && Boolean(target) && target !== self,
+  };
+}
+
 export function roleLabel(role) {
   const r = normalizeRole(role);
   const found = ROLE_OPTIONS.find((o) => o.value === r);

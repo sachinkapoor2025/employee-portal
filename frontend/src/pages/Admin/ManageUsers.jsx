@@ -15,8 +15,9 @@ import {
 import { getLoggedInEmail, PORTAL_ROLE_KEY } from "../../services/auth";
 import {
   normalizeRole,
-  canManageUserAccessLifecycle,
   roleOptionsForActor,
+  resolveActorRoleFromUsers,
+  manageUsersMenuFlags,
 } from "../../constants/roles";
 import {
   colors,
@@ -164,11 +165,15 @@ export default function ManageUsers() {
   };
 
   const currentEmail = getLoggedInEmail().toLowerCase();
-  const actorRole =
+  const storedPortalRole =
     typeof localStorage !== "undefined"
       ? localStorage.getItem(PORTAL_ROLE_KEY)
       : "";
-  const canLifecycle = canManageUserAccessLifecycle(actorRole);
+  const actorRole = resolveActorRoleFromUsers(
+    users,
+    currentEmail,
+    storedPortalRole
+  );
   const query = search.trim().toLowerCase();
 
   const filteredUsers = users.filter((u) => {
@@ -395,6 +400,11 @@ export default function ManageUsers() {
                   <tbody>
                     {filteredUsers.map((u) => {
                       const menuOpen = editMenuEmail === u.email;
+                      const menu = manageUsersMenuFlags(
+                        actorRole,
+                        u,
+                        currentEmail
+                      );
                       return (
                       <tr key={u.email}>
                         <td>
@@ -500,7 +510,7 @@ export default function ManageUsers() {
                                   >
                                     View
                                   </button>
-                                  {canLifecycle && u.status === "ACTIVE" ? (
+                                  {menu.showDeactivate ? (
                                     <button
                                       type="button"
                                       role="menuitem"
@@ -515,7 +525,7 @@ export default function ManageUsers() {
                                       Deactivate
                                     </button>
                                   ) : null}
-                                  {canLifecycle && u.status !== "ACTIVE" ? (
+                                  {menu.showActivate ? (
                                     <button
                                       type="button"
                                       role="menuitem"
@@ -540,8 +550,7 @@ export default function ManageUsers() {
                                   >
                                     Reset password
                                   </button>
-                                  {canLifecycle &&
-                                  u.email.toLowerCase() !== currentEmail ? (
+                                  {menu.showDelete ? (
                                     <button
                                       type="button"
                                       role="menuitem"

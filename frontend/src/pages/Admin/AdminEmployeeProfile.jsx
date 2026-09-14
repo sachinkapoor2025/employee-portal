@@ -9,8 +9,8 @@ import {
   saveUserProfile,
   updateUserRole,
 } from "../../services/api";
-import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole } from "../../constants/roles";
-import { PORTAL_ROLE_KEY } from "../../services/auth";
+import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole, resolveActorRoleFromUsers } from "../../constants/roles";
+import { getLoggedInEmail, PORTAL_ROLE_KEY } from "../../services/auth";
 import { alertSuccess, alertError } from "../../theme";
 
 const emptyForm = {
@@ -77,9 +77,15 @@ export default function AdminEmployeeProfile() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const actorRole =
+  const [actorRole, setActorRole] = useState(
     typeof localStorage !== "undefined"
-      ? localStorage.getItem(PORTAL_ROLE_KEY)
+      ? localStorage.getItem(PORTAL_ROLE_KEY) || ""
+      : ""
+  );
+
+  const storedPortalRole = () =>
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem(PORTAL_ROLE_KEY) || ""
       : "";
 
   useEffect(() => {
@@ -97,6 +103,29 @@ export default function AdminEmployeeProfile() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isCreate) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await fetchUsers();
+        if (cancelled) return;
+        setActorRole(
+          resolveActorRoleFromUsers(
+            Array.isArray(list) ? list : [],
+            getLoggedInEmail(),
+            storedPortalRole()
+          )
+        );
+      } catch {
+        /* keep session fallback */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCreate]);
+
   const loadEmployee = async () => {
     setLoading(true);
     setError("");
@@ -107,6 +136,13 @@ export default function AdminEmployeeProfile() {
       ]);
       const row = (Array.isArray(users) ? users : []).find(
         (u) => String(u.email || "").toLowerCase() === lookupEmail
+      );
+      setActorRole(
+        resolveActorRoleFromUsers(
+          Array.isArray(users) ? users : [],
+          getLoggedInEmail(),
+          storedPortalRole()
+        )
       );
       const next = {
         email: lookupEmail,
