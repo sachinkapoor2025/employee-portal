@@ -51,6 +51,40 @@ function resolveAccess(user, record) {
   return { access: accessGateForRole(role), role };
 }
 
+function requestAccessForExistingItem(user, record) {
+  const resolved = resolveAccess(user, record);
+  if (resolved.access === "USER" || resolved.access === "ADMIN") {
+    return {
+      mutate: false,
+      body: {
+        message: "You already have access. Redirecting to portal.",
+        ...resolved,
+      },
+    };
+  }
+  if (resolved.access === "PENDING") {
+    return {
+      mutate: false,
+      body: {
+        message: "Your access request is already pending approval.",
+        access: "PENDING",
+        role: resolved.role,
+      },
+    };
+  }
+  if (String(record?.status?.S || "").toUpperCase() === "BLOCKED") {
+    return { mutate: false, body: resolved };
+  }
+  return {
+    mutate: true,
+    body: {
+      message: "Access request submitted",
+      access: "PENDING",
+      role: "EMPLOYEE",
+    },
+  };
+}
+
 exports.handler = async (event) => {
   const user = getUser(event);
   const email = user.email;
@@ -116,21 +150,9 @@ exports.handler = async (event) => {
       );
 
       if (existing.Item) {
-        const resolved = resolveAccess(user, existing.Item);
-
-        if (resolved.access === "USER" || resolved.access === "ADMIN") {
-          return ok({
-            message: "You already have access. Redirecting to portal.",
-            ...resolved,
-          });
-        }
-
-        if (resolved.access === "PENDING") {
-          return ok({
-            message: "Your access request is already pending approval.",
-            access: "PENDING",
-            role: resolved.role,
-          });
+        const decision = requestAccessForExistingItem(user, existing.Item);
+        if (!decision.mutate) {
+          return ok(decision.body);
         }
 
         await client.send(
@@ -202,3 +224,6 @@ function serverError() {
     body: JSON.stringify({ error: "Internal server error" }),
   };
 }
+
+exports.resolveAccess = resolveAccess;
+exports.requestAccessForExistingItem = requestAccessForExistingItem;

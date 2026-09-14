@@ -517,6 +517,14 @@ export function displayTaskId(taskId) {
   return `TASK-${short}`;
 }
 
+export function isActiveTaskAssignee(user) {
+  return String(user?.status || "").toUpperCase() === "ACTIVE";
+}
+
+export function selectableTaskAssignees(users) {
+  return (users || []).filter(isActiveTaskAssignee);
+}
+
 export function personLabel(users, email) {
   if (!email) return { name: "Unassigned", email: "" };
   const row = (users || []).find(

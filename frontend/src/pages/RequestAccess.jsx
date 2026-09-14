@@ -25,6 +25,10 @@ export default function RequestAccess() {
           applyAccessRedirect(data);
           return;
         }
+        if (data.access === "BLOCKED" || data.access === "DENIED") {
+          applyAccessRedirect(data);
+          return;
+        }
         if (data.access === "PENDING") {
           navigate("/request-access?status=pending", { replace: true });
         }
@@ -44,6 +48,10 @@ export default function RequestAccess() {
     try {
       const data = await requestAccess();
       if (data.access === "USER" || data.access === "ADMIN") {
+        return;
+      }
+      if (data.access === "BLOCKED" || data.access === "DENIED") {
+        applyAccessRedirect(data);
         return;
       }
       setMsg(data.message || "Access request sent. Please wait for approval.");

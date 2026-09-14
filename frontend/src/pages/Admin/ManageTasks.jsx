@@ -28,6 +28,7 @@ import {
   joinDueParts,
   isQuarterHourTime,
   personLabel,
+  selectableTaskAssignees,
   priorityLabel,
   statusBadgeStyle,
   statusLabel,
@@ -541,7 +542,7 @@ export default function ManageTasks() {
     });
   };
 
-  const assigneeMatches = users.filter((u) => {
+  const assigneeMatches = selectableTaskAssignees(users).filter((u) => {
     const q = assigneeQuery.trim().toLowerCase();
     if (!q) return true;
     return (

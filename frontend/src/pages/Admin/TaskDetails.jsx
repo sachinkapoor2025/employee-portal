@@ -35,6 +35,7 @@ import {
   joinDueParts,
   isQuarterHourTime,
   personLabel,
+  selectableTaskAssignees,
   priorityLabel,
   splitDueParts,
   statusBadgeStyle,
@@ -657,7 +658,7 @@ export default function TaskDetails() {
               marginBottom: 16,
             }}
           >
-            {users.map((u) => (
+            {selectableTaskAssignees(users).map((u) => (
               <label
                 key={u.email}
                 style={{
@@ -847,7 +848,7 @@ export default function TaskDetails() {
               marginBottom: 16,
             }}
           >
-            {users.map((u) => (
+            {selectableTaskAssignees(users).map((u) => (
               <label
                 key={u.email}
                 style={{

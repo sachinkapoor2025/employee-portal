@@ -586,6 +586,60 @@ async function listActiveAdminEmails() {
   return activeAdminEmailsFromAccess(rows);
 }
 
+function isBlockedAccessStatus(status) {
+  return String(status || "").toUpperCase() === "BLOCKED";
+}
+
+function newAssignmentEmails(requestedEmails, currentActiveEmails = []) {
+  const current = new Set(
+    (currentActiveEmails || [])
+      .map((email) => escalation.normalizeEmail(email))
+      .filter(Boolean)
+  );
+  return (requestedEmails || [])
+    .map((email) => escalation.normalizeEmail(email))
+    .filter((email) => email && !current.has(email));
+}
+
+function collectBlockedNewAssignees(
+  requestedEmails,
+  currentActiveEmails,
+  statusByEmail = {}
+) {
+  return newAssignmentEmails(requestedEmails, currentActiveEmails).filter((email) =>
+    isBlockedAccessStatus(statusByEmail[email])
+  );
+}
+
+async function loadUserAccessStatus(email) {
+  const normalized = escalation.normalizeEmail(email);
+  if (!process.env.USER_ACCESS_TABLE || !normalized) return null;
+  try {
+    const res = await ddb.send(
+      new GetCommand({
+        TableName: process.env.USER_ACCESS_TABLE,
+        Key: { PK: normalized, SK: normalized },
+      })
+    );
+    return res.Item?.status || null;
+  } catch {
+    return null;
+  }
+}
+
+async function blockedNewAssignees(requestedEmails, currentActiveEmails = []) {
+  const newcomers = newAssignmentEmails(requestedEmails, currentActiveEmails);
+  const statusByEmail = {};
+  for (const email of newcomers) {
+    statusByEmail[email] = await loadUserAccessStatus(email);
+  }
+  return collectBlockedNewAssignees(
+    requestedEmails,
+    currentActiveEmails,
+    statusByEmail
+  );
+}
+
 async function runEscalationSweep() {
   const tasks = await queryAllTasks();
   let adminEmails;
@@ -1030,6 +1084,12 @@ exports.handler = async (event) => {
       const now = new Date().toISOString();
       const nowMs = Date.now();
       const emails = parsed.emails;
+      const blocked = await blockedNewAssignees(emails);
+      if (blocked.length) {
+        return json(400, {
+          error: "Cannot assign a task to a deactivated user.",
+        });
+      }
       const initialStatus = "TODO";
       const createdByName = await resolveCreatorName(
         event,
@@ -1299,6 +1359,15 @@ exports.handler = async (event) => {
           updates.assignees !== undefined ? updates.assignees : updates.assignee,
           null
         );
+        const currentActiveEmails = assignments
+          .filter((a) => !a.removed)
+          .map((a) => a.email);
+        const blocked = await blockedNewAssignees(emails, currentActiveEmails);
+        if (blocked.length) {
+          return json(400, {
+            error: "Cannot assign a task to a deactivated user.",
+          });
+        }
         const current = new Set(
           assignments
             .filter((a) => !a.removed)
@@ -1564,3 +1633,6 @@ exports.handler = async (event) => {
 
 exports.STATUSES = STATUSES;
 exports.PRIORITIES = PRIORITIES;
+exports.collectBlockedNewAssignees = collectBlockedNewAssignees;
+exports.newAssignmentEmails = newAssignmentEmails;
+exports.isBlockedAccessStatus = isBlockedAccessStatus;
