@@ -26,6 +26,7 @@ import Blocked from "./pages/Blocked";
 import ManageUsers from "./pages/Admin/ManageUsers";
 import AdminEmployeeProfile from "./pages/Admin/AdminEmployeeProfile";
 import ManageTasks from "./pages/Admin/ManageTasks";
+import ManageProjects from "./pages/Admin/ManageProjects";
 import TaskDetails from "./pages/Admin/TaskDetails";
 import Resignations from "./pages/Admin/Resignations";
 import AddTraining from "./pages/Admin/AddTraining";
@@ -345,6 +346,14 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ManageTasks />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/projects"
+          element={
+            <RequireAuth adminOnly>
+              <ManageProjects />
             </RequireAuth>
           }
         />

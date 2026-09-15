@@ -11,6 +11,7 @@ const {
   GetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { randomUUID } = require("crypto");
+const { countActiveProjects } = require("../projects/projectManage");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -307,7 +308,7 @@ exports.handler = async (event) => {
         date,
         stats: {
           activeUsersToday: activeUsers.size,
-          totalProjects: (projects.Items || []).length,
+          totalProjects: countActiveProjects(projects.Items),
           openTasks: openTasks.length,
           pendingLeave: pendingLeave.length,
         },

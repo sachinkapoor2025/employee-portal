@@ -336,6 +336,39 @@ async function run() {
     assert.strictEqual(rowItems(ddb)[0].status, "INVALID");
   });
 
+  await test("H. Excel project catalog does not include archived projects", async () => {
+    const ddb = createMemoryDdb();
+    seedProjects(ddb);
+    seedAccess(ddb);
+    ddb.seed(WORK_TABLE, {
+      PK: "ENTITY#PROJECT",
+      SK: "PROJECT#archived-legacy-id",
+      projectId: "archived-legacy-id",
+      name: "Legacy Archive",
+      status: "ARCHIVED",
+    });
+    const row = [...VALID_ROW];
+    row[1] = "Legacy Archive";
+    const meta = seedMeta(ddb);
+    const s3 = createMemoryS3({
+      [meta.s3Key]: workbookBuffer({ rows: [TASK_IMPORT_COLUMNS, row] }),
+    });
+    const result = await preview({ ddb, s3 });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "NEEDS_FIX");
+    assert.strictEqual(result.body.rows[0].status, "INVALID");
+    assert.strictEqual(result.body.rows[0].projectId, null);
+    assert.ok(
+      result.body.rows[0].cellErrors.some(
+        (item) =>
+          item.column === "Project" &&
+          item.value === "Legacy Archive" &&
+          /does not exist/i.test(item.message)
+      )
+    );
+
+  });
+
   await test("project matching is case-insensitive and preserves UUID", async () => {
     const ddb = createMemoryDdb();
     seedProjects(ddb);

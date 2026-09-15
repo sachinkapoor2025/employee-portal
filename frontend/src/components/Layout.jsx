@@ -27,6 +27,7 @@ import {
   ChevronRight,
   FileText,
   Video,
+  FolderKanban,
 } from "lucide-react";
 import {
   logout,
@@ -81,6 +82,7 @@ const ADMIN_NAV_SECTIONS = [
     title: "Work Management",
     items: [
       { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
+      { label: "Projects", path: "/admin/projects", icon: FolderKanban },
       {
         label: "Attendance",
         path: "/admin/attendance-activity",

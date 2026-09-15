@@ -1469,6 +1469,56 @@ a {
   min-width: 640px;
 }
 
+.dgv-table.dgv-projects-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.dgv-projects-table-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+.dgv-projects-table th,
+.dgv-projects-table td {
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.dgv-projects-table__name,
+.dgv-projects-table__client {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dgv-projects-table__created {
+  width: 7.5rem;
+  white-space: nowrap;
+}
+
+.dgv-projects-table__status {
+  width: 6.75rem;
+  white-space: nowrap;
+}
+
+.dgv-projects-table .dgv-projects-table__action {
+  width: 10.75rem;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.dgv-projects-table tbody tr:has(.dgv-employees-edit-menu__dropdown) {
+  position: relative;
+  z-index: 6;
+}
+
+@media (max-width: 640px) {
+  .dgv-projects-table-wrap {
+    overflow-x: auto;
+  }
+}
+
 .dgv-table thead th {
   position: sticky;
   top: 0;

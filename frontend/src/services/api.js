@@ -207,8 +207,17 @@ export const fetchAdminDashboard = () => api("/admin/dashboard", "GET");
 
 /* ================= PROJECTS & TASKS ================= */
 
-export const fetchProjects = () => api("/projects", "GET");
+export const fetchProjects = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  const query = qs.toString();
+  return api(`/projects${query ? `?${query}` : ""}`, "GET");
+};
 export const createProject = (data) => api("/projects", "POST", data);
+export const updateProject = (projectId, data) =>
+  api(`/projects/${encodeURIComponent(projectId)}`, "PATCH", data);
+export const deleteProject = (projectId) =>
+  api(`/projects/${encodeURIComponent(projectId)}`, "DELETE");
 export const fetchTasks = async (params = {}) => {
   const data = await fetchTaskList(params);
   return data.tasks;

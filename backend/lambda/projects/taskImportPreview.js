@@ -21,6 +21,7 @@ const {
   buildCellErrors,
   parseTaskImportWorkbook,
 } = require("./taskImportParse");
+const { isActiveProject } = require("./projectManage");
 
 const TYPE_TASK_IMPORT_ROW = "TASK_IMPORT_ROW";
 const BATCH_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -101,6 +102,7 @@ async function defaultListProjects(ddb, tableName) {
     ExpressionAttributeValues: { ":pk": "ENTITY#PROJECT" },
   });
   return items
+    .filter((item) => isActiveProject(item))
     .map((item) => ({
       projectId: item.projectId || String(item.SK || "").replace(/^PROJECT#/, ""),
       name: String(item.name || "").trim(),

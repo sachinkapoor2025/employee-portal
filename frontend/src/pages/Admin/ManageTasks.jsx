@@ -45,6 +45,7 @@ import {
 import ZoneBadge from "../../components/ZoneBadge";
 import ZoneFilter from "../../components/ZoneFilter";
 import TaskImportModal from "../../components/TaskImportModal";
+import CreateProjectModal from "../../components/CreateProjectModal";
 
 function StatusBadge({ task }) {
   const style = statusBadgeStyle(task);
@@ -306,11 +307,9 @@ export default function ManageTasks() {
     RED: 0,
     COMPLETED: 0,
   });
-  const emptyProjectForm = { name: "", client: "", description: "" };
   const [showProject, setShowProject] = useState(false);
   const [showTask, setShowTask] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [projectForm, setProjectForm] = useState(emptyProjectForm);
   const [taskBaseline, setTaskBaseline] = useState(null);
   const [taskForm, setTaskForm] = useState({
     title: "",
@@ -326,6 +325,7 @@ export default function ManageTasks() {
   });
   const [projectModalSource, setProjectModalSource] = useState("page");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [showProjectHub, setShowProjectHub] = useState(false);
   const [assigneeQuery, setAssigneeQuery] = useState("");
   const [showAllAssignees, setShowAllAssignees] = useState(false);
   const [showAllResults, setShowAllResults] = useState(false);
@@ -398,43 +398,42 @@ export default function ManageTasks() {
       });
     }
     setShowProject(false);
-    setProjectForm(emptyProjectForm);
     setProjectModalSource("page");
     setShowTask(true);
   };
 
-  const saveProject = async () => {
-    const name = String(projectForm.name || "").trim();
-    if (!name) return;
-    const existing = projects.find(
-      (p) => String(p.name || "").trim().toLowerCase() === name.toLowerCase()
-    );
-    if (existing) {
-      if (projectModalSource === "task") {
-        resumeTaskAfterProject(existing);
-        return;
-      }
-      setProjectId(existing.projectId);
-      setShowProject(false);
-      setProjectForm(emptyProjectForm);
-      return;
-    }
+  const closeCreateProjectModal = () => {
+    const fromTask = projectModalSource === "task";
+    setShowProject(false);
+    setProjectModalSource("page");
+    if (fromTask) setShowTask(true);
+  };
+
+  const handleCreateProjectSubmit = async (data) => {
     setCreatingProject(true);
     try {
-      const created = await createProject({ ...projectForm, name });
+      const created = await createProject(data);
       if (projectModalSource === "task") {
         resumeTaskAfterProject(created);
         return;
       }
       setShowProject(false);
-      setProjectForm(emptyProjectForm);
+      setProjectModalSource("page");
       if (created?.projectId) setProjectId(created.projectId);
-      load();
-    } catch (err) {
-      alert(err?.message || "Unable to create project.");
+      await load();
     } finally {
       setCreatingProject(false);
     }
+  };
+
+  const handleExistingProject = (existing) => {
+    if (projectModalSource === "task") {
+      resumeTaskAfterProject(existing);
+      return;
+    }
+    setProjectId(existing.projectId);
+    setShowProject(false);
+    setProjectModalSource("page");
   };
 
   const emptyTaskForm = {
@@ -525,9 +524,14 @@ export default function ManageTasks() {
 
   const CREATE_PROJECT_VALUE = "__create_project__";
 
+  const openCreateProject = () => {
+    setShowProjectHub(false);
+    setProjectModalSource("page");
+    setShowProject(true);
+  };
+
   const openProjectFromTask = () => {
     setProjectModalSource("task");
-    setProjectForm(emptyProjectForm);
     setShowTask(false);
     setShowProject(true);
   };
@@ -588,21 +592,8 @@ export default function ManageTasks() {
     });
   };
 
-  const projectDirty = Boolean(
-    String(projectForm.name || "").trim() ||
-      String(projectForm.client || "").trim() ||
-      String(projectForm.description || "").trim()
-  );
   const taskDirty =
     !!taskBaseline && JSON.stringify(taskForm) !== JSON.stringify(taskBaseline);
-
-  const closeProjectModal = () => {
-    const fromTask = projectModalSource === "task";
-    setShowProject(false);
-    setProjectForm(emptyProjectForm);
-    setProjectModalSource("page");
-    if (fromTask) setShowTask(true);
-  };
 
   const closeTaskModal = () => {
     if (savingTask) return;
@@ -625,13 +616,9 @@ export default function ManageTasks() {
             <button
               type="button"
               className="dgv-btn dgv-btn--secondary"
-              onClick={() => {
-                setProjectModalSource("page");
-                setProjectForm(emptyProjectForm);
-                setShowProject(true);
-              }}
+              onClick={() => setShowProjectHub(true)}
             >
-              + Project
+              Project
             </button>
             <button
               type="button"
@@ -885,54 +872,81 @@ export default function ManageTasks() {
       />
 
       <Modal
-        open={showProject}
-        title="New Project"
-        dirty={projectDirty}
-        closeDisabled={creatingProject}
-        onClose={closeProjectModal}
-        footer={
-          <>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--outline"
-              disabled={creatingProject}
-              onClick={() => {
-                if (creatingProject) return;
-                if (!confirmDiscardIfDirty(projectDirty)) return;
-                closeProjectModal();
+        open={showProjectHub}
+        title="Projects"
+        maxWidth={440}
+        onClose={() => setShowProjectHub(false)}
+      >
+        <div style={{ display: "grid", gap: 10 }}>
+          <button
+            type="button"
+            className="dgv-btn dgv-btn--outline"
+            style={{
+              width: "100%",
+              height: "auto",
+              minHeight: 40,
+              display: "block",
+              textAlign: "left",
+              padding: "12px 14px",
+              whiteSpace: "normal",
+            }}
+            onClick={() => {
+              setShowProjectHub(false);
+              navigate("/admin/projects");
+            }}
+          >
+            <span style={{ display: "block", fontWeight: 600 }}>Manage Projects</span>
+            <span
+              style={{
+                display: "block",
+                marginTop: 4,
+                fontSize: 13,
+                fontWeight: 400,
+                color: colors.textMuted,
               }}
             >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--primary"
-              onClick={saveProject}
-              disabled={creatingProject}
+              View and manage existing projects.
+            </span>
+          </button>
+          <button
+            type="button"
+            className="dgv-btn dgv-btn--outline"
+            style={{
+              width: "100%",
+              height: "auto",
+              minHeight: 40,
+              display: "block",
+              textAlign: "left",
+              padding: "12px 14px",
+              whiteSpace: "normal",
+            }}
+            onClick={openCreateProject}
+          >
+            <span style={{ display: "block", fontWeight: 600 }}>Create Project</span>
+            <span
+              style={{
+                display: "block",
+                marginTop: 4,
+                fontSize: 13,
+                fontWeight: 400,
+                color: colors.textMuted,
+              }}
             >
-              {creatingProject ? "Creating..." : "Create"}
-            </button>
-          </>
-        }
-      >
-          <Field
-            label="Name"
-            value={projectForm.name}
-            onChange={(v) => setProjectForm({ ...projectForm, name: v })}
-          />
-          <Field
-            label="Client"
-            value={projectForm.client}
-            onChange={(v) => setProjectForm({ ...projectForm, client: v })}
-          />
-          <Field
-            label="Description"
-            value={projectForm.description}
-            onChange={(v) =>
-              setProjectForm({ ...projectForm, description: v })
-            }
-          />
+              Create a new work project.
+            </span>
+          </button>
+        </div>
       </Modal>
+
+      <CreateProjectModal
+        open={showProject}
+        mode="create"
+        existingProjects={projects}
+        saving={creatingProject}
+        onClose={closeCreateProjectModal}
+        onSubmit={handleCreateProjectSubmit}
+        onExisting={handleExistingProject}
+      />
 
       <Modal
         open={showTask}

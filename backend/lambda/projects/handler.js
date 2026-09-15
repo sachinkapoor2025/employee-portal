@@ -22,6 +22,7 @@ const { activeAdminEmailsFromAccess } = require("../common/roles");
 const taskImport = require("./taskImport");
 const taskImportPreview = require("./taskImportPreview");
 const taskImportConfirm = require("./taskImportConfirm");
+const projectManage = require("./projectManage");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -1006,14 +1007,12 @@ exports.handler = async (event) => {
 
     // ── PROJECTS ──
     if (path.endsWith("/projects") && method === "GET") {
-      const res = await ddb.send(
-        new QueryCommand({
-          TableName: process.env.WORK_TABLE,
-          KeyConditionExpression: "PK = :pk",
-          ExpressionAttributeValues: { ":pk": "ENTITY#PROJECT" },
-        })
-      );
-      return json(200, res.Items || []);
+      const listed = await projectManage.handleListProjects({
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        status: event.queryStringParameters?.status,
+      });
+      return json(listed.statusCode, listed.body);
     }
 
     if (path.endsWith("/projects") && method === "POST") {
@@ -1036,6 +1035,37 @@ exports.handler = async (event) => {
         new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
       );
       return json(201, item);
+    }
+
+    if (path.endsWith("/projects")) {
+      return json(405, { error: "Method not allowed" });
+    }
+
+    const projectRoute = projectManage.projectPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (projectRoute && method === "DELETE") {
+      const removed = await projectManage.handleDeleteProject({
+        user,
+        projectId: projectRoute.projectId,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+      });
+      return json(removed.statusCode, removed.body);
+    }
+    if (projectRoute && method === "PATCH") {
+      const patched = await projectManage.handlePatchProject({
+        user,
+        projectId: projectRoute.projectId,
+        body,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+      });
+      return json(patched.statusCode, patched.body);
+    }
+    if (projectRoute) {
+      return json(405, { error: "Method not allowed" });
     }
 
     // ── TASKS LIST / CREATE / UPDATE ──

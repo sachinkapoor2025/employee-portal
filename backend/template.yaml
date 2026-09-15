@@ -987,6 +987,18 @@ Resources:
             Path: /projects
             Method: POST
             RestApiId: !Ref ApiGateway
+        ProjectsDeleteApi:
+          Type: Api
+          Properties:
+            Path: /projects/{projectId}
+            Method: DELETE
+            RestApiId: !Ref ApiGateway
+        ProjectsPatchApi:
+          Type: Api
+          Properties:
+            Path: /projects/{projectId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
         TasksGetApi:
           Type: Api
           Properties:
