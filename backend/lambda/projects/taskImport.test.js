@@ -97,8 +97,8 @@ assert.ok(
   "TASK_IMPORT_MAX_ROWS must be configured in template.yaml"
 );
 assert.ok(
-  /Filter:\s*\r?\n\s+Prefix: task-imports\//.test(template),
-  "DocumentsBucket lifecycle must use Filter.Prefix task-imports/"
+  template.includes("Prefix: task-imports/"),
+  "DocumentsBucket lifecycle must use rule-level Prefix task-imports/"
 );
 assert.ok(
   template.includes("Path: /task-imports/upload-url"),
