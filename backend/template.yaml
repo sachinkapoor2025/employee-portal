@@ -10,6 +10,12 @@ Parameters:
     Type: String
     Default: noreply@mydgv.com
     Description: SES-verified sender address for portal notification emails
+  TaskImportRetentionDays:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 3650
+    Description: Days to retain task import Excel files under the task-imports/ prefix in DocumentsBucket
 
 Globals:
   Function:
@@ -651,6 +657,13 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTaskImports
+            Status: Enabled
+            Filter:
+              Prefix: task-imports/
+            ExpirationInDays: !Ref TaskImportRetentionDays
   ImageUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -931,6 +944,9 @@ Resources:
           WORK_TABLE: !Ref WorkTasksTable
           USER_PROFILE_TABLE: !Ref UserProfileTable
           TASK_ATTACHMENTS_BUCKET: !Ref ProfileImagesBucket
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          TASK_IMPORT_MAX_ROWS: "200"
+          TASK_IMPORT_MAX_BYTES: "5242880"
           COMPANY_TIMEZONE: Asia/Kolkata
           COMPANY_TZ_OFFSET: "+05:30"
           TASK_ORANGE_MS: "86400000"
@@ -947,6 +963,8 @@ Resources:
             TableName: !Ref UserAccessTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
+        - S3WritePolicy:
+            BucketName: !Ref DocumentsBucket
         - Statement:
             - Effect: Allow
               Action:
@@ -976,6 +994,12 @@ Resources:
           Type: Api
           Properties:
             Path: /tasks
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskImportsUploadUrlApi:
+          Type: Api
+          Properties:
+            Path: /task-imports/upload-url
             Method: POST
             RestApiId: !Ref ApiGateway
         TasksPutApi:

@@ -19,6 +19,7 @@ const escalation = require("./escalation");
 const { zoneNotifyCopy } = require("./zoneNotify");
 const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify, persistRedAdminRecipient, isConditionalCheckFailed } = require("./redAdminNotify");
 const { activeAdminEmailsFromAccess } = require("../common/roles");
+const taskImport = require("./taskImport");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -762,6 +763,16 @@ exports.handler = async (event) => {
   const taskRoute = taskPathMatch(path);
 
   try {
+    if (taskImport.isUploadUrlPath(path) && method === "POST") {
+      const result = await taskImport.handleUploadUrlRequest({
+        user,
+        body,
+        ddb,
+        s3,
+      });
+      return json(result.statusCode, result.body);
+    }
+
     // ── TASK BY ID / COMMENTS / ACTIVITY / ATTACHMENTS ──
     if (taskRoute) {
       const { taskId, sub } = taskRoute;
