@@ -237,6 +237,9 @@ export const getTaskImportUploadUrl = ({ fileName, contentType, fileSize }) =>
 export const previewTaskImport = (batchId) =>
   api(`/task-imports/${encodeURIComponent(batchId)}/preview`, "POST");
 
+export const confirmTaskImport = (batchId) =>
+  api(`/task-imports/${encodeURIComponent(batchId)}/confirm`, "POST");
+
 export const updateTask = (data) => api("/tasks", "PUT", data);
 export const archiveTask = (taskId) =>
   api("/tasks", "DELETE", { taskId });

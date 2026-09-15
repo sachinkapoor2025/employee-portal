@@ -240,6 +240,48 @@ function previewStatus(parsed, rows) {
   return IMPORT_STATUSES.READY;
 }
 
+async function parseAndResolveWorkbook({
+  buffer,
+  ddb,
+  tableName = process.env.WORK_TABLE,
+  accessTable = process.env.USER_ACCESS_TABLE,
+  nowMs,
+  listProjects,
+  loadUserAccess,
+} = {}) {
+  const loadProjects = listProjects || (() => defaultListProjects(ddb, tableName));
+  const loadAccess =
+    loadUserAccess ||
+    ((email) => defaultLoadUserAccess(ddb, accessTable, email));
+  const projects = await loadProjects();
+  const parsed = parseTaskImportWorkbook(buffer, {
+    nowMs: Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now(),
+    projects,
+  });
+  const uniqueEmails = new Set();
+  for (const row of parsed.rows || []) {
+    for (const email of row.values?.assignees || []) uniqueEmails.add(email);
+  }
+  const accessByEmail = new Map();
+  for (const email of uniqueEmails) {
+    accessByEmail.set(email, await loadAccess(email));
+  }
+  const rows = (parsed.rows || []).map((row) =>
+    enrichPreviewRow(row, accessByEmail)
+  );
+  const validRows = rows.filter((row) => row.status === ROW_STATUS.VALID).length;
+  const invalidRows = rows.length - validRows;
+  const warningCount = rows.reduce((sum, row) => sum + (row.warnings || []).length, 0);
+  return {
+    parsed,
+    rows,
+    status: previewStatus(parsed, rows),
+    validRows,
+    invalidRows,
+    warningCount,
+  };
+}
+
 async function handlePreviewRequest({
   user,
   batchId,
@@ -280,6 +322,21 @@ async function handlePreviewRequest({
   if (!meta || meta.type !== TYPE_TASK_IMPORT) {
     return { statusCode: 404, body: { error: "Import batch not found." } };
   }
+  const locked = String(meta.status || "").toUpperCase();
+  if (
+    locked === IMPORT_STATUSES.PROCESSING ||
+    locked === IMPORT_STATUSES.COMPLETED ||
+    locked === IMPORT_STATUSES.PARTIAL
+  ) {
+    return {
+      statusCode: 409,
+      body: {
+        error: "This import has already been confirmed.",
+        status: meta.status,
+        batchId: id,
+      },
+    };
+  }
 
   const actor = normalizeEmail(user.email);
   const owner = normalizeEmail(meta.uploadedBy);
@@ -304,32 +361,16 @@ async function handlePreviewRequest({
     throw err;
   }
 
-  const loadProjects = listProjects || (() => defaultListProjects(ddb, tableName));
-  const loadAccess =
-    loadUserAccess ||
-    ((email) => defaultLoadUserAccess(ddb, accessTable, email));
-  const projects = await loadProjects();
-  const parsed = parseTaskImportWorkbook(buffer, {
-    nowMs: Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now(),
-    projects,
+  const resolved = await parseAndResolveWorkbook({
+    buffer,
+    ddb,
+    tableName,
+    accessTable,
+    nowMs,
+    listProjects,
+    loadUserAccess,
   });
-
-  const uniqueEmails = new Set();
-  for (const row of parsed.rows || []) {
-    for (const email of row.values?.assignees || []) uniqueEmails.add(email);
-  }
-  const accessByEmail = new Map();
-  for (const email of uniqueEmails) {
-    accessByEmail.set(email, await loadAccess(email));
-  }
-
-  const rows = (parsed.rows || []).map((row) =>
-    enrichPreviewRow(row, accessByEmail)
-  );
-  const validRows = rows.filter((row) => row.status === ROW_STATUS.VALID).length;
-  const invalidRows = rows.length - validRows;
-  const warningCount = rows.reduce((sum, row) => sum + (row.warnings || []).length, 0);
-  const status = previewStatus(parsed, rows);
+  const { parsed, rows, status, validRows, invalidRows, warningCount } = resolved;
   const updatedAt = now || new Date().toISOString();
   const previewedBy = actor;
 
@@ -376,9 +417,18 @@ async function handlePreviewRequest({
 
 module.exports = {
   TYPE_TASK_IMPORT_ROW,
+  BATCH_ID_RE,
   previewPathMatch,
   isPreviewPath,
+  validateBatchId,
+  streamToBuffer,
+  isS3NotFound,
+  queryAll,
+  parseAndResolveWorkbook,
   handlePreviewRequest,
   enrichPreviewRow,
   publicRow,
+  replaceRowRecords,
+  listExistingRowItems,
+  buildRowItem,
 };

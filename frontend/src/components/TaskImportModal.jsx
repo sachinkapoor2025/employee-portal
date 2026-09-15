@@ -2,18 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { FileSpreadsheet } from "lucide-react";
 import Modal from "./ui/Modal";
 import TaskImportPreviewPanel from "./TaskImportPreviewPanel";
-import { getTaskImportUploadUrl, previewTaskImport } from "../services/api";
+import {
+  confirmTaskImport,
+  getTaskImportUploadUrl,
+  previewTaskImport,
+} from "../services/api";
 import { colors, formLabel } from "../theme";
 import {
   formatFileSize,
   reportedContentType,
   validateTaskImportFile,
 } from "../utils/taskImportFile";
-import { userFacingImportError } from "../utils/taskImportPreview";
+import {
+  canConfirmPreview,
+  summarizeConfirmResult,
+  userFacingImportError,
+} from "../utils/taskImportPreview";
 import { downloadTaskImportTemplate } from "../utils/taskImportTemplate";
 
-export default function TaskImportModal({ open, onClose }) {
+export default function TaskImportModal({ open, onClose, onImported }) {
   const inputRef = useRef(null);
+  const confirmLockRef = useRef(false);
   const [file, setFile] = useState(null);
   const [inputKey, setInputKey] = useState(0);
   const [step, setStep] = useState("idle");
@@ -21,9 +30,14 @@ export default function TaskImportModal({ open, onClose }) {
   const [batchId, setBatchId] = useState("");
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState(null);
+  const [result, setResult] = useState(null);
 
-  const busy = step === "uploading" || step === "previewing";
-  const showPreview = step === "preview" && preview;
+  const confirming = step === "confirming";
+  const done = step === "done";
+  const busy = step === "uploading" || step === "previewing" || confirming;
+  const showPreview = (step === "preview" || confirming) && preview;
+  const readyToConfirm = canConfirmPreview(preview);
+  const summary = summarizeConfirmResult(result);
 
   const resetForm = () => {
     setFile(null);
@@ -31,7 +45,9 @@ export default function TaskImportModal({ open, onClose }) {
     setBatchId("");
     setFileName("");
     setPreview(null);
+    setResult(null);
     setStep("idle");
+    confirmLockRef.current = false;
     setInputKey((k) => k + 1);
   };
 
@@ -44,6 +60,7 @@ export default function TaskImportModal({ open, onClose }) {
   const chooseFile = (next) => {
     setError("");
     setPreview(null);
+    setResult(null);
     setBatchId("");
     if (!next) {
       setFile(null);
@@ -69,11 +86,11 @@ export default function TaskImportModal({ open, onClose }) {
 
   const runPreview = async (id) => {
     setStep("previewing");
-    const result = await previewTaskImport(id);
-    if (!result || typeof result !== "object") {
+    const next = await previewTaskImport(id);
+    if (!next || typeof next !== "object") {
       throw new Error("Preview failed. Please try again.");
     }
-    setPreview(result);
+    setPreview(next);
     setStep("preview");
   };
 
@@ -86,6 +103,7 @@ export default function TaskImportModal({ open, onClose }) {
     setStep("uploading");
     setError("");
     setPreview(null);
+    setResult(null);
     setBatchId("");
     try {
       const contentType = reportedContentType(file);
@@ -135,75 +153,119 @@ export default function TaskImportModal({ open, onClose }) {
     }
   };
 
+  const confirm = async () => {
+    if (!batchId || !readyToConfirm || confirming || confirmLockRef.current) return;
+    confirmLockRef.current = true;
+    setError("");
+    setStep("confirming");
+    try {
+      const next = await confirmTaskImport(batchId);
+      if (!next || typeof next !== "object") {
+        throw new Error("Import failed. Please try again.");
+      }
+      const status = String(next.status || "").toUpperCase();
+      if (status === "PROCESSING") {
+        setError("This import is already being processed.");
+        setStep("preview");
+        confirmLockRef.current = false;
+        return;
+      }
+      setResult(next);
+      setStep("done");
+      if (status === "COMPLETED" || Number(next.successCount || 0) > 0) {
+        onImported?.(next);
+      }
+    } catch (err) {
+      if (/not ready to confirm/i.test(String(err?.message || ""))) {
+        setPreview((prev) => (prev ? { ...prev, status: "NEEDS_FIX" } : prev));
+      }
+      setError(userFacingImportError(err, "confirm"));
+      setStep("preview");
+      confirmLockRef.current = false;
+    }
+  };
+
+  const importCount = Number(preview?.totalRows || 0);
+  const footer = done ? (
+    <button type="button" className="dgv-btn dgv-btn--outline" onClick={close}>
+      Close
+    </button>
+  ) : showPreview ? (
+    <>
+      <button
+        type="button"
+        className="dgv-btn dgv-btn--outline"
+        disabled={busy}
+        onClick={close}
+      >
+        Close
+      </button>
+      {readyToConfirm ? (
+        <button
+          type="button"
+          className="dgv-btn dgv-btn--primary"
+          disabled={busy}
+          onClick={confirm}
+        >
+          {confirming
+            ? `Importing ${importCount} ${importCount === 1 ? "task" : "tasks"}...`
+            : "Confirm Import"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="dgv-btn dgv-btn--secondary"
+          disabled={busy}
+          onClick={resetForm}
+        >
+          Upload Corrected File
+        </button>
+      )}
+    </>
+  ) : (
+    <>
+      <button
+        type="button"
+        className="dgv-btn dgv-btn--outline"
+        disabled={busy}
+        onClick={close}
+      >
+        Cancel
+      </button>
+      {batchId && !preview ? (
+        <button
+          type="button"
+          className="dgv-btn dgv-btn--secondary"
+          disabled={busy}
+          onClick={retryPreview}
+        >
+          Retry Preview
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="dgv-btn dgv-btn--primary"
+        disabled={busy || !file}
+        onClick={upload}
+      >
+        {step === "uploading"
+          ? "Uploading..."
+          : step === "previewing"
+            ? "Validating..."
+            : "Upload"}
+      </button>
+    </>
+  );
+
   return (
     <Modal
       open={open}
       title="Import Tasks"
-      maxWidth={showPreview ? 720 : 520}
-      dirty={!!file && !showPreview}
+      maxWidth={showPreview || done ? 720 : 520}
+      dirty={!!file && !showPreview && !done}
       closeDisabled={busy}
       onClose={close}
-      footer={
-        showPreview ? (
-          <>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--outline"
-              onClick={close}
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--secondary"
-              onClick={resetForm}
-            >
-              Upload Corrected File
-            </button>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--primary"
-              disabled
-              title="Confirm Import is coming soon"
-            >
-              Confirm Import — coming soon
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--outline"
-              disabled={busy}
-              onClick={close}
-            >
-              Cancel
-            </button>
-            {batchId && !preview ? (
-              <button
-                type="button"
-                className="dgv-btn dgv-btn--secondary"
-                disabled={busy}
-                onClick={retryPreview}
-              >
-                Retry Preview
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="dgv-btn dgv-btn--primary"
-              disabled={busy || !file}
-              onClick={upload}
-            >
-              {step === "uploading"
-                ? "Uploading..."
-                : step === "previewing"
-                  ? "Validating..."
-                  : "Upload"}
-            </button>
-          </>
-        )
-      }
+      footer={footer}
     >
       <p style={{ margin: "0 0 16px", color: colors.textSecondary, fontSize: 14, lineHeight: 1.5 }}>
         Upload an Excel workbook to start a task import batch. Only .xlsx files up to 5 MB are accepted.
@@ -230,7 +292,22 @@ export default function TaskImportModal({ open, onClose }) {
         <div className="dgv-alert dgv-alert--info" role="status" aria-live="polite">
           {step === "uploading"
             ? "Uploading your Excel file..."
-            : "Validating rows..."}
+            : step === "previewing"
+              ? "Validating rows..."
+              : `Importing ${importCount} ${importCount === 1 ? "task" : "tasks"}...`}
+        </div>
+      ) : null}
+
+      {done ? (
+        <div className="dgv-alert dgv-alert--success" role="status">
+          {summary.status === "COMPLETED"
+            ? "Import completed successfully."
+            : "Import finished with errors."}
+          <div style={{ marginTop: 8, fontWeight: 500 }}>
+            <div>Total tasks imported: {summary.total}</div>
+            <div>Immediate tasks assigned: {summary.immediate}</div>
+            <div>Scheduled tasks created: {summary.scheduled}</div>
+          </div>
         </div>
       ) : null}
 
@@ -240,7 +317,7 @@ export default function TaskImportModal({ open, onClose }) {
           fileName={fileName}
           batchId={batchId}
         />
-      ) : (
+      ) : done ? null : (
         <>
           <label style={formLabel}>Excel file</label>
           <div

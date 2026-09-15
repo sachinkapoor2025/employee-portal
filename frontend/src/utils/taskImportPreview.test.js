@@ -1,9 +1,11 @@
 import {
+  canConfirmPreview,
   collectPreviewWarnings,
   formatWorkbookError,
   invalidPreviewRows,
   isPreviewReady,
   rowCellErrors,
+  summarizeConfirmResult,
   userFacingImportError,
   workbookErrors,
 } from "./taskImportPreview";
@@ -24,12 +26,16 @@ test("maps header mismatch to a clear workbook error", () => {
 
 test("READY preview with no invalid rows is ready to import", () => {
   expect(
-    isPreviewReady({ status: "READY", invalidRows: 0, errors: [], rows: [] })
+    isPreviewReady({ status: "READY", invalidRows: 0, totalRows: 2, errors: [], rows: [] })
+  ).toBe(true);
+  expect(
+    canConfirmPreview({ status: "READY", invalidRows: 0, totalRows: 2, errors: [] })
   ).toBe(true);
   expect(
     isPreviewReady({
       status: "NEEDS_FIX",
       invalidRows: 1,
+      totalRows: 1,
       errors: [],
       rows: [{ status: "INVALID" }],
     })
@@ -38,9 +44,31 @@ test("READY preview with no invalid rows is ready to import", () => {
     isPreviewReady({
       status: "READY",
       invalidRows: 0,
+      totalRows: 0,
       errors: [{ message: "The workbook must contain a sheet named Tasks." }],
     })
   ).toBe(false);
+  expect(
+    canConfirmPreview({ status: "READY", invalidRows: 1, totalRows: 2, errors: [] })
+  ).toBe(false);
+});
+
+test("confirm summary counts immediate vs scheduled tasks", () => {
+  expect(
+    summarizeConfirmResult({
+      status: "COMPLETED",
+      successCount: 2,
+      tasks: [
+        { rowNumber: 2, taskId: "a", assignmentMode: "IMMEDIATE", status: "ASSIGNED" },
+        { rowNumber: 3, taskId: "b", assignmentMode: "SCHEDULED", status: "SCHEDULED" },
+      ],
+    })
+  ).toEqual({
+    status: "COMPLETED",
+    total: 2,
+    immediate: 1,
+    scheduled: 1,
+  });
 });
 
 test("uses backend cellErrors exactly", () => {
@@ -69,6 +97,7 @@ test("collects warnings without treating them as invalid rows", () => {
   const preview = {
     status: "READY",
     invalidRows: 0,
+    totalRows: 1,
     rows: [
       {
         rowNumber: 5,

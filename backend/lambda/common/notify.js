@@ -11,24 +11,44 @@ function reminderKey(type, dedupKey) {
   return `REMINDER#${type}#${dedupKey}`;
 }
 
-async function writeInAppNotification(ddb, email, payload) {
-  if (!email || !process.env.WORK_TABLE) return;
+function isConditionalCheckFailed(err) {
+  return String(err?.name || "") === "ConditionalCheckFailedException";
+}
+
+async function writeInAppNotification(ddb, email, payload, options = {}) {
+  if (!email || !process.env.WORK_TABLE) return { written: false };
   const now = new Date().toISOString();
-  const id = randomUUID();
-  await ddb.send(
-    new PutCommand({
-      TableName: process.env.WORK_TABLE,
-      Item: {
-        PK: `USER#${email}`,
-        SK: `NOTIFY#${now}#${id}`,
-        notifyId: id,
-        email,
-        read: false,
-        createdAt: now,
-        ...payload,
-      },
-    })
-  );
+  const id = options.notifyId || randomUUID();
+  const sk = options.sk || `NOTIFY#${now}#${id}`;
+  const unique = Boolean(options.unique);
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: process.env.WORK_TABLE,
+        Item: {
+          PK: `USER#${email}`,
+          SK: sk,
+          notifyId: id,
+          email,
+          read: false,
+          createdAt: now,
+          ...payload,
+        },
+        ...(unique
+          ? {
+              ConditionExpression:
+                "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+            }
+          : {}),
+      })
+    );
+    return { written: true, existed: false };
+  } catch (err) {
+    if (unique && isConditionalCheckFailed(err)) {
+      return { written: false, existed: true };
+    }
+    throw err;
+  }
 }
 
 async function getReminder(ddb, email, type, dedupKey) {
@@ -107,6 +127,7 @@ async function dispatchNotification(ddb, {
   channel,
   emailEnabled,
   inAppEnabled,
+  inAppSk,
 }) {
   const channels = resolveChannels({ channel, emailEnabled, inAppEnabled, type });
   const normalized = String(email || "").trim().toLowerCase();
@@ -179,13 +200,22 @@ async function dispatchNotification(ddb, {
 
   if (channels.inAppEnabled && !baseItem.inAppWritten) {
     try {
-      await writeInAppNotification(ddb, normalized, {
-        type,
-        title,
-        message,
-        ...extra,
-      });
-      baseItem.inAppWritten = true;
+      const inApp = await writeInAppNotification(
+        ddb,
+        normalized,
+        {
+          type,
+          title,
+          message,
+          ...extra,
+        },
+        inAppSk
+          ? { sk: inAppSk, notifyId: inAppSk, unique: true }
+          : {}
+      );
+      if (inApp.written || inApp.existed) {
+        baseItem.inAppWritten = true;
+      }
     } catch (err) {
       console.error("IN_APP_NOTIFY_FAILED", err?.name);
     }

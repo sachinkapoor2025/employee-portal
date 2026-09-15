@@ -47,8 +47,34 @@ export function workbookErrors(preview) {
 export function isPreviewReady(preview) {
   if (!preview) return false;
   const invalid = Number(preview.invalidRows || 0);
+  const total = Number(preview.totalRows || 0);
   const status = String(preview.status || "").toUpperCase();
-  return status === "READY" && invalid === 0 && workbookErrors(preview).length === 0;
+  return (
+    status === "READY" &&
+    invalid === 0 &&
+    total > 0 &&
+    workbookErrors(preview).length === 0
+  );
+}
+
+export function canConfirmPreview(preview) {
+  return isPreviewReady(preview);
+}
+
+export function summarizeConfirmResult(result) {
+  const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
+  const immediate = tasks.filter(
+    (item) => String(item.assignmentMode || "").toUpperCase() === "IMMEDIATE"
+  ).length;
+  const scheduled = tasks.filter(
+    (item) => String(item.assignmentMode || "").toUpperCase() === "SCHEDULED"
+  ).length;
+  return {
+    status: String(result?.status || "").toUpperCase(),
+    total: Number(result?.successCount ?? tasks.length) || 0,
+    immediate,
+    scheduled,
+  };
 }
 
 export function invalidPreviewRows(preview) {
@@ -111,9 +137,9 @@ export function userFacingImportError(err, stage = "preview") {
     return "This import batch is no longer available. Please upload the file again.";
   }
   if (!message || /internal server error|lambda|stack|token|cognito/i.test(message)) {
-    return stage === "upload"
-      ? "Upload failed. Please try again."
-      : "Preview failed. Please try again.";
+    if (stage === "upload") return "Upload failed. Please try again.";
+    if (stage === "confirm") return "Import failed. Please try again.";
+    return "Preview failed. Please try again.";
   }
   return message;
 }

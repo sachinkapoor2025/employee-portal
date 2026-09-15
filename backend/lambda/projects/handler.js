@@ -21,6 +21,7 @@ const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify,
 const { activeAdminEmailsFromAccess } = require("../common/roles");
 const taskImport = require("./taskImport");
 const taskImportPreview = require("./taskImportPreview");
+const taskImportConfirm = require("./taskImportConfirm");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -649,9 +650,16 @@ async function runEscalationSweep() {
     if (!adminEmails) adminEmails = await listActiveAdminEmails();
     return adminEmails;
   };
+  await taskImportConfirm.assignDueScheduledTasks({
+    ddb,
+    tableName: process.env.WORK_TABLE,
+    nowMs: Date.now(),
+  });
+  const afterAssign = await queryAllTasks();
   let processed = 0;
-  for (const task of tasks) {
+  for (const task of afterAssign) {
     if (task.archived) continue;
+    if (taskImportConfirm.isPendingScheduledTask(task)) continue;
     try {
       await persistEscalations(task, Date.now(), resolveAdmins);
       processed += 1;
@@ -782,6 +790,21 @@ exports.handler = async (event) => {
       const result = await taskImportPreview.handlePreviewRequest({
         user,
         batchId: previewBatchId,
+        ddb,
+        s3,
+      });
+      return json(result.statusCode, result.body);
+    }
+
+    const confirmBatchId = taskImportConfirm.confirmPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (confirmBatchId && method === "POST") {
+      const createdByName = await resolveCreatorName(event, user);
+      const result = await taskImportConfirm.handleConfirmRequest({
+        user: { ...user, createdByName },
+        batchId: confirmBatchId,
         ddb,
         s3,
       });
@@ -1052,6 +1075,7 @@ exports.handler = async (event) => {
       }
 
       items = items.filter((t) => !t.archived);
+      items = items.filter((t) => !taskImportConfirm.isPendingScheduledTask(t));
 
       const focusEmail =
         mine === "true" ? user.email : assignee || "";

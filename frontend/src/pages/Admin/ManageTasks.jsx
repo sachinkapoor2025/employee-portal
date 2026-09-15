@@ -876,7 +876,13 @@ export default function ManageTasks() {
         )}
       </div>
 
-      <TaskImportModal open={showImport} onClose={() => setShowImport(false)} />
+      <TaskImportModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onImported={() => {
+          load().catch(console.error);
+        }}
+      />
 
       <Modal
         open={showProject}

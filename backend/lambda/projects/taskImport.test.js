@@ -97,12 +97,28 @@ assert.ok(
   "TASK_IMPORT_MAX_ROWS must be configured in template.yaml"
 );
 assert.ok(
+  template.includes('TASK_IMPORT_PROCESSING_LEASE_MS: "180000"'),
+  "TASK_IMPORT_PROCESSING_LEASE_MS must exceed the 120s Lambda timeout"
+);
+assert.ok(
+  template.includes('TASK_SCHEDULED_ASSIGN_LEASE_MS: "180000"'),
+  "TASK_SCHEDULED_ASSIGN_LEASE_MS must exceed the 120s Lambda timeout"
+);
+assert.ok(
+  /Timeout:\s*120/.test(template),
+  "ProjectsFunction Timeout must remain 120 seconds"
+);
+assert.ok(
   template.includes("Prefix: task-imports/"),
   "DocumentsBucket lifecycle must use rule-level Prefix task-imports/"
 );
 assert.ok(
   template.includes("Path: /task-imports/upload-url"),
   "API Gateway route for upload-url must exist"
+);
+assert.ok(
+  template.includes("Path: /task-imports/{batchId}/confirm"),
+  "API Gateway route for confirm must exist"
 );
 
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
