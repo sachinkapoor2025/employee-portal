@@ -231,6 +231,12 @@ export const fetchTaskList = async (params = {}) => {
   };
 };
 export const createTask = (data) => api("/tasks", "POST", data);
+export const getTaskImportUploadUrl = ({ fileName, contentType, fileSize }) =>
+  api("/task-imports/upload-url", "POST", { fileName, contentType, fileSize });
+
+export const previewTaskImport = (batchId) =>
+  api(`/task-imports/${encodeURIComponent(batchId)}/preview`, "POST");
+
 export const updateTask = (data) => api("/tasks", "PUT", data);
 export const archiveTask = (taskId) =>
   api("/tasks", "DELETE", { taskId });

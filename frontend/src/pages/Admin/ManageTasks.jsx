@@ -44,6 +44,7 @@ import {
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
 import ZoneFilter from "../../components/ZoneFilter";
+import TaskImportModal from "../../components/TaskImportModal";
 
 function StatusBadge({ task }) {
   const style = statusBadgeStyle(task);
@@ -308,6 +309,7 @@ export default function ManageTasks() {
   const emptyProjectForm = { name: "", client: "", description: "" };
   const [showProject, setShowProject] = useState(false);
   const [showTask, setShowTask] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [projectForm, setProjectForm] = useState(emptyProjectForm);
   const [taskBaseline, setTaskBaseline] = useState(null);
   const [taskForm, setTaskForm] = useState({
@@ -633,6 +635,13 @@ export default function ManageTasks() {
             </button>
             <button
               type="button"
+              className="dgv-btn dgv-btn--secondary"
+              onClick={() => setShowImport(true)}
+            >
+              Import Tasks
+            </button>
+            <button
+              type="button"
               className="dgv-btn dgv-btn--primary"
               onClick={() => {
                 const next = {
@@ -866,6 +875,8 @@ export default function ManageTasks() {
         </>
         )}
       </div>
+
+      <TaskImportModal open={showImport} onClose={() => setShowImport(false)} />
 
       <Modal
         open={showProject}

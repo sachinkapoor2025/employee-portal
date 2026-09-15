@@ -964,6 +964,8 @@ Resources:
             BucketName: !Ref ProfileImagesBucket
         - S3WritePolicy:
             BucketName: !Ref DocumentsBucket
+        - S3ReadPolicy:
+            BucketName: !Ref DocumentsBucket
         - Statement:
             - Effect: Allow
               Action:
@@ -999,6 +1001,12 @@ Resources:
           Type: Api
           Properties:
             Path: /task-imports/upload-url
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskImportsPreviewApi:
+          Type: Api
+          Properties:
+            Path: /task-imports/{batchId}/preview
             Method: POST
             RestApiId: !Ref ApiGateway
         TasksPutApi:

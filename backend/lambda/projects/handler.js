@@ -20,6 +20,7 @@ const { zoneNotifyCopy } = require("./zoneNotify");
 const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify, persistRedAdminRecipient, isConditionalCheckFailed } = require("./redAdminNotify");
 const { activeAdminEmailsFromAccess } = require("../common/roles");
 const taskImport = require("./taskImport");
+const taskImportPreview = require("./taskImportPreview");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -767,6 +768,20 @@ exports.handler = async (event) => {
       const result = await taskImport.handleUploadUrlRequest({
         user,
         body,
+        ddb,
+        s3,
+      });
+      return json(result.statusCode, result.body);
+    }
+
+    const previewBatchId = taskImportPreview.previewPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (previewBatchId && method === "POST") {
+      const result = await taskImportPreview.handlePreviewRequest({
+        user,
+        batchId: previewBatchId,
         ddb,
         s3,
       });

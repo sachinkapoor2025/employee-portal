@@ -2,6 +2,7 @@ const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const { PutCommand } = require("@aws-sdk/lib-dynamodb");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
+const taskImportParse = require("./taskImportParse");
 
 const TYPE_TASK_IMPORT = "TASK_IMPORT";
 const META_SK = "META";
@@ -252,4 +253,10 @@ module.exports = {
   buildImportMeta,
   buildHistoryCopy,
   handleUploadUrlRequest,
+  TASKS_SHEET_NAME: taskImportParse.TASKS_SHEET_NAME,
+  TASK_IMPORT_COLUMNS: taskImportParse.TASK_IMPORT_COLUMNS,
+  ASSIGNMENT_MODES: taskImportParse.ASSIGNMENT_MODES,
+  IMPORT_PRIORITIES: taskImportParse.IMPORT_PRIORITIES,
+  ROW_STATUS: taskImportParse.ROW_STATUS,
+  parseTaskImportWorkbook: taskImportParse.parseTaskImportWorkbook,
 };
