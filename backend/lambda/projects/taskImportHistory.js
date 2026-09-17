@@ -6,8 +6,9 @@ const {
   META_SK,
   TYPE_TASK_IMPORT,
   importPk,
-  buildS3Key,
+  isTrustedImportKey,
 } = require("./taskImport");
+const { canDownloadAuditOriginal, objectExists } = require("./taskImportAudit");
 const { BATCH_ID_RE, queryAll } = require("./taskImportPreview");
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -94,24 +95,8 @@ function publicSummary(meta) {
     failureCount: Number(meta.failureCount || 0),
     confirmedAt: meta.confirmedAt || null,
     completedAt: meta.completedAt || null,
+    auditEligibility: String(meta.auditEligibility || "INELIGIBLE").toUpperCase(),
   };
-}
-
-function isTrustedImportKey(s3Key, batchId) {
-  const key = String(s3Key || "").replace(/^\/+/, "");
-  if (!key) return false;
-  if (key.includes("..") || key.includes("\\") || key.includes("\0")) {
-    return false;
-  }
-  if (key.includes("//")) return false;
-  if (!key.startsWith("task-imports/")) return false;
-  const parts = key.split("/");
-  if (parts.length !== 4) return false;
-  if (parts[0] !== "task-imports") return false;
-  if (!parts[1] || !parts[2]) return false;
-  if (parts[3] !== "original.xlsx") return false;
-  if (batchId && parts[2] !== String(batchId)) return false;
-  return true;
 }
 
 async function getMeta(ddb, tableName, batchId) {
@@ -307,25 +292,6 @@ function publicRow(row, assignment) {
   };
 }
 
-async function objectExists(s3, bucket, key) {
-  try {
-    await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-    return true;
-  } catch (err) {
-    const status = err?.$metadata?.httpStatusCode;
-    const name = String(err?.name || err?.Code || err?.code || "");
-    if (
-      status === 404 ||
-      name === "NotFound" ||
-      name === "NoSuchKey" ||
-      name === "NotFound"
-    ) {
-      return false;
-    }
-    throw err;
-  }
-}
-
 async function handleGetTaskImport({
   user,
   batchId,
@@ -363,9 +329,9 @@ async function handleGetTaskImport({
     return publicRow(row, assignment);
   });
 
-  const s3Key = meta.s3Key || buildS3Key(meta.uploadedBy, id);
+  const s3Key = meta.s3Key || "";
   let fileAvailable = false;
-  if (bucket && s3 && isTrustedImportKey(s3Key, id)) {
+  if (bucket && s3 && canDownloadAuditOriginal(meta)) {
     fileAvailable = await objectExists(s3, bucket, s3Key);
   }
 
@@ -408,8 +374,8 @@ async function handleGetTaskImportDownloadUrl({
   if (!meta || meta.type !== TYPE_TASK_IMPORT) {
     return { statusCode: 404, body: { error: "Import batch not found" } };
   }
-  const s3Key = meta.s3Key || buildS3Key(meta.uploadedBy, id);
-  if (!isTrustedImportKey(s3Key, id)) {
+  const s3Key = meta.s3Key || "";
+  if (!canDownloadAuditOriginal(meta) || !isTrustedImportKey(s3Key, id)) {
     return { statusCode: 404, body: { error: "Original Excel file is not available." } };
   }
   const exists = await objectExists(s3, bucket, s3Key);

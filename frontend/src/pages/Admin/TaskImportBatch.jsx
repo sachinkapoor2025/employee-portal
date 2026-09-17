@@ -39,10 +39,10 @@ function formatDateTime(value) {
 
 function statusBadgeClass(status) {
   const value = String(status || "").toUpperCase();
-  if (value === "COMPLETED" || value === "VALID" || value === "SUCCESS") {
+  if (value === "COMPLETED" || value === "VALID" || value === "SUCCESS" || value === "ELIGIBLE") {
     return "dgv-badge dgv-badge--success";
   }
-  if (value === "PARTIAL" || value === "NEEDS_FIX" || value === "WARNING") {
+  if (value === "PARTIAL" || value === "NEEDS_FIX" || value === "WARNING" || value === "WAITING_DISTRIBUTION") {
     return "dgv-badge dgv-badge--warning";
   }
   if (value === "FAILED" || value === "INVALID") return "dgv-badge dgv-badge--danger";
@@ -165,7 +165,11 @@ export default function TaskImportBatch() {
   }, [load]);
 
   const fileAvailable = Boolean(summary?.fileAvailable);
-  const missingFileMessage = "Original Excel file is no longer available.";
+  const auditEligibility = String(summary?.auditEligibility || "").toUpperCase();
+  const waitingDistribution = auditEligibility === "WAITING_DISTRIBUTION";
+  const missingFileMessage = waitingDistribution
+    ? "The original Excel file will be available for download after every task is fully distributed."
+    : "Original Excel file is no longer available.";
 
   const onDownload = async () => {
     if (downloading) return;
@@ -260,6 +264,14 @@ export default function TaskImportBatch() {
                 label="Completed"
                 value={formatDateTime(summary.completedAt)}
                 title={summary.completedAt}
+              />
+              <SummaryItem
+                label="Audit"
+                value={
+                  <span className={statusBadgeClass(summary.auditEligibility)}>
+                    {statusLabel(summary.auditEligibility || "INELIGIBLE")}
+                  </span>
+                }
               />
             </div>
 

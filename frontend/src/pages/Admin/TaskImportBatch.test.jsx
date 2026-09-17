@@ -38,7 +38,8 @@ const DETAIL = {
     failureCount: 1,
     confirmedAt: "2026-09-15T10:05:00.000Z",
     completedAt: "2026-09-15T10:06:00.000Z",
-    fileAvailable: true,
+    auditEligibility: "INELIGIBLE",
+    fileAvailable: false,
   },
   rows: [
     {
@@ -132,8 +133,11 @@ test("batch summary and rows render", async () => {
   expect(screen.getByText("lead@mydgv.com")).toBeInTheDocument();
   expect(screen.getByText(/Project: Unknown project/)).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "Download Original Excel" })
+    screen.getByText("Original Excel file is no longer available.")
   ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Download Original Excel" })
+  ).not.toBeInTheDocument();
 });
 
 test("task IDs link to existing task detail", async () => {
@@ -143,6 +147,17 @@ test("task IDs link to existing task detail", async () => {
 });
 
 test("download button requests a download URL", async () => {
+  fetchTaskImport.mockResolvedValue({
+    summary: {
+      ...DETAIL.summary,
+      status: "COMPLETED",
+      failureCount: 0,
+      successCount: 3,
+      auditEligibility: "ELIGIBLE",
+      fileAvailable: true,
+    },
+    rows: DETAIL.rows,
+  });
   const click = jest.fn();
   const originalCreate = document.createElement.bind(document);
   jest.spyOn(document, "createElement").mockImplementation((tagName, options) => {
@@ -161,6 +176,29 @@ test("download button requests a download URL", async () => {
   });
   expect(click).toHaveBeenCalled();
   document.createElement.mockRestore();
+});
+
+test("waiting distribution explains why download is unavailable", async () => {
+  fetchTaskImport.mockResolvedValue({
+    summary: {
+      ...DETAIL.summary,
+      status: "COMPLETED",
+      failureCount: 0,
+      successCount: 3,
+      auditEligibility: "WAITING_DISTRIBUTION",
+      fileAvailable: false,
+    },
+    rows: DETAIL.rows,
+  });
+  render(<TaskImportBatch />);
+  expect(
+    await screen.findByText(
+      "The original Excel file will be available for download after every task is fully distributed."
+    )
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Download Original Excel" })
+  ).not.toBeInTheDocument();
 });
 
 test("missing original file shows a professional message", async () => {

@@ -38,8 +38,10 @@ function formatDateTime(value) {
 
 function statusBadgeClass(status) {
   const value = String(status || "").toUpperCase();
-  if (value === "COMPLETED") return "dgv-badge dgv-badge--success";
-  if (value === "PARTIAL" || value === "NEEDS_FIX") return "dgv-badge dgv-badge--warning";
+  if (value === "COMPLETED" || value === "ELIGIBLE") return "dgv-badge dgv-badge--success";
+  if (value === "PARTIAL" || value === "NEEDS_FIX" || value === "WAITING_DISTRIBUTION") {
+    return "dgv-badge dgv-badge--warning";
+  }
   if (value === "FAILED") return "dgv-badge dgv-badge--danger";
   if (value === "PROCESSING" || value === "VALIDATING") return "dgv-badge dgv-badge--info";
   return "dgv-badge dgv-badge--neutral";
@@ -173,6 +175,9 @@ export default function TaskImportHistory() {
                     <th className="dgv-imports-table__status" style={thStyle}>
                       Status
                     </th>
+                    <th className="dgv-imports-table__status" style={thStyle}>
+                      Audit
+                    </th>
                     <th className="dgv-imports-table__action" style={thStyle}>
                       Action
                     </th>
@@ -226,6 +231,11 @@ export default function TaskImportHistory() {
                         <td className="dgv-imports-table__status" style={tdStyle}>
                           <span className={statusBadgeClass(item.status)}>
                             {statusLabel(item.status)}
+                          </span>
+                        </td>
+                        <td className="dgv-imports-table__status" style={tdStyle}>
+                          <span className={statusBadgeClass(item.auditEligibility)}>
+                            {statusLabel(item.auditEligibility || "INELIGIBLE")}
                           </span>
                         </td>
                         <td className="dgv-imports-table__action" style={tdStyle}>

@@ -15,7 +15,19 @@ Parameters:
     Default: 90
     MinValue: 1
     MaxValue: 3650
-    Description: Unused while ExpireTaskImports is Disabled so original Excel files under task-imports/ are retained indefinitely
+    Description: Unused while ExpireTaskImports is Disabled. Do not enable this prefix-wide rule; tmp and hold have their own lifecycles and audit originals must not expire with abandoned uploads.
+  TaskImportHoldRetentionDays:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 3650
+    Description: Days to keep originals in task-imports/hold/ while a COMPLETED import waits for scheduled assignment. After expiry the original is removed; Import History metadata remains. 90 days covers typical schedules; longer costs more S3, shorter may drop audit copies for far-future start dates.
+  TaskImportTmpRetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 30
+    Description: Safety-net expiry for abandoned task-imports/tmp/ uploads that never reach confirm
 
 Globals:
   Function:
@@ -663,6 +675,14 @@ Resources:
             Status: Disabled
             Prefix: task-imports/
             ExpirationInDays: !Ref TaskImportRetentionDays
+          - Id: ExpireTaskImportTmp
+            Status: Enabled
+            Prefix: task-imports/tmp/
+            ExpirationInDays: !Ref TaskImportTmpRetentionDays
+          - Id: ExpireTaskImportHold
+            Status: Enabled
+            Prefix: task-imports/hold/
+            ExpirationInDays: !Ref TaskImportHoldRetentionDays
   ImageUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -948,6 +968,7 @@ Resources:
           TASK_IMPORT_MAX_BYTES: "5242880"
           TASK_IMPORT_PROCESSING_LEASE_MS: "180000"
           TASK_SCHEDULED_ASSIGN_LEASE_MS: "180000"
+          TASK_IMPORT_HOLD_RETENTION_DAYS: !Ref TaskImportHoldRetentionDays
           COMPANY_TIMEZONE: Asia/Kolkata
           COMPANY_TZ_OFFSET: "+05:30"
           TASK_ORANGE_MS: "86400000"

@@ -20,6 +20,19 @@ const ALLOWED_XLSX_CONTENT_TYPES = new Set([
 const TASK_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
 const SIGNED_TTL_SECONDS = 300;
 const S3_OBJECT_NAME = "original.xlsx";
+const S3_PREFIX_TMP = "tmp";
+const S3_PREFIX_HOLD = "hold";
+const S3_PREFIX_AUDIT = "audit";
+const MANAGED_S3_PREFIXES = new Set([S3_PREFIX_TMP, S3_PREFIX_HOLD, S3_PREFIX_AUDIT]);
+const DEFAULT_HOLD_RETENTION_DAYS = 90;
+
+const AUDIT_ELIGIBILITY = Object.freeze({
+  INELIGIBLE: "INELIGIBLE",
+  WAITING_DISTRIBUTION: "WAITING_DISTRIBUTION",
+  ELIGIBLE: "ELIGIBLE",
+});
+const WAIT_PK = "ENTITY#TASK_IMPORT_WAIT";
+const TYPE_TASK_IMPORT_AUDIT_WAIT = "TASK_IMPORT_AUDIT_WAIT";
 
 const IMPORT_STATUSES = Object.freeze({
   UPLOADED: "UPLOADED",
@@ -92,8 +105,80 @@ function historySk(uploadedAt, batchId) {
   return `IMPORT#${uploadedAt}#${batchId}`;
 }
 
-function buildS3Key(uploaderEmail, batchId) {
+function buildLegacyS3Key(uploaderEmail, batchId) {
   return `task-imports/${sanitizeUploaderEmail(uploaderEmail)}/${batchId}/${S3_OBJECT_NAME}`;
+}
+
+function buildPrefixedS3Key(kind, uploaderEmail, batchId) {
+  return `task-imports/${kind}/${sanitizeUploaderEmail(uploaderEmail)}/${batchId}/${S3_OBJECT_NAME}`;
+}
+
+function buildTmpS3Key(uploaderEmail, batchId) {
+  return buildPrefixedS3Key(S3_PREFIX_TMP, uploaderEmail, batchId);
+}
+
+function buildHoldS3Key(uploaderEmail, batchId) {
+  return buildPrefixedS3Key(S3_PREFIX_HOLD, uploaderEmail, batchId);
+}
+
+function buildAuditS3Key(uploaderEmail, batchId) {
+  return buildPrefixedS3Key(S3_PREFIX_AUDIT, uploaderEmail, batchId);
+}
+
+function buildS3Key(uploaderEmail, batchId) {
+  return buildTmpS3Key(uploaderEmail, batchId);
+}
+
+function auditWaitSk(batchId) {
+  return `BATCH#${batchId}`;
+}
+
+function importHoldRetentionDays() {
+  const n = Number(process.env.TASK_IMPORT_HOLD_RETENTION_DAYS);
+  if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), 3650);
+  return DEFAULT_HOLD_RETENTION_DAYS;
+}
+
+function parseImportS3Key(s3Key, batchId) {
+  const key = String(s3Key || "").replace(/^\/+/, "");
+  if (!key) return null;
+  if (key.includes("..") || key.includes("\\") || key.includes("\0")) return null;
+  if (key.includes("//")) return null;
+  if (!key.startsWith("task-imports/")) return null;
+  const parts = key.split("/");
+  if (parts[0] !== "task-imports") return null;
+  if (parts[parts.length - 1] !== S3_OBJECT_NAME) return null;
+  if (parts.length === 4) {
+    const email = parts[1];
+    const id = parts[2];
+    if (!email || !id) return null;
+    if (MANAGED_S3_PREFIXES.has(email)) return null;
+    if (batchId && id !== String(batchId)) return null;
+    return { kind: "legacy", email, batchId: id, key };
+  }
+  if (parts.length === 5) {
+    const kind = parts[1];
+    const email = parts[2];
+    const id = parts[3];
+    if (!MANAGED_S3_PREFIXES.has(kind) || !email || !id) return null;
+    if (batchId && id !== String(batchId)) return null;
+    return { kind, email, batchId: id, key };
+  }
+  return null;
+}
+
+function isTrustedImportKey(s3Key, batchId) {
+  return Boolean(parseImportS3Key(s3Key, batchId));
+}
+
+function isManagedDeletableImportKey(s3Key, batchId) {
+  const parsed = parseImportS3Key(s3Key, batchId);
+  return Boolean(parsed && (parsed.kind === S3_PREFIX_TMP || parsed.kind === S3_PREFIX_HOLD));
+}
+
+function isAuditImportKey(s3Key, batchId) {
+  const parsed = parseImportS3Key(s3Key, batchId);
+  return Boolean(parsed && parsed.kind === S3_PREFIX_AUDIT);
 }
 
 function isAllowedXlsxContentType(contentType) {
@@ -143,6 +228,7 @@ function buildImportMeta({
     contentType: normalizeContentType(contentType),
     fileSize: Number(fileSize),
     status: IMPORT_STATUSES.UPLOADED,
+    auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
     totalRows: 0,
     validRows: 0,
     invalidRows: 0,
@@ -255,9 +341,26 @@ module.exports = {
   importMaxRows,
   importMaxBytes,
   isUploadUrlPath,
+  S3_OBJECT_NAME: "original.xlsx",
+  S3_PREFIX_TMP,
+  S3_PREFIX_HOLD,
+  S3_PREFIX_AUDIT,
+  AUDIT_ELIGIBILITY,
+  WAIT_PK,
+  TYPE_TASK_IMPORT_AUDIT_WAIT,
   importPk,
   rowSk,
   historySk,
+  auditWaitSk,
+  importHoldRetentionDays,
+  parseImportS3Key,
+  isTrustedImportKey,
+  isManagedDeletableImportKey,
+  isAuditImportKey,
+  buildLegacyS3Key,
+  buildTmpS3Key,
+  buildHoldS3Key,
+  buildAuditS3Key,
   buildS3Key,
   validateUploadMeta,
   buildImportMeta,

@@ -657,6 +657,13 @@ async function runEscalationSweep() {
     tableName: process.env.WORK_TABLE,
     nowMs: Date.now(),
   });
+  await taskImportConfirm.promoteWaitingImportAudits({
+    ddb,
+    s3,
+    tableName: process.env.WORK_TABLE,
+    bucket: process.env.DOCUMENTS_BUCKET,
+    nowMs: Date.now(),
+  });
   const afterAssign = await queryAllTasks();
   let processed = 0;
   for (const task of afterAssign) {

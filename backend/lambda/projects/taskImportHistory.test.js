@@ -13,9 +13,11 @@ const {
   META_SK,
   TYPE_TASK_IMPORT,
   IMPORT_STATUSES,
+  AUDIT_ELIGIBILITY,
   importPk,
   historySk,
   buildS3Key,
+  buildAuditS3Key,
   buildImportMeta,
   buildHistoryCopy,
   syncImportHistory,
@@ -145,21 +147,21 @@ function metaItem({
   batchId,
   uploadedAt,
   status = IMPORT_STATUSES.COMPLETED,
-  extra = {},
-}) {
-  const uploadedBy = "admin@mydgv.com";
-  return {
-    ...buildImportMeta({
-      batchId,
-      uploadedBy,
-      uploadedByName: "admin",
-      uploadedAt,
-      fileName: `${batchId}.xlsx`,
-      contentType:
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      fileSize: 1024,
-      s3Key: buildS3Key(uploadedBy, batchId),
-    }),
+      extra = {},
+    }) {
+      const uploadedBy = "admin@mydgv.com";
+      return {
+        ...buildImportMeta({
+          batchId,
+          uploadedBy,
+          uploadedByName: "admin",
+          uploadedAt,
+          fileName: `${batchId}.xlsx`,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          fileSize: 1024,
+          s3Key: extra.s3Key || buildS3Key(uploadedBy, batchId),
+        }),
     status,
     totalRows: 2,
     validRows: 2,
@@ -338,7 +340,14 @@ async function run() {
   await test("batch detail returns META, rows, and task linkage", async () => {
     const ddb = createMemoryDdb();
     const batchId = "batch-detail";
-    const meta = metaItem({ batchId, uploadedAt: NOW });
+    const meta = metaItem({
+      batchId,
+      uploadedAt: NOW,
+      extra: {
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: buildAuditS3Key("admin@mydgv.com", batchId),
+      },
+    });
     seedBatch(ddb, meta);
     ddb.seed(TABLE, {
       PK: importPk(batchId),
@@ -388,6 +397,7 @@ async function run() {
     assert.strictEqual(result.statusCode, 200);
     assert.strictEqual(result.body.summary.batchId, batchId);
     assert.strictEqual(result.body.summary.fileAvailable, true);
+    assert.strictEqual(result.body.summary.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     assert.ok(!result.body.summary.s3Key);
     assert.strictEqual(result.body.rows[0].taskId, "task-immediate");
     assert.deepStrictEqual(result.body.rows[0].assignment.emails, [
@@ -539,7 +549,14 @@ async function run() {
 
   await test("download missing S3 object returns 404", async () => {
     const ddb = createMemoryDdb();
-    const meta = metaItem({ batchId: "batch-file", uploadedAt: NOW });
+    const meta = metaItem({
+      batchId: "batch-file",
+      uploadedAt: NOW,
+      extra: {
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: buildAuditS3Key("admin@mydgv.com", "batch-file"),
+      },
+    });
     seedBatch(ddb, meta);
     const result = await handleGetTaskImportDownloadUrl({
       user: ADMIN,
@@ -573,7 +590,14 @@ async function run() {
 
   await test("download produces short-lived GET presigned URL", async () => {
     const ddb = createMemoryDdb();
-    const meta = metaItem({ batchId: "batch-dl", uploadedAt: NOW });
+    const meta = metaItem({
+      batchId: "batch-dl",
+      uploadedAt: NOW,
+      extra: {
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: buildAuditS3Key("admin@mydgv.com", "batch-dl"),
+      },
+    });
     seedBatch(ddb, meta);
     const s3 = createMemoryS3({ [meta.s3Key]: Buffer.from("xlsx") });
     let signedCommand;
@@ -596,6 +620,28 @@ async function run() {
     assert.strictEqual(result.body.expiresIn, 300);
     assert.ok(signedCommand instanceof GetObjectCommand);
     assert.ok(!result.body.s3Key);
+  });
+
+  await test("download is denied for WAITING_DISTRIBUTION hold objects", async () => {
+    const ddb = createMemoryDdb();
+    const meta = metaItem({
+      batchId: "batch-hold",
+      uploadedAt: NOW,
+      extra: {
+        auditEligibility: AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION,
+        s3Key: `task-imports/hold/admin@mydgv.com/batch-hold/original.xlsx`,
+      },
+    });
+    seedBatch(ddb, meta);
+    const result = await handleGetTaskImportDownloadUrl({
+      user: ADMIN,
+      batchId: "batch-hold",
+      ddb,
+      tableName: TABLE,
+      bucket: BUCKET,
+      s3: createMemoryS3({ [meta.s3Key]: Buffer.from("xlsx") }),
+    });
+    assert.strictEqual(result.statusCode, 404);
   });
 
   await test("history list does not mutate task data", async () => {

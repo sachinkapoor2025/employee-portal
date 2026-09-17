@@ -66,6 +66,7 @@ test("history list renders total imports and rows", async () => {
   expect(screen.getByText("10")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
   expect(screen.getByText("Completed")).toBeInTheDocument();
+  expect(screen.getByText("Ineligible")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: /Download/i })

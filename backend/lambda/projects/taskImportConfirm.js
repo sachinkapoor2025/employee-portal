@@ -8,6 +8,7 @@ const {
 const escalation = require("./escalation");
 const { isConditionalCheckFailed } = require("./redAdminNotify");
 const {
+  AUDIT_ELIGIBILITY,
   IMPORT_STATUSES,
   META_SK,
   TYPE_TASK_IMPORT,
@@ -28,6 +29,10 @@ const {
   isS3NotFound,
   validateBatchId,
 } = require("./taskImportPreview");
+const {
+  cleanupNonEligibleOriginal,
+  promoteImportAudit,
+} = require("./taskImportAudit");
 
 const ROW_IMPORTED = "IMPORTED";
 const ASSIGNMENT_PENDING = "PENDING";
@@ -471,6 +476,7 @@ async function confirmResponseFromRows(ddb, tableName, meta) {
     body: {
       batchId: meta.batchId,
       status: meta.status,
+      auditEligibility: meta.auditEligibility || null,
       totalRows: Number(meta.totalRows || imported.length),
       successCount: Number(meta.successCount || imported.length),
       failureCount: Number(meta.failureCount || 0),
@@ -655,10 +661,19 @@ async function handleConfirmRequest({
     buffer = await streamToBuffer(obj.Body);
   } catch (err) {
     if (isS3NotFound(err)) {
-      await putMeta(ddb, tableName, {
+      const failed = {
         ...withoutProcessingLease(meta),
         status: IMPORT_STATUSES.FAILED,
         updatedAt,
+      };
+      await putMeta(ddb, tableName, failed);
+      await cleanupNonEligibleOriginal({
+        ddb,
+        s3,
+        tableName,
+        bucket,
+        meta: failed,
+        now: updatedAt,
       });
       return { statusCode: 404, body: { error: "Import file not found." } };
     }
@@ -695,6 +710,7 @@ async function handleConfirmRequest({
       validRows: resolved.validRows,
       invalidRows: resolved.invalidRows,
       warningCount: resolved.warningCount,
+      auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
       updatedAt,
     });
     return {
@@ -784,14 +800,31 @@ async function handleConfirmRequest({
     confirmedAt: meta.confirmedAt || updatedAt,
     confirmedBy: actor,
     completedAt: status === IMPORT_STATUSES.COMPLETED ? updatedAt : null,
+    auditEligibility:
+      status === IMPORT_STATUSES.COMPLETED
+        ? meta.auditEligibility || AUDIT_ELIGIBILITY.INELIGIBLE
+        : AUDIT_ELIGIBILITY.INELIGIBLE,
     updatedAt,
   });
+  if (status === IMPORT_STATUSES.COMPLETED) {
+    await promoteImportAudit({
+      ddb,
+      s3,
+      tableName,
+      bucket,
+      batchId: id,
+      now: updatedAt,
+      nowMs: clockMs,
+    });
+  }
 
+  const latest = (await getMeta(ddb, tableName, id)) || {};
   return {
     statusCode: 200,
     body: {
       batchId: id,
       status,
+      auditEligibility: latest.auditEligibility || null,
       totalRows: resolved.rows.length,
       successCount,
       failureCount,
@@ -962,6 +995,7 @@ module.exports = {
   scheduledAssignLeaseMs,
   handleConfirmRequest,
   assignDueScheduledTasks,
+  promoteWaitingImportAudits: require("./taskImportAudit").promoteWaitingImportAudits,
   activateScheduledTask,
   claimBatchForProcessing,
   claimScheduledActivation,

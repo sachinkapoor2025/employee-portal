@@ -19,6 +19,15 @@ const {
   rowSk,
   historySk,
   buildS3Key,
+  buildTmpS3Key,
+  AUDIT_ELIGIBILITY,
+  parseImportS3Key,
+  isTrustedImportKey,
+  isManagedDeletableImportKey,
+  isAuditImportKey,
+  buildHoldS3Key,
+  buildAuditS3Key,
+  importHoldRetentionDays,
   handleUploadUrlRequest,
 } = require("./taskImport");
 const {
@@ -114,8 +123,25 @@ assert.ok(
 );
 assert.ok(
   /ExpireTaskImports[\s\S]*Status:\s*Disabled/.test(template),
-  "task-imports/ originals must not auto-expire"
+  "task-imports/ originals must not auto-expire as a whole prefix"
 );
+assert.ok(
+  /ExpireTaskImportTmp[\s\S]*Status:\s*Enabled[\s\S]*Prefix:\s*task-imports\/tmp\//.test(
+    template
+  ),
+  "tmp import uploads must expire with a dedicated lifecycle rule"
+);
+assert.ok(
+  /ExpireTaskImportHold[\s\S]*Status:\s*Enabled[\s\S]*Prefix:\s*task-imports\/hold\//.test(
+    template
+  ),
+  "hold originals must use a dedicated enabled lifecycle prefix"
+);
+assert.ok(
+  template.includes("TASK_IMPORT_HOLD_RETENTION_DAYS"),
+  "hold retention days must be passed to ProjectsFunction"
+);
+assert.strictEqual(importHoldRetentionDays(), 90);
 assert.ok(
   template.includes("Path: /task-imports"),
   "API Gateway route for import history must exist"
@@ -241,12 +267,10 @@ async function expectStatus(body, statusCode, errorPattern) {
   assert.ok(result.body.uploadUrl);
   assert.strictEqual(
     result.body.s3Key,
-    `task-imports/admin@mydgv.com/${batchId}/original.xlsx`
+    `task-imports/tmp/admin@mydgv.com/${batchId}/original.xlsx`
   );
-  assert.strictEqual(
-    buildS3Key("admin@mydgv.com", batchId),
-    result.body.s3Key
-  );
+  assert.strictEqual(buildTmpS3Key("admin@mydgv.com", batchId), result.body.s3Key);
+  assert.strictEqual(buildS3Key("admin@mydgv.com", batchId), result.body.s3Key);
   assert.strictEqual(ddb.items.length, 2);
   assert.ok(ddb.items.every((entry) => entry.TableName === "work-table"));
 
@@ -264,6 +288,7 @@ async function expectStatus(body, statusCode, errorPattern) {
   assert.strictEqual(meta.contentType, XLSX_CONTENT_TYPE);
   assert.strictEqual(meta.fileSize, 1024);
   assert.strictEqual(meta.status, IMPORT_STATUSES.UPLOADED);
+  assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.INELIGIBLE);
   assert.strictEqual(meta.totalRows, 0);
   assert.strictEqual(meta.validRows, 0);
   assert.strictEqual(meta.invalidRows, 0);
@@ -283,6 +308,23 @@ async function expectStatus(body, statusCode, errorPattern) {
   assert.strictEqual(history.status, IMPORT_STATUSES.UPLOADED);
   assert.strictEqual(history.s3Key, result.body.s3Key);
 }
+
+assert.strictEqual(isTrustedImportKey("task-imports/../x/original.xlsx", "id"), false);
+assert.strictEqual(
+  isTrustedImportKey("task-imports/tmp/admin@mydgv.com/id/../original.xlsx", "id"),
+  false
+);
+assert.strictEqual(isTrustedImportKey("profiles/secret.xlsx", "id"), false);
+assert.ok(isTrustedImportKey(buildTmpS3Key("admin@mydgv.com", "id"), "id"));
+assert.ok(isTrustedImportKey(buildHoldS3Key("admin@mydgv.com", "id"), "id"));
+assert.ok(isAuditImportKey(buildAuditS3Key("admin@mydgv.com", "id"), "id"));
+assert.ok(isManagedDeletableImportKey(buildTmpS3Key("admin@mydgv.com", "id"), "id"));
+assert.ok(!isManagedDeletableImportKey(buildAuditS3Key("admin@mydgv.com", "id"), "id"));
+assert.ok(parseImportS3Key("task-imports/admin@mydgv.com/id/original.xlsx", "id"));
+assert.strictEqual(
+  parseImportS3Key("task-imports/audit/admin@mydgv.com/other/original.xlsx", "id"),
+  null
+);
 
 assert.strictEqual(typeof collectBlockedNewAssignees, "function");
 assert.strictEqual(typeof newAssignmentEmails, "function");

@@ -10,6 +10,7 @@ const {
 const { normalizeEmail } = require("./escalation");
 const {
   IMPORT_STATUSES,
+  AUDIT_ELIGIBILITY,
   META_SK,
   TYPE_TASK_IMPORT,
   buildS3Key,
@@ -395,6 +396,7 @@ async function handlePreviewRequest({
     updatedAt,
     previewedAt: updatedAt,
     previewedBy,
+    auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
   };
   await ddb.send(
     new PutCommand({

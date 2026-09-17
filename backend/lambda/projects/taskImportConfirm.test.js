@@ -7,7 +7,12 @@ const {
   QueryCommand,
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
-const { GetObjectCommand } = require("@aws-sdk/client-s3");
+const {
+  CopyObjectCommand,
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 const emailCalls = [];
 const email = require("../common/email");
@@ -20,8 +25,11 @@ const {
   META_SK,
   TYPE_TASK_IMPORT,
   TASK_IMPORT_COLUMNS,
+  AUDIT_ELIGIBILITY,
   buildImportMeta,
   buildS3Key,
+  buildHoldS3Key,
+  buildAuditS3Key,
   importPk,
   rowSk,
 } = require("./taskImport");
@@ -34,6 +42,7 @@ const {
   isProcessingLeaseStale,
   isAssigningLeaseStale,
   assignDueScheduledTasks,
+  promoteWaitingImportAudits,
   ROW_IMPORTED,
   ASSIGNMENT_PENDING,
   ASSIGNMENT_ASSIGNING,
@@ -175,7 +184,7 @@ function evalCondition(item, expr, names, values) {
       const attr = resolveAttrName(notExists[1], names);
       return item[attr] === undefined || item[attr] === null;
     }
-    const cmp = rest.match(/^([#A-Za-z0-9_]+)\s*(=|<=|<|>=|>)\s*(:[A-Za-z0-9_]+)/);
+    const cmp = rest.match(/^([#A-Za-z0-9_]+)\s*(<>|=|<=|<|>=|>)\s*(:[A-Za-z0-9_]+)/);
     if (!cmp) {
       throw new Error(`unparsed condition: ${rest}`);
     }
@@ -183,6 +192,7 @@ function evalCondition(item, expr, names, values) {
     const left = item[resolveAttrName(cmp[1], names)];
     const right = values[cmp[3]];
     if (cmp[2] === "=") return left === right;
+    if (cmp[2] === "<>") return left !== right;
     if (cmp[2] === "<") return left < right;
     if (cmp[2] === "<=") return left <= right;
     if (cmp[2] === ">") return left > right;
@@ -324,20 +334,69 @@ function createMemoryDdb() {
   };
 }
 
-function createMemoryS3(objects = {}) {
+function s3NotFound() {
+  const err = new Error("NoSuchKey");
+  err.name = "NoSuchKey";
+  err.$metadata = { httpStatusCode: 404 };
+  throw err;
+}
+
+function decodeCopySourceKey(copySource, bucket) {
+  const decoded = String(copySource || "")
+    .replace(/^\/+/, "")
+    .split("/")
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+  if (decoded[0] === bucket) return decoded.slice(1).join("/");
+  return decoded.join("/");
+}
+
+function createMemoryS3(objects = {}, { failCopyTo } = {}) {
+  const failTo = failCopyTo instanceof Set ? failCopyTo : new Set(failCopyTo ? [failCopyTo] : []);
   return {
     objects,
+    copies: [],
+    deletes: [],
     async send(command) {
-      assert.ok(command instanceof GetObjectCommand);
-      const key = command.input.Key;
-      const body = objects[key];
-      if (!body) {
-        const err = new Error("NoSuchKey");
-        err.name = "NoSuchKey";
-        err.$metadata = { httpStatusCode: 404 };
-        throw err;
+      if (command instanceof GetObjectCommand) {
+        const key = command.input.Key;
+        const body = objects[key];
+        if (!body) s3NotFound();
+        return { Body: body };
       }
-      return { Body: body };
+      if (command instanceof HeadObjectCommand) {
+        const key = command.input.Key;
+        if (!objects[key]) s3NotFound();
+        return { ContentLength: 1 };
+      }
+      if (command instanceof CopyObjectCommand) {
+        const toKey = command.input.Key;
+        const fromKey = decodeCopySourceKey(command.input.CopySource, command.input.Bucket);
+        this.copies.push({ fromKey, toKey });
+        if (
+          failTo.has(toKey) ||
+          [...failTo].some((prefix) => String(toKey).startsWith(prefix))
+        ) {
+          const err = new Error("Copy failed");
+          err.name = "InternalError";
+          throw err;
+        }
+        const body = objects[fromKey];
+        if (!body) s3NotFound();
+        objects[toKey] = body;
+        return {};
+      }
+      if (command instanceof DeleteObjectCommand) {
+        this.deletes.push(command.input.Key);
+        delete objects[command.input.Key];
+        return {};
+      }
+      throw new Error(`unexpected s3 command ${command.constructor.name}`);
     },
   };
 }
@@ -552,7 +611,17 @@ async function run() {
     assert.strictEqual(meta.failureCount, 0);
     assert.strictEqual(meta.processingStartedAt, undefined);
     assert.strictEqual(meta.processingOwner, undefined);
-    assert.ok(env.s3.objects[meta.s3Key], "original.xlsx must remain after confirm");
+    assert.strictEqual(meta.status, "COMPLETED");
+    assert.strictEqual(meta.auditEligibility, "WAITING_DISTRIBUTION");
+    assert.ok(
+      String(meta.s3Key).startsWith("task-imports/hold/"),
+      "mixed COMPLETED batch must keep the original on hold until scheduled assignment finishes"
+    );
+    assert.ok(env.s3.objects[meta.s3Key], "hold original.xlsx must remain after confirm");
+    assert.ok(
+      !Object.keys(env.s3.objects).some((key) => key.startsWith("task-imports/audit/")),
+      "mixed COMPLETED batch must not receive an audit copy while a scheduled task is PENDING"
+    );
   });
 
   await test("invalid batch cannot confirm", async () => {
@@ -1262,6 +1331,113 @@ async function run() {
       .find((item) => item.taskId === "manual-task-1");
     assert.deepStrictEqual(after, before);
     assert.strictEqual(isPendingScheduledTask(after), false);
+  });
+
+  await test("immediate-only COMPLETED batch becomes ELIGIBLE with one audit copy", async () => {
+    const env = readyEnv();
+    const result = await confirm(env);
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    assert.strictEqual(result.body.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const meta = metaItem(env.ddb);
+    assert.strictEqual(meta.status, "COMPLETED");
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(meta.s3Key, auditKey);
+    assert.ok(env.s3.objects[auditKey]);
+    assert.strictEqual(
+      env.s3.copies.filter((item) => item.toKey === auditKey).length,
+      1
+    );
+    assert.ok(!env.s3.objects[buildS3Key(ADMIN.email, BATCH_ID)]);
+  });
+
+  await test("scheduled-only COMPLETED PENDING batch waits on hold without an audit copy", async () => {
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    const result = await confirm(env);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    assert.strictEqual(result.body.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    const meta = metaItem(env.ddb);
+    assert.strictEqual(meta.status, "COMPLETED");
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.strictEqual(meta.s3Key, buildHoldS3Key(ADMIN.email, BATCH_ID));
+    assert.ok(env.s3.objects[meta.s3Key]);
+    assert.ok(!env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
+    const task = entityTasks(env.ddb)[0];
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+  });
+
+  await test("successful later assignment promotes a waiting batch exactly once", async () => {
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const assigned = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(assigned.processed, 1);
+    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    const first = await promoteWaitingImportAudits({
+      ddb: env.ddb,
+      s3: env.s3,
+      tableName: WORK_TABLE,
+      bucket: BUCKET,
+      now: NOW,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(first.processed, 1);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(env.s3.objects[auditKey]);
+    const second = await promoteWaitingImportAudits({
+      ddb: env.ddb,
+      s3: env.s3,
+      tableName: WORK_TABLE,
+      bucket: BUCKET,
+      now: NOW,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(second.processed, 0);
+    assert.strictEqual(
+      env.s3.copies.filter((item) => item.toKey === auditKey).length,
+      1
+    );
+  });
+
+  await test("scheduled assignment failure does not create an audit copy and remains retryable", async () => {
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const orig = env.ddb.send.bind(env.ddb);
+    env.ddb.send = async (command) => {
+      if (
+        command instanceof PutCommand &&
+        command.input.Item?.PK &&
+        String(command.input.Item.SK || "").startsWith("ASSIGNMENT#")
+      ) {
+        throw new Error("simulated assignment failure");
+      }
+      return orig(command);
+    };
+    await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      nowMs: dueMs,
+    });
+    await promoteWaitingImportAudits({
+      ddb: env.ddb,
+      s3: env.s3,
+      tableName: WORK_TABLE,
+      bucket: BUCKET,
+      now: NOW,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNING);
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.ok(!env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
+    assert.ok(env.s3.objects[buildHoldS3Key(ADMIN.email, BATCH_ID)]);
   });
 }
 
