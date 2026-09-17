@@ -1,30 +1,59 @@
 import {
   archiveProjectConfirmCopy,
   deleteProjectConfirmCopy,
+  deleteProjectErrorCopy,
   deleteProjectResultCopy,
   emptyProjectsCopy,
+  isDeletedProjectAction,
+  projectNamesMatch,
   projectStatusLabel,
   restoreProjectConfirmCopy,
+  unexpectedDeleteActionCopy,
 } from "./workProjectManage";
 
-test("delete confirmation copy is backend-neutral", () => {
-  const copy = deleteProjectConfirmCopy();
+test("delete confirmation copy describes permanent deletion and retention", () => {
+  const copy = deleteProjectConfirmCopy("Portal");
   expect(copy.title).toBe("Delete Project?");
   expect(copy.body).toBe(
-    "Are you sure you want to permanently delete this project?"
+    "This will permanently delete Portal. This cannot be undone."
   );
-  expect(copy.detail).toBe(
-    "Projects with existing tasks or task history cannot be permanently deleted. Archive the project instead to preserve tasks and history. Projects with no related tasks will be permanently deleted."
-  );
+  expect(copy.detail).toMatch(/Associated tasks and task-owned records/i);
+  expect(copy.retain).toMatch(/Excel Import History/i);
+  expect(copy.retain).toMatch(/Documents data are retained/i);
+  expect(copy.confirmLabel).toBe("Type Portal to confirm");
 });
 
-test("result copy for archived vs deleted", () => {
+test("project name matching matches backend namesMatch", () => {
+  expect(projectNamesMatch("Portal", " portal ")).toBe(true);
+  expect(projectNamesMatch("Portal", "PORTAL")).toBe(true);
+  expect(projectNamesMatch("Portal", "Other")).toBe(false);
+  expect(projectNamesMatch("", "Portal")).toBe(false);
+  expect(projectNamesMatch("Portal", "")).toBe(false);
+});
+
+test("result copy for deleted vs archived", () => {
   expect(deleteProjectResultCopy("DELETED")).toBe(
     "Project deleted successfully."
   );
-  expect(deleteProjectResultCopy("ARCHIVED")).toBe(
-    "Project archived because it contains existing tasks."
+  expect(deleteProjectResultCopy("ARCHIVED")).toBe("");
+  expect(isDeletedProjectAction("DELETED")).toBe(true);
+  expect(isDeletedProjectAction("ARCHIVED")).toBe(false);
+  expect(unexpectedDeleteActionCopy()).toMatch(/not permanently deleted/i);
+});
+
+test("delete error copy keeps backend codes and invites retry", () => {
+  const err = new Error("Unable to delete project attachments");
+  err.status = 500;
+  err.code = "PROJECT_DELETE_S3_FAILED";
+  expect(deleteProjectErrorCopy(err)).toBe(
+    "Unable to delete project attachments (PROJECT_DELETE_S3_FAILED) You can try again if this was a temporary failure."
   );
+  const conflict = new Error("This project cannot be permanently deleted.");
+  conflict.status = 409;
+  expect(deleteProjectErrorCopy(conflict)).toMatch(/try again/i);
+  const network = new Error("offline");
+  network.isNetworkError = true;
+  expect(deleteProjectErrorCopy(network)).toMatch(/reach the server/i);
 });
 
 test("archive and restore confirmation copy", () => {

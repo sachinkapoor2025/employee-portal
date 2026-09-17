@@ -11,6 +11,7 @@ import {
 } from "../../services/api";
 import {
   colors,
+  formInput,
   formLabel,
   formSelect,
   pageCard,
@@ -20,10 +21,14 @@ import {
 import {
   archiveProjectConfirmCopy,
   deleteProjectConfirmCopy,
+  deleteProjectErrorCopy,
   deleteProjectResultCopy,
   emptyProjectsCopy,
+  isDeletedProjectAction,
+  projectNamesMatch,
   projectStatusLabel,
   restoreProjectConfirmCopy,
+  unexpectedDeleteActionCopy,
 } from "../../utils/workProjectManage";
 
 function formatCreated(value) {
@@ -50,6 +55,8 @@ export default function ManageProjects() {
   const [message, setMessage] = useState("");
   const [actionMenuId, setActionMenuId] = useState("");
   const [confirm, setConfirm] = useState(null);
+  const [confirmName, setConfirmName] = useState("");
+  const [confirmError, setConfirmError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [formMode, setFormMode] = useState("create");
@@ -87,6 +94,8 @@ export default function ManageProjects() {
   const closeConfirm = () => {
     if (busy) return;
     setConfirm(null);
+    setConfirmName("");
+    setConfirmError("");
   };
 
   const openCreate = () => {
@@ -111,6 +120,8 @@ export default function ManageProjects() {
     setMessage("");
     setError("");
     setActionMenuId("");
+    setConfirmName("");
+    setConfirmError("");
     setConfirm({ type, project });
   };
 
@@ -141,7 +152,14 @@ export default function ManageProjects() {
   const runConfirm = async () => {
     if (!confirm?.project || busy) return;
     const project = confirm.project;
+    if (
+      confirm.type === "delete" &&
+      !projectNamesMatch(confirmName, project.name)
+    ) {
+      return;
+    }
     setBusy(true);
+    setConfirmError("");
     try {
       if (confirm.type === "archive") {
         await updateProject(project.projectId, { status: "ARCHIVED" });
@@ -157,13 +175,28 @@ export default function ManageProjects() {
         await load();
         return;
       }
-      const result = await deleteProject(project.projectId);
+      const result = await deleteProject(project.projectId, confirmName);
+      if (!isDeletedProjectAction(result?.action)) {
+        const failed = unexpectedDeleteActionCopy();
+        setConfirmError(failed);
+        setMessage("");
+        setError(failed);
+        return;
+      }
       setConfirm(null);
+      setConfirmName("");
+      setConfirmError("");
       setMessage(deleteProjectResultCopy(result?.action));
       await load();
     } catch (err) {
-      setConfirm(null);
       setMessage("");
+      if (confirm.type === "delete") {
+        const failed = deleteProjectErrorCopy(err);
+        setConfirmError(failed);
+        setError(failed);
+        return;
+      }
+      setConfirm(null);
       setError(err?.message || "Unable to update project.");
     } finally {
       setBusy(false);
@@ -175,7 +208,14 @@ export default function ManageProjects() {
       ? archiveProjectConfirmCopy(confirm.project?.name)
       : confirm?.type === "restore"
         ? restoreProjectConfirmCopy(confirm.project?.name)
-        : deleteProjectConfirmCopy();
+        : deleteProjectConfirmCopy(confirm?.project?.name);
+
+  const deleteNameMatches = projectNamesMatch(
+    confirmName,
+    confirm?.project?.name
+  );
+  const confirmActionDisabled =
+    busy || (confirm?.type === "delete" && !deleteNameMatches);
 
   const confirmActionLabel =
     confirm?.type === "archive"
@@ -187,7 +227,7 @@ export default function ManageProjects() {
           ? "Restoring..."
           : "Restore Project"
         : busy
-          ? "Removing..."
+          ? "Deleting..."
           : "Delete Project";
 
   return (
@@ -433,7 +473,7 @@ export default function ManageProjects() {
             <button
               type="button"
               className="dgv-btn dgv-btn--primary"
-              disabled={busy}
+              disabled={confirmActionDisabled}
               onClick={runConfirm}
             >
               {confirmActionLabel}
@@ -442,7 +482,10 @@ export default function ManageProjects() {
         }
       >
         {confirm?.type === "delete" && confirm.project?.name ? (
-          <p style={{ margin: "0 0 12px", fontWeight: 600, color: colors.text }}>
+          <p
+            data-testid="delete-project-name"
+            style={{ margin: "0 0 12px", fontWeight: 600, color: colors.text }}
+          >
             {confirm.project.name}
           </p>
         ) : null}
@@ -453,6 +496,35 @@ export default function ManageProjects() {
           <p style={{ margin: "12px 0 0", color: colors.text, lineHeight: 1.5 }}>
             {confirmCopy.detail}
           </p>
+        ) : null}
+        {confirm?.type === "delete" && confirmCopy.retain ? (
+          <p style={{ margin: "12px 0 0", color: colors.text, lineHeight: 1.5 }}>
+            {confirmCopy.retain}
+          </p>
+        ) : null}
+        {confirm?.type === "delete" ? (
+          <div style={{ marginTop: 16 }}>
+            <label style={formLabel} htmlFor="delete-project-confirm-name">
+              {confirmCopy.confirmLabel}
+            </label>
+            <input
+              id="delete-project-confirm-name"
+              style={{ ...formInput, marginBottom: 0 }}
+              type="text"
+              value={confirmName}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={busy}
+              placeholder=""
+              onChange={(e) => setConfirmName(e.target.value)}
+            />
+          </div>
+        ) : null}
+        {confirmError ? (
+          <div className="dgv-alert dgv-alert--error" style={{ marginTop: 16 }}>
+            {confirmError}
+          </div>
         ) : null}
       </Modal>
     </Layout>

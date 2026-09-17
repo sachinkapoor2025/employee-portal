@@ -1049,8 +1049,13 @@ exports.handler = async (event) => {
       const removed = await projectManage.handleDeleteProject({
         user,
         projectId: projectRoute.projectId,
+        body,
+        query: event.queryStringParameters || {},
         ddb,
+        s3,
         tableName: process.env.WORK_TABLE,
+        attachmentsBucket: process.env.TASK_ATTACHMENTS_BUCKET,
+        documentsBucket: process.env.DOCUMENTS_BUCKET,
       });
       return json(removed.statusCode, removed.body);
     }

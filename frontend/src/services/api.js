@@ -86,15 +86,20 @@ export const api = async (path, method = "GET", body) => {
     const text = await res.text();
     console.error("API error:", res.status, text);
     let message = "API request failed";
+    let code;
     try {
       const data = JSON.parse(text);
       if (typeof data === "string" && data.trim()) message = data;
       else if (data?.error) message = data.error;
       else if (data?.message) message = data.message;
+      if (data && typeof data === "object" && data.code) code = data.code;
     } catch {
       if (text?.trim()) message = text.trim();
     }
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = res.status;
+    if (code) err.code = code;
+    throw err;
   }
 
   return res.json();
@@ -216,8 +221,10 @@ export const fetchProjects = (params = {}) => {
 export const createProject = (data) => api("/projects", "POST", data);
 export const updateProject = (projectId, data) =>
   api(`/projects/${encodeURIComponent(projectId)}`, "PATCH", data);
-export const deleteProject = (projectId) =>
-  api(`/projects/${encodeURIComponent(projectId)}`, "DELETE");
+export const deleteProject = (projectId, confirmName) =>
+  api(`/projects/${encodeURIComponent(projectId)}`, "DELETE", {
+    confirmName: String(confirmName ?? ""),
+  });
 export const fetchTasks = async (params = {}) => {
   const data = await fetchTaskList(params);
   return data.tasks;
