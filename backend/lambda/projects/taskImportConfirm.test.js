@@ -612,16 +612,16 @@ async function run() {
     assert.strictEqual(meta.processingStartedAt, undefined);
     assert.strictEqual(meta.processingOwner, undefined);
     assert.strictEqual(meta.status, "COMPLETED");
-    assert.strictEqual(meta.auditEligibility, "WAITING_DISTRIBUTION");
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(meta.s3Key, auditKey);
+    assert.ok(env.s3.objects[auditKey], "mixed COMPLETED batch must retain the original in audit storage");
     assert.ok(
-      String(meta.s3Key).startsWith("task-imports/hold/"),
-      "mixed COMPLETED batch must keep the original on hold until scheduled assignment finishes"
+      env.s3.copies.some((item) => item.toKey === auditKey),
+      "mixed COMPLETED batch must copy the original to the audit prefix"
     );
-    assert.ok(env.s3.objects[meta.s3Key], "hold original.xlsx must remain after confirm");
-    assert.ok(
-      !Object.keys(env.s3.objects).some((key) => key.startsWith("task-imports/audit/")),
-      "mixed COMPLETED batch must not receive an audit copy while a scheduled task is PENDING"
-    );
+    assert.ok(!env.s3.objects[buildS3Key(ADMIN.email, BATCH_ID)]);
+    assert.strictEqual(createdScheduled.assignmentState, ASSIGNMENT_PENDING);
   });
 
   await test("invalid batch cannot confirm", async () => {
@@ -1352,63 +1352,57 @@ async function run() {
     assert.ok(!env.s3.objects[buildS3Key(ADMIN.email, BATCH_ID)]);
   });
 
-  await test("scheduled-only COMPLETED PENDING batch waits on hold without an audit copy", async () => {
+  await test("scheduled-only COMPLETED PENDING batch becomes ELIGIBLE immediately", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     const result = await confirm(env);
     assert.strictEqual(result.body.status, "COMPLETED");
-    assert.strictEqual(result.body.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.strictEqual(result.body.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     const meta = metaItem(env.ddb);
     assert.strictEqual(meta.status, "COMPLETED");
-    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
-    assert.strictEqual(meta.s3Key, buildHoldS3Key(ADMIN.email, BATCH_ID));
-    assert.ok(env.s3.objects[meta.s3Key]);
-    assert.ok(!env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(meta.s3Key, auditKey);
+    assert.ok(env.s3.objects[auditKey]);
+    assert.ok(!env.s3.objects[buildHoldS3Key(ADMIN.email, BATCH_ID)]);
     const task = entityTasks(env.ddb)[0];
     assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
   });
 
-  await test("successful later assignment promotes a waiting batch exactly once", async () => {
+  await test("duplicate promotion does not create a second audit copy", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
-    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
-    const assigned = await assignDueScheduledTasks({
-      ddb: env.ddb,
-      tableName: WORK_TABLE,
-      nowMs: dueMs,
-    });
-    assert.strictEqual(assigned.processed, 1);
-    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNED);
-    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const firstCopies = env.s3.copies.filter((item) => item.toKey === auditKey).length;
     const first = await promoteWaitingImportAudits({
       ddb: env.ddb,
       s3: env.s3,
       tableName: WORK_TABLE,
       bucket: BUCKET,
       now: NOW,
-      nowMs: dueMs,
+      nowMs: NOW_MS,
     });
-    assert.strictEqual(first.processed, 1);
-    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
-    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
-    assert.ok(env.s3.objects[auditKey]);
+    assert.strictEqual(first.processed, 0);
     const second = await promoteWaitingImportAudits({
       ddb: env.ddb,
       s3: env.s3,
       tableName: WORK_TABLE,
       bucket: BUCKET,
       now: NOW,
-      nowMs: dueMs,
+      nowMs: NOW_MS,
     });
     assert.strictEqual(second.processed, 0);
     assert.strictEqual(
       env.s3.copies.filter((item) => item.toKey === auditKey).length,
-      1
+      firstCopies
     );
+    assert.ok(env.s3.objects[auditKey]);
   });
 
-  await test("scheduled assignment failure does not create an audit copy and remains retryable", async () => {
+  await test("scheduled assignment failure does not change COMPLETED audit eligibility", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
@@ -1426,18 +1420,10 @@ async function run() {
       tableName: WORK_TABLE,
       nowMs: dueMs,
     });
-    await promoteWaitingImportAudits({
-      ddb: env.ddb,
-      s3: env.s3,
-      tableName: WORK_TABLE,
-      bucket: BUCKET,
-      now: NOW,
-      nowMs: dueMs,
-    });
     assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNING);
-    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
-    assert.ok(!env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
-    assert.ok(env.s3.objects[buildHoldS3Key(ADMIN.email, BATCH_ID)]);
+    assert.strictEqual(metaItem(env.ddb).status, "COMPLETED");
+    assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
   });
 }
 

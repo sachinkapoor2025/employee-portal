@@ -66,7 +66,6 @@ test("history list renders total imports and rows", async () => {
   expect(screen.getByText("10")).toBeInTheDocument();
   expect(screen.getByText("2")).toBeInTheDocument();
   expect(screen.getByText("Completed")).toBeInTheDocument();
-  expect(screen.getByText("Ineligible")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: /Download/i })
@@ -75,6 +74,59 @@ test("history list renders total imports and rows", async () => {
     limit: 20,
     nextToken: undefined,
   });
+});
+
+test("history list displays only completed imports", async () => {
+  fetchTaskImports.mockResolvedValue({
+    items: [
+      ITEM,
+      {
+        ...ITEM,
+        batchId: "batch-fix",
+        fileName: "needs-fix.xlsx",
+        status: "NEEDS_FIX",
+      },
+      {
+        ...ITEM,
+        batchId: "batch-ready",
+        fileName: "ready.xlsx",
+        status: "READY",
+      },
+      {
+        ...ITEM,
+        batchId: "batch-uploaded",
+        fileName: "uploaded.xlsx",
+        status: "UPLOADED",
+      },
+      {
+        ...ITEM,
+        batchId: "batch-failed",
+        fileName: "failed.xlsx",
+        status: "FAILED",
+      },
+      {
+        ...ITEM,
+        batchId: "batch-partial",
+        fileName: "partial.xlsx",
+        status: "PARTIAL",
+      },
+    ],
+    nextToken: null,
+    totalCount: 1,
+  });
+  render(<TaskImportHistory />);
+  expect(await screen.findByText("tasks.xlsx")).toBeInTheDocument();
+  expect(screen.getByText("batch-abc")).toBeInTheDocument();
+  expect(screen.queryByText("needs-fix.xlsx")).not.toBeInTheDocument();
+  expect(screen.queryByText("ready.xlsx")).not.toBeInTheDocument();
+  expect(screen.queryByText("uploaded.xlsx")).not.toBeInTheDocument();
+  expect(screen.queryByText("failed.xlsx")).not.toBeInTheDocument();
+  expect(screen.queryByText("partial.xlsx")).not.toBeInTheDocument();
+  expect(screen.queryByText("batch-fix")).not.toBeInTheDocument();
+  expect(screen.queryByText("batch-ready")).not.toBeInTheDocument();
+  expect(screen.queryByText("batch-uploaded")).not.toBeInTheDocument();
+  expect(screen.queryByText("batch-failed")).not.toBeInTheDocument();
+  expect(screen.queryByText("batch-partial")).not.toBeInTheDocument();
 });
 
 test("View opens batch detail", async () => {

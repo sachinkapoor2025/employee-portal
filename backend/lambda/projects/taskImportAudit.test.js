@@ -23,6 +23,7 @@ const {
   buildS3Key,
   importPk,
   isTrustedImportKey,
+  isManagedDeletableImportKey,
   parseImportS3Key,
 } = require("./taskImport");
 const {
@@ -275,9 +276,12 @@ function createMemoryS3(objects = {}, { failCopyTo } = {}) {
   return {
     objects,
     copies: [],
+    heads: [],
+    deletes: [],
     async send(command) {
       if (command instanceof GetObjectCommand || command instanceof HeadObjectCommand) {
         const key = command.input.Key;
+        if (command instanceof HeadObjectCommand) this.heads.push(key);
         if (!objects[key]) s3NotFound();
         return { Body: objects[key], ContentLength: 1 };
       }
@@ -298,6 +302,7 @@ function createMemoryS3(objects = {}, { failCopyTo } = {}) {
         return {};
       }
       if (command instanceof DeleteObjectCommand) {
+        this.deletes.push(command.input.Key);
         delete objects[command.input.Key];
         return {};
       }
@@ -435,26 +440,28 @@ async function run() {
     assert.strictEqual(meta.s3Key, auditKey);
     assert.ok(s3.objects[auditKey]);
     assert.strictEqual(s3.copies.filter((item) => item.toKey === auditKey).length, 1);
+    assert.ok(s3.heads.includes(auditKey), "audit copy must be verified with HeadObject");
     assert.ok(!s3.objects[tmpKey]);
+    assert.ok(s3.deletes.includes(tmpKey));
   });
 
-  await test("scheduled-only COMPLETED PENDING batch remains WAITING_DISTRIBUTION", async () => {
+  await test("scheduled-only COMPLETED PENDING batch becomes ELIGIBLE immediately", async () => {
     const batchId = "batch-sched";
     const ddb = createMemoryDdb();
     seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
     seedScheduled(ddb, batchId, { state: "PENDING" });
     const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
     const result = await promote({ ddb, s3, batchId });
-    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     const meta = ddb.of(TABLE).find((item) => item.SK === META_SK);
     assert.strictEqual(meta.status, IMPORT_STATUSES.COMPLETED);
-    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
-    assert.strictEqual(meta.s3Key, buildHoldS3Key(ADMIN.email, batchId));
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.strictEqual(meta.s3Key, buildAuditS3Key(ADMIN.email, batchId));
     assert.ok(s3.objects[meta.s3Key]);
-    assert.ok(!s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
+    assert.ok(!s3.objects[buildHoldS3Key(ADMIN.email, batchId)]);
   });
 
-  await test("mixed batch is not ELIGIBLE until every scheduled task is ASSIGNED", async () => {
+  await test("mixed COMPLETED batch becomes ELIGIBLE while scheduled work is PENDING", async () => {
     const batchId = "batch-mixed";
     const ddb = createMemoryDdb();
     seedMeta(ddb, {
@@ -465,64 +472,45 @@ async function run() {
     seedImmediateAssigned(ddb, batchId);
     seedScheduled(ddb, batchId, { state: "PENDING" });
     const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
-    const waiting = await promote({ ddb, s3, batchId });
-    assert.strictEqual(waiting.eligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
-    seedScheduled(ddb, batchId, { state: "ASSIGNED" });
-    const done = await promote({ ddb, s3, batchId });
-    assert.strictEqual(done.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const result = await promote({ ddb, s3, batchId });
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     assert.ok(s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
+    const dist = evaluateBatchDistribution(
+      ddb,
+      TABLE,
+      ddb.of(TABLE).find((item) => item.SK === META_SK)
+    );
+    assert.strictEqual(dist.eligible, true);
+    assert.strictEqual(dist.waiting, false);
   });
 
-  await test("ASSIGNING task remains ineligible", async () => {
+  await test("ASSIGNING scheduled task does not block ELIGIBLE", async () => {
     const batchId = "batch-assigning";
     const ddb = createMemoryDdb();
     seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
     seedScheduled(ddb, batchId, { state: "ASSIGNING" });
     const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
     const result = await promote({ ddb, s3, batchId });
-    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
-    assert.ok(!s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
   });
 
-  await test("missing task prevents eligibility", async () => {
-    const batchId = "batch-missing-task";
+  await test("legacy four-part S3 keys are never deleted", async () => {
+    const batchId = "batch-legacy";
     const ddb = createMemoryDdb();
-    seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
-    seedRow(ddb, batchId, {
-      rowNumber: 2,
-      taskId: "missing-task",
-      assignmentMode: "IMMEDIATE",
-      resolvedAssignees: [{ email: "rahul@mydgv.com" }],
+    const legacyKey = `task-imports/${ADMIN.email}/${batchId}/original.xlsx`;
+    seedMeta(ddb, {
+      batchId,
+      status: IMPORT_STATUSES.COMPLETED,
+      extra: { s3Key: legacyKey },
     });
-    const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
+    const s3 = createMemoryS3({ [legacyKey]: FILE });
     const result = await promote({ ddb, s3, batchId });
-    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.INELIGIBLE);
-    assert.ok(!s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
-    assert.ok(
-      ddb.of(TABLE).some((item) => item.PK === importPk(batchId) && item.SK === META_SK)
-    );
-  });
-
-  await test("missing assignment record prevents eligibility", async () => {
-    const batchId = "batch-missing-asg";
-    const ddb = createMemoryDdb();
-    seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
-    seedRow(ddb, batchId, {
-      rowNumber: 2,
-      taskId: "task-no-asg",
-      assignmentMode: "IMMEDIATE",
-      resolvedAssignees: [{ email: "rahul@mydgv.com" }],
-    });
-    seedTask(ddb, {
-      taskId: "task-no-asg",
-      assignmentMode: "IMMEDIATE",
-      assignmentState: "ASSIGNED",
-      assignees: ["rahul@mydgv.com"],
-    });
-    const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
-    const result = await promote({ ddb, s3, batchId });
-    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.INELIGIBLE);
-    assert.ok(!s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(s3.objects[legacyKey], "legacy source must remain");
+    assert.ok(s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
+    assert.ok(!s3.deletes.includes(legacyKey));
+    assert.strictEqual(isManagedDeletableImportKey(legacyKey, batchId), false);
   });
 
   await test("non-COMPLETED statuses never receive an audit copy", async () => {
@@ -554,8 +542,8 @@ async function run() {
     }
   });
 
-  await test("Import History metadata remains after hold original cleanup", async () => {
-    const batchId = "batch-expired";
+  await test("completed hold original is promoted to audit without deleting metadata", async () => {
+    const batchId = "batch-hold-promote";
     const ddb = createMemoryDdb();
     const holdKey = buildHoldS3Key(ADMIN.email, batchId);
     seedMeta(ddb, {
@@ -564,19 +552,17 @@ async function run() {
       extra: {
         s3Key: holdKey,
         auditEligibility: AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION,
-        holdUntil: "2026-01-01T00:00:00.000Z",
       },
     });
     seedScheduled(ddb, batchId, { state: "PENDING" });
     ddb.seed(TABLE, { PK: WAIT_PK, SK: `BATCH#${batchId}`, batchId });
     const s3 = createMemoryS3({ [holdKey]: FILE });
     const result = await promote({ ddb, s3, batchId, nowMs: NOW_MS });
-    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.INELIGIBLE);
-    assert.ok(result.expired);
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     const meta = ddb.of(TABLE).find((item) => item.PK === importPk(batchId) && item.SK === META_SK);
     assert.ok(meta);
     assert.strictEqual(meta.status, IMPORT_STATUSES.COMPLETED);
-    assert.ok(!s3.objects[holdKey]);
+    assert.ok(s3.objects[buildAuditS3Key(ADMIN.email, batchId)]);
     assert.ok(ddb.of(TABLE).some((item) => item.taskId === "task-sched"));
   });
 
@@ -671,6 +657,36 @@ async function run() {
     );
   });
 
+  await test("retry after copy failure promotes once HeadObject verifies the audit copy", async () => {
+    const batchId = "batch-retry";
+    const ddb = createMemoryDdb();
+    const tmpKey = buildS3Key(ADMIN.email, batchId);
+    const holdKey = buildHoldS3Key(ADMIN.email, batchId);
+    const auditKey = buildAuditS3Key(ADMIN.email, batchId);
+    seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
+    seedImmediateAssigned(ddb, batchId);
+    const failTo = new Set(["task-imports/audit/"]);
+    const s3 = createMemoryS3({ [tmpKey]: FILE }, { failCopyTo: failTo });
+    const first = await promote({ ddb, s3, batchId });
+    assert.strictEqual(first.reason, "copy-failed");
+    assert.strictEqual(first.eligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.ok(!s3.objects[auditKey]);
+    assert.ok(s3.objects[tmpKey] || s3.objects[holdKey]);
+    assert.ok(!s3.deletes.includes(auditKey));
+    failTo.clear();
+    const second = await promote({ ddb, s3, batchId });
+    assert.strictEqual(second.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(s3.objects[auditKey]);
+    assert.ok(Buffer.compare(s3.objects[auditKey], FILE) === 0);
+    assert.ok(s3.heads.includes(auditKey), "retry must verify the audit copy with HeadObject");
+    const meta = ddb.of(TABLE).find((item) => item.SK === META_SK);
+    assert.strictEqual(meta.s3Key, auditKey);
+    assert.ok(!s3.objects[tmpKey]);
+    assert.ok(!s3.objects[holdKey]);
+    assert.ok(s3.deletes.includes(tmpKey) || s3.deletes.includes(holdKey));
+    assert.ok(!s3.deletes.includes(auditKey));
+  });
+
   await test("duplicate sweep does not create duplicate audit objects", async () => {
     const batchId = "batch-dup";
     const ddb = createMemoryDdb();
@@ -734,14 +750,13 @@ async function run() {
       TABLE,
       ddb.of(TABLE).find((item) => item.SK === META_SK)
     );
-    assert.strictEqual(dist.eligible, false);
-    assert.strictEqual(dist.waiting, true);
+    assert.strictEqual(dist.eligible, true);
+    assert.strictEqual(dist.waiting, false);
     const s3 = createMemoryS3({ [buildS3Key(ADMIN.email, batchId)]: FILE });
     await promote({ ddb, s3, batchId });
-    assert.strictEqual(
-      ddb.of(TABLE).find((item) => item.SK === META_SK).status,
-      IMPORT_STATUSES.COMPLETED
-    );
+    const meta = ddb.of(TABLE).find((item) => item.SK === META_SK);
+    assert.strictEqual(meta.status, IMPORT_STATUSES.COMPLETED);
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
   });
 
   console.log(`${passed} task import audit tests passed`);

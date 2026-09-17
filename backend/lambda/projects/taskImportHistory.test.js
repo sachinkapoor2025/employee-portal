@@ -31,6 +31,9 @@ const {
   detailPathMatch,
   encodeToken,
   isTrustedImportKey,
+  sanitizeDownloadFileName,
+  downloadContentDisposition,
+  DOWNLOAD_FALLBACK_FILENAME,
 } = require("./taskImportHistory");
 
 const TABLE = "work-table";
@@ -79,6 +82,8 @@ function createMemoryDdb() {
         const {
           TableName,
           ExpressionAttributeValues = {},
+          ExpressionAttributeNames = {},
+          FilterExpression,
           ScanIndexForward = true,
           Limit,
           ExclusiveStartKey,
@@ -92,6 +97,10 @@ function createMemoryDdb() {
             skPrefix ? String(row.Item.SK).startsWith(skPrefix) : true
           )
           .map((row) => ({ ...row.Item }));
+        if (FilterExpression && /#status\s*=\s*:completed/i.test(FilterExpression)) {
+          const wanted = ExpressionAttributeValues[":completed"];
+          found = found.filter((item) => item.status === wanted);
+        }
         found.sort((a, b) => String(a.SK).localeCompare(String(b.SK)));
         if (ScanIndexForward === false) found.reverse();
         if (ExclusiveStartKey) {
@@ -242,6 +251,102 @@ async function run() {
     assert.ok(!result.body.items[0].s3Key);
   });
 
+  await test("history list returns only COMPLETED imports", async () => {
+    const ddb = createMemoryDdb();
+    seedBatch(
+      ddb,
+      metaItem({
+        batchId: "batch-done",
+        uploadedAt: "2026-09-15T00:00:00.000Z",
+        status: IMPORT_STATUSES.COMPLETED,
+      })
+    );
+    for (const status of [
+      IMPORT_STATUSES.NEEDS_FIX,
+      IMPORT_STATUSES.READY,
+      IMPORT_STATUSES.UPLOADED,
+      IMPORT_STATUSES.PARTIAL,
+      IMPORT_STATUSES.FAILED,
+    ]) {
+      seedBatch(
+        ddb,
+        metaItem({
+          batchId: `batch-${status.toLowerCase()}`,
+          uploadedAt: "2026-09-14T00:00:00.000Z",
+          status,
+        })
+      );
+    }
+    const result = await handleListTaskImports({
+      user: ADMIN,
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.totalCount, 1);
+    assert.deepStrictEqual(
+      result.body.items.map((item) => item.batchId),
+      ["batch-done"]
+    );
+    assert.ok(
+      result.body.items.every((item) => item.status === IMPORT_STATUSES.COMPLETED)
+    );
+  });
+
+  await test("history list excludes PROCESSING and VALIDATING without deleting metadata", async () => {
+    const ddb = createMemoryDdb();
+    seedBatch(
+      ddb,
+      metaItem({
+        batchId: "batch-done",
+        uploadedAt: "2026-09-15T00:00:00.000Z",
+        status: IMPORT_STATUSES.COMPLETED,
+      })
+    );
+    seedBatch(
+      ddb,
+      metaItem({
+        batchId: "batch-processing",
+        uploadedAt: "2026-09-14T00:00:00.000Z",
+        status: IMPORT_STATUSES.PROCESSING,
+      })
+    );
+    seedBatch(
+      ddb,
+      metaItem({
+        batchId: "batch-validating",
+        uploadedAt: "2026-09-13T00:00:00.000Z",
+        status: IMPORT_STATUSES.VALIDATING,
+      })
+    );
+    const before = ddb
+      .of(TABLE)
+      .filter((item) => item.PK?.startsWith("IMPORT#") && item.SK === META_SK)
+      .map((item) => ({ batchId: item.batchId, status: item.status }))
+      .sort((a, b) => a.batchId.localeCompare(b.batchId));
+    const result = await handleListTaskImports({
+      user: ADMIN,
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.totalCount, 1);
+    assert.deepStrictEqual(
+      result.body.items.map((item) => item.batchId),
+      ["batch-done"]
+    );
+    assert.ok(!result.body.items.some((item) => item.status === IMPORT_STATUSES.PROCESSING));
+    assert.ok(!result.body.items.some((item) => item.status === IMPORT_STATUSES.VALIDATING));
+    const after = ddb
+      .of(TABLE)
+      .filter((item) => item.PK?.startsWith("IMPORT#") && item.SK === META_SK)
+      .map((item) => ({ batchId: item.batchId, status: item.status }))
+      .sort((a, b) => a.batchId.localeCompare(b.batchId));
+    assert.deepStrictEqual(after, before);
+    assert.ok(after.some((item) => item.batchId === "batch-processing" && item.status === IMPORT_STATUSES.PROCESSING));
+    assert.ok(after.some((item) => item.batchId === "batch-validating" && item.status === IMPORT_STATUSES.VALIDATING));
+  });
+
   await test("pagination returns nextToken", async () => {
     const ddb = createMemoryDdb();
     for (let i = 0; i < 3; i += 1) {
@@ -282,7 +387,6 @@ async function run() {
     });
     const stale = {
       ...buildHistoryCopy(meta),
-      status: IMPORT_STATUSES.UPLOADED,
       successCount: 0,
       totalRows: 0,
     };
@@ -619,7 +723,150 @@ async function run() {
     assert.strictEqual(result.body.downloadUrl, "https://s3.test/signed-get");
     assert.strictEqual(result.body.expiresIn, 300);
     assert.ok(signedCommand instanceof GetObjectCommand);
+    assert.strictEqual(signedCommand.input.Key, meta.s3Key);
+    assert.strictEqual(signedCommand.input.Key, buildAuditS3Key("admin@mydgv.com", "batch-dl"));
+    assert.strictEqual(
+      signedCommand.input.ResponseContentDisposition,
+      'attachment; filename="batch-dl.xlsx"'
+    );
+    assert.ok(signedCommand.input.ResponseContentDisposition.startsWith("attachment;"));
+    assert.strictEqual(result.body.fileName, "batch-dl.xlsx");
     assert.ok(!result.body.s3Key);
+    assert.ok(Buffer.compare(s3.objects[meta.s3Key], Buffer.from("xlsx")) === 0);
+  });
+
+  await test("download uses original uploaded filename in Content-Disposition", async () => {
+    const ddb = createMemoryDdb();
+    const batchId = "batch-named";
+    const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
+    const original = Buffer.from("original-xlsx-bytes");
+    const meta = metaItem({
+      batchId,
+      uploadedAt: NOW,
+      extra: {
+        fileName: "Q3-tasks.xlsx",
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: auditKey,
+      },
+    });
+    seedBatch(ddb, meta);
+    let signedCommand;
+    const result = await handleGetTaskImportDownloadUrl({
+      user: ADMIN,
+      batchId,
+      ddb,
+      tableName: TABLE,
+      bucket: BUCKET,
+      s3: createMemoryS3({ [auditKey]: original }),
+      getSignedUrlFn: async (_client, command) => {
+        signedCommand = command;
+        return "https://s3.test/named";
+      },
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(signedCommand.input.Key, auditKey);
+    assert.strictEqual(
+      signedCommand.input.ResponseContentDisposition,
+      'attachment; filename="Q3-tasks.xlsx"'
+    );
+    assert.strictEqual(result.body.fileName, "Q3-tasks.xlsx");
+  });
+
+  await test("download sanitizes quotes, newlines, and path traversal in filenames", async () => {
+    assert.strictEqual(sanitizeDownloadFileName("Q3-tasks.xlsx"), "Q3-tasks.xlsx");
+    assert.strictEqual(sanitizeDownloadFileName('foo"bar.xlsx'), "foo_bar.xlsx");
+    assert.strictEqual(sanitizeDownloadFileName("evil\nname.xlsx"), "evilname.xlsx");
+    assert.strictEqual(
+      sanitizeDownloadFileName("../../Q3-tasks.xlsx"),
+      "Q3-tasks.xlsx"
+    );
+    assert.strictEqual(
+      sanitizeDownloadFileName("..\\..\\secret.xlsx"),
+      "secret.xlsx"
+    );
+    assert.strictEqual(
+      sanitizeDownloadFileName("file.xlsx\r\nContent-Type: text/html"),
+      DOWNLOAD_FALLBACK_FILENAME
+    );
+    assert.ok(!downloadContentDisposition('foo"bar.xlsx').includes('"bar'));
+    assert.ok(!downloadContentDisposition("a\nb.xlsx").includes("\n"));
+
+    const ddb = createMemoryDdb();
+    const batchId = "batch-unsafe-name";
+    const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
+    const meta = metaItem({
+      batchId,
+      uploadedAt: NOW,
+      extra: {
+        fileName: 'report"\r\n../Q3-tasks.xlsx',
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: auditKey,
+      },
+    });
+    seedBatch(ddb, meta);
+    let signedCommand;
+    const result = await handleGetTaskImportDownloadUrl({
+      user: ADMIN,
+      batchId,
+      ddb,
+      tableName: TABLE,
+      bucket: BUCKET,
+      s3: createMemoryS3({ [auditKey]: Buffer.from("xlsx") }),
+      getSignedUrlFn: async (_client, command) => {
+        signedCommand = command;
+        return "https://s3.test/safe";
+      },
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(signedCommand.input.Key, auditKey);
+    const disposition = signedCommand.input.ResponseContentDisposition;
+    assert.ok(disposition.startsWith("attachment; filename=\""));
+    assert.ok(!disposition.includes("\n"));
+    assert.ok(!disposition.includes("\r"));
+    assert.ok(!disposition.includes("../"));
+    assert.strictEqual(disposition, 'attachment; filename="Q3-tasks.xlsx"');
+    assert.strictEqual(result.body.fileName, "Q3-tasks.xlsx");
+  });
+
+  await test("download uses a safe fallback filename when missing or invalid", async () => {
+    assert.strictEqual(sanitizeDownloadFileName(""), DOWNLOAD_FALLBACK_FILENAME);
+    assert.strictEqual(sanitizeDownloadFileName(null), DOWNLOAD_FALLBACK_FILENAME);
+    assert.strictEqual(sanitizeDownloadFileName("notes.txt"), DOWNLOAD_FALLBACK_FILENAME);
+    assert.strictEqual(sanitizeDownloadFileName(".xlsx"), DOWNLOAD_FALLBACK_FILENAME);
+
+    const ddb = createMemoryDdb();
+    const batchId = "batch-fallback";
+    const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
+    const meta = metaItem({
+      batchId,
+      uploadedAt: NOW,
+      extra: {
+        fileName: "not-an-excel.txt",
+        auditEligibility: AUDIT_ELIGIBILITY.ELIGIBLE,
+        s3Key: auditKey,
+      },
+    });
+    seedBatch(ddb, meta);
+    let signedCommand;
+    const result = await handleGetTaskImportDownloadUrl({
+      user: ADMIN,
+      batchId,
+      ddb,
+      tableName: TABLE,
+      bucket: BUCKET,
+      s3: createMemoryS3({ [auditKey]: Buffer.from("xlsx") }),
+      getSignedUrlFn: async (_client, command) => {
+        signedCommand = command;
+        return "https://s3.test/fallback";
+      },
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(
+      signedCommand.input.ResponseContentDisposition,
+      `attachment; filename="${DOWNLOAD_FALLBACK_FILENAME}"`
+    );
+    assert.strictEqual(result.body.fileName, DOWNLOAD_FALLBACK_FILENAME);
+    assert.strictEqual(signedCommand.input.Key, auditKey);
   });
 
   await test("download is denied for WAITING_DISTRIBUTION hold objects", async () => {

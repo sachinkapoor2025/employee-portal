@@ -146,6 +146,30 @@ test("task IDs link to existing task detail", async () => {
   expect(link).toHaveAttribute("href", "/admin/tasks/task-1");
 });
 
+test("completed import view keeps task details and download", async () => {
+  fetchTaskImport.mockResolvedValue({
+    summary: {
+      ...DETAIL.summary,
+      status: "COMPLETED",
+      failureCount: 0,
+      successCount: 3,
+      auditEligibility: "ELIGIBLE",
+      fileAvailable: true,
+    },
+    rows: DETAIL.rows,
+  });
+  render(<TaskImportBatch />);
+  expect(await screen.findByRole("button", { name: "Download Original Excel" })).toBeInTheDocument();
+  expect(screen.getByText("Build portal")).toBeInTheDocument();
+  expect(screen.getByText("rahul@mydgv.com")).toBeInTheDocument();
+  expect(
+    screen.getByText("Scheduled / Pending (priya@mydgv.com)")
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText("Original Excel file is no longer available.")
+  ).not.toBeInTheDocument();
+});
+
 test("download button requests a download URL", async () => {
   fetchTaskImport.mockResolvedValue({
     summary: {
@@ -176,29 +200,6 @@ test("download button requests a download URL", async () => {
   });
   expect(click).toHaveBeenCalled();
   document.createElement.mockRestore();
-});
-
-test("waiting distribution explains why download is unavailable", async () => {
-  fetchTaskImport.mockResolvedValue({
-    summary: {
-      ...DETAIL.summary,
-      status: "COMPLETED",
-      failureCount: 0,
-      successCount: 3,
-      auditEligibility: "WAITING_DISTRIBUTION",
-      fileAvailable: false,
-    },
-    rows: DETAIL.rows,
-  });
-  render(<TaskImportBatch />);
-  expect(
-    await screen.findByText(
-      "The original Excel file will be available for download after every task is fully distributed."
-    )
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "Download Original Excel" })
-  ).not.toBeInTheDocument();
 });
 
 test("missing original file shows a professional message", async () => {

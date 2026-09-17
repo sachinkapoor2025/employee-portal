@@ -21,7 +21,7 @@ Parameters:
     Default: 90
     MinValue: 1
     MaxValue: 3650
-    Description: Days to keep originals in task-imports/hold/ while a COMPLETED import waits for scheduled assignment. After expiry the original is removed; Import History metadata remains. 90 days covers typical schedules; longer costs more S3, shorter may drop audit copies for far-future start dates.
+    Description: Days to keep originals in task-imports/hold/ when a COMPLETED import cannot yet be copied to audit storage (retryable copy/HeadObject failure). After expiry the hold object is removed; Import History metadata remains. Audit copies under task-imports/audit/ are not expired by this rule.
   TaskImportTmpRetentionDays:
     Type: Number
     Default: 1

@@ -3,6 +3,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   HISTORY_PK,
+  IMPORT_STATUSES,
   META_SK,
   TYPE_TASK_IMPORT,
   importPk,
@@ -17,6 +18,29 @@ const DOWNLOAD_TTL_SECONDS = 300;
 const TASK_LOOKUP_CONCURRENCY = 8;
 const ASSIGNMENT_PENDING = "PENDING";
 const ASSIGNMENT_ASSIGNING = "ASSIGNING";
+const DOWNLOAD_FALLBACK_FILENAME = "original.xlsx";
+const DOWNLOAD_FILENAME_MAX = 120;
+
+function sanitizeDownloadFileName(fileName) {
+  const stripped = String(fileName || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\\/g, "/");
+  const base = (stripped.split("/").filter(Boolean).pop() || "").trim();
+  if (!base) return DOWNLOAD_FALLBACK_FILENAME;
+  const cleaned = base
+    .replace(/[^\w.\- ()]/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, DOWNLOAD_FILENAME_MAX)
+    .trim();
+  if (!cleaned.toLowerCase().endsWith(".xlsx")) return DOWNLOAD_FALLBACK_FILENAME;
+  const namePart = cleaned.slice(0, -5).replace(/\.+$/, "").trim();
+  if (!namePart) return DOWNLOAD_FALLBACK_FILENAME;
+  return `${namePart}.xlsx`;
+}
+
+function downloadContentDisposition(fileName) {
+  return `attachment; filename="${sanitizeDownloadFileName(fileName)}"`;
+}
 
 function listPathMatch(path) {
   return String(path || "")
@@ -132,7 +156,11 @@ async function mapLimited(items, limit, mapper) {
   return out;
 }
 
-async function countImportHistory(ddb, tableName) {
+function isCompletedStatus(status) {
+  return String(status || "").toUpperCase() === IMPORT_STATUSES.COMPLETED;
+}
+
+async function countCompletedImportHistory(ddb, tableName) {
   let count = 0;
   let lastKey;
   do {
@@ -140,7 +168,12 @@ async function countImportHistory(ddb, tableName) {
       new QueryCommand({
         TableName: tableName,
         KeyConditionExpression: "PK = :pk",
-        ExpressionAttributeValues: { ":pk": HISTORY_PK },
+        FilterExpression: "#status = :completed",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":pk": HISTORY_PK,
+          ":completed": IMPORT_STATUSES.COMPLETED,
+        },
         Select: "COUNT",
         ExclusiveStartKey: lastKey,
       })
@@ -174,26 +207,62 @@ async function handleListTaskImports({
     return { statusCode: 400, body: { error: decoded.error } };
   }
 
-  const queried = await ddb.send(
-    new QueryCommand({
-      TableName: tableName,
-      KeyConditionExpression: "PK = :pk",
-      ExpressionAttributeValues: { ":pk": HISTORY_PK },
-      ScanIndexForward: false,
-      Limit: size,
-      ExclusiveStartKey: decoded?.key || undefined,
-    })
-  );
-  const historyItems = queried.Items || [];
-  const hydrated = await mapLimited(historyItems, TASK_LOOKUP_CONCURRENCY, (item) =>
-    hydrateHistoryItem(ddb, tableName, item)
-  );
-  const totalCount = await countImportHistory(ddb, tableName);
+  const page = [];
+  let exclusiveStartKey = decoded?.key || undefined;
+  let lastEvaluatedKey;
+  let lastIncludedHistoryKey;
+  let filledEarly = false;
+  let queries = 0;
+  while (page.length < size && queries < 40) {
+    queries += 1;
+    const queried = await ddb.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "PK = :pk",
+        FilterExpression: "#status = :completed",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":pk": HISTORY_PK,
+          ":completed": IMPORT_STATUSES.COMPLETED,
+        },
+        ScanIndexForward: false,
+        Limit: size,
+        ExclusiveStartKey: exclusiveStartKey,
+      })
+    );
+    const historyItems = queried.Items || [];
+    const hydrated = await mapLimited(historyItems, TASK_LOOKUP_CONCURRENCY, (item) =>
+      hydrateHistoryItem(ddb, tableName, item)
+    );
+    for (let i = 0; i < historyItems.length; i += 1) {
+      const item = hydrated[i];
+      if (!isCompletedStatus(item?.status)) continue;
+      page.push(item);
+      lastIncludedHistoryKey = { PK: historyItems[i].PK, SK: historyItems[i].SK };
+      if (page.length >= size) {
+        filledEarly = i < historyItems.length - 1;
+        break;
+      }
+    }
+    lastEvaluatedKey = queried.LastEvaluatedKey;
+    exclusiveStartKey = lastEvaluatedKey;
+    if (page.length >= size) break;
+    if (!lastEvaluatedKey) break;
+  }
+
+  let encodedNext = null;
+  if (page.length >= size && lastIncludedHistoryKey && (filledEarly || lastEvaluatedKey)) {
+    encodedNext = encodeToken(lastIncludedHistoryKey);
+  } else if (lastEvaluatedKey) {
+    encodedNext = encodeToken(lastEvaluatedKey);
+  }
+
+  const totalCount = await countCompletedImportHistory(ddb, tableName);
   return {
     statusCode: 200,
     body: {
-      items: hydrated.map(publicSummary),
-      nextToken: encodeToken(queried.LastEvaluatedKey) || null,
+      items: page.map(publicSummary),
+      nextToken: encodedNext,
       totalCount,
     },
   };
@@ -388,11 +457,13 @@ async function handleGetTaskImportDownloadUrl({
       : DOWNLOAD_TTL_SECONDS,
     DOWNLOAD_TTL_SECONDS
   );
+  const fileName = sanitizeDownloadFileName(meta.fileName);
   const downloadUrl = await getSignedUrlFn(
     s3,
     new GetObjectCommand({
       Bucket: bucket,
       Key: s3Key,
+      ResponseContentDisposition: downloadContentDisposition(meta.fileName),
     }),
     { expiresIn: ttl }
   );
@@ -400,7 +471,7 @@ async function handleGetTaskImportDownloadUrl({
     statusCode: 200,
     body: {
       batchId: id,
-      fileName: meta.fileName || "original.xlsx",
+      fileName,
       downloadUrl,
       expiresIn: ttl,
     },
@@ -410,6 +481,9 @@ async function handleGetTaskImportDownloadUrl({
 module.exports = {
   DEFAULT_PAGE_SIZE,
   DOWNLOAD_TTL_SECONDS,
+  DOWNLOAD_FALLBACK_FILENAME,
+  sanitizeDownloadFileName,
+  downloadContentDisposition,
   listPathMatch,
   downloadPathMatch,
   detailPathMatch,

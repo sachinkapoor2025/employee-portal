@@ -38,10 +38,8 @@ function formatDateTime(value) {
 
 function statusBadgeClass(status) {
   const value = String(status || "").toUpperCase();
-  if (value === "COMPLETED" || value === "ELIGIBLE") return "dgv-badge dgv-badge--success";
-  if (value === "PARTIAL" || value === "NEEDS_FIX" || value === "WAITING_DISTRIBUTION") {
-    return "dgv-badge dgv-badge--warning";
-  }
+  if (value === "COMPLETED") return "dgv-badge dgv-badge--success";
+  if (value === "PARTIAL" || value === "NEEDS_FIX") return "dgv-badge dgv-badge--warning";
   if (value === "FAILED") return "dgv-badge dgv-badge--danger";
   if (value === "PROCESSING" || value === "VALIDATING") return "dgv-badge dgv-badge--info";
   return "dgv-badge dgv-badge--neutral";
@@ -75,7 +73,11 @@ export default function TaskImportHistory() {
         limit: PAGE_SIZE,
         nextToken: token || undefined,
       });
-      setItems(Array.isArray(data?.items) ? data.items : []);
+      setItems(
+        (Array.isArray(data?.items) ? data.items : []).filter(
+          (item) => String(item?.status || "").toUpperCase() === "COMPLETED"
+        )
+      );
       setTotalCount(Number(data?.totalCount || 0));
       setNextToken(data?.nextToken || null);
     } catch (err) {
@@ -144,7 +146,7 @@ export default function TaskImportHistory() {
         {loading ? (
           <p style={{ color: colors.textMuted }}>Loading import history...</p>
         ) : items.length === 0 && !error ? (
-          <p style={{ color: colors.textMuted }}>No Excel imports yet.</p>
+          <p style={{ color: colors.textMuted }}>No completed Excel imports yet.</p>
         ) : items.length === 0 ? null : (
           <>
             <div className="dgv-imports-table-wrap">
@@ -174,9 +176,6 @@ export default function TaskImportHistory() {
                     </th>
                     <th className="dgv-imports-table__status" style={thStyle}>
                       Status
-                    </th>
-                    <th className="dgv-imports-table__status" style={thStyle}>
-                      Audit
                     </th>
                     <th className="dgv-imports-table__action" style={thStyle}>
                       Action
@@ -231,11 +230,6 @@ export default function TaskImportHistory() {
                         <td className="dgv-imports-table__status" style={tdStyle}>
                           <span className={statusBadgeClass(item.status)}>
                             {statusLabel(item.status)}
-                          </span>
-                        </td>
-                        <td className="dgv-imports-table__status" style={tdStyle}>
-                          <span className={statusBadgeClass(item.auditEligibility)}>
-                            {statusLabel(item.auditEligibility || "INELIGIBLE")}
                           </span>
                         </td>
                         <td className="dgv-imports-table__action" style={tdStyle}>

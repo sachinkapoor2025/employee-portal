@@ -45,10 +45,6 @@ async function queryAll(ddb, input) {
   return items;
 }
 
-const ASSIGNMENT_PENDING = "PENDING";
-const ASSIGNMENT_ASSIGNING = "ASSIGNING";
-const ASSIGNMENT_ASSIGNED = "ASSIGNED";
-const ROW_IMPORTED = "IMPORTED";
 const WAITING_PROMOTE_LIMIT = 25;
 
 function isS3NotFound(err) {
@@ -68,20 +64,6 @@ function encodeCopySource(bucket, key) {
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/")}`;
-}
-
-function emailsOf(list) {
-  return (list || [])
-    .map((item) =>
-      item && typeof item === "object"
-        ? String(item.email || "").toLowerCase()
-        : String(item || "").toLowerCase()
-    )
-    .filter(Boolean);
-}
-
-function uniqueEmails(list) {
-  return [...new Set(emailsOf(list))];
 }
 
 function holdUntilIso(fromIso, nowMs) {
@@ -133,72 +115,7 @@ async function deleteManagedObject(s3, bucket, key, batchId) {
   }
 }
 
-async function listAssignments(ddb, tableName, taskId) {
-  const items = await queryAll(ddb, {
-    TableName: tableName,
-    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-    ExpressionAttributeValues: {
-      ":pk": `TASK#${taskId}`,
-      ":sk": "ASSIGNMENT#",
-    },
-  });
-  return (items || [])
-    .filter((item) => item && !item.removed)
-    .map((item) => String(item.email || "").toLowerCase())
-    .filter(Boolean);
-}
-
-async function getTask(ddb, tableName, taskId) {
-  const res = await ddb.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: { PK: "ENTITY#TASK", SK: `TASK#${taskId}` },
-    })
-  );
-  return res.Item || null;
-}
-
-function expectedAssignees(row, task) {
-  const fromRow = uniqueEmails(row?.resolvedAssignees || row?.values?.assignees);
-  const fromTask = uniqueEmails(task?.pendingAssignees || task?.assignees);
-  return fromRow.length ? fromRow : fromTask;
-}
-
-async function evaluateImportedRow(ddb, tableName, row) {
-  const taskId = String(row?.taskId || "").trim();
-  if (!taskId) {
-    return { ok: false, waiting: false, reason: "missing-task-id" };
-  }
-  const task = await getTask(ddb, tableName, taskId);
-  if (!task) {
-    return { ok: false, waiting: false, reason: "missing-task" };
-  }
-  const mode = String(
-    task.assignmentMode || row.assignmentMode || row.values?.assignmentMode || ""
-  ).toUpperCase();
-  const state = String(task.assignmentState || "").toUpperCase();
-  if (state === ASSIGNMENT_PENDING || state === ASSIGNMENT_ASSIGNING) {
-    return { ok: false, waiting: true, reason: state.toLowerCase() };
-  }
-  if (state && state !== ASSIGNMENT_ASSIGNED) {
-    return { ok: false, waiting: false, reason: "unexpected-state" };
-  }
-  const assigned = await listAssignments(ddb, tableName, taskId);
-  const expected = expectedAssignees(row, task);
-  if (!expected.length) {
-    return { ok: false, waiting: false, reason: "missing-assignees" };
-  }
-  const assignedSet = new Set(assigned);
-  if (expected.some((email) => !assignedSet.has(email))) {
-    return { ok: false, waiting: false, reason: "missing-assignment" };
-  }
-  if (mode === "SCHEDULED" && state !== ASSIGNMENT_ASSIGNED) {
-    return { ok: false, waiting: true, reason: "scheduled-pending" };
-  }
-  return { ok: true, waiting: false, reason: "" };
-}
-
-async function evaluateBatchDistribution(ddb, tableName, meta) {
+function evaluateBatchDistribution(_ddb, _tableName, meta) {
   const status = String(meta?.status || "").toUpperCase();
   const failureCount = Number(meta?.failureCount || 0);
   const successCount = Number(meta?.successCount || 0);
@@ -208,30 +125,6 @@ async function evaluateBatchDistribution(ddb, tableName, meta) {
   }
   if (failureCount !== 0 || successCount !== totalRows || totalRows <= 0) {
     return { eligible: false, waiting: false, reason: "incomplete-counts" };
-  }
-  const rows = await queryAll(ddb, {
-    TableName: tableName,
-    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-    ExpressionAttributeValues: {
-      ":pk": importPk(meta.batchId),
-      ":sk": "ROW#",
-    },
-  });
-  const imported = (rows || []).filter(
-    (row) => String(row.status || "").toUpperCase() === ROW_IMPORTED && row.taskId
-  );
-  if (imported.length !== totalRows) {
-    return { eligible: false, waiting: false, reason: "row-mismatch" };
-  }
-  let waiting = false;
-  for (const row of imported) {
-    const result = await evaluateImportedRow(ddb, tableName, row);
-    if (result.ok) continue;
-    if (result.waiting) waiting = true;
-    else return { eligible: false, waiting: false, reason: result.reason };
-  }
-  if (waiting) {
-    return { eligible: false, waiting: true, reason: "waiting-distribution" };
   }
   return { eligible: true, waiting: false, reason: "" };
 }
@@ -426,50 +319,12 @@ async function promoteImportAudit({
     return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
   }
 
-  if (distribution.waiting) {
-    const holdUntil = meta.holdUntil || holdUntilIso(meta.completedAt || nowIso, nowMs);
-    if (Date.parse(holdUntil) && Date.parse(holdUntil) <= Number(nowMs)) {
-      await saveMeta(ddb, tableName, {
-        ...meta,
-        auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
-        holdUntil,
-        updatedAt: nowIso,
-      });
-      await clearWaitItem(ddb, tableName, meta.batchId);
-      await cleanupManagedSource(s3, bucket, sourceKey, meta.batchId);
-      return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE, expired: true };
-    }
-    let nextKey = sourceKey;
-    if (parsed?.kind === "tmp" && bucket && s3) {
-      const holdKey = buildHoldS3Key(meta.uploadedBy, meta.batchId);
-      try {
-        const held = await ensureCopied(s3, bucket, sourceKey, holdKey, meta.batchId);
-        if (!held) return { ok: false, reason: "hold-copy-failed" };
-        nextKey = holdKey;
-        await cleanupManagedSource(s3, bucket, sourceKey, meta.batchId);
-      } catch {
-        return { ok: false, reason: "hold-copy-failed" };
-      }
-    }
-    const waiting = {
-      ...meta,
-      s3Key: nextKey,
-      auditEligibility: AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION,
-      holdUntil,
-      updatedAt: nowIso,
-    };
-    await saveMeta(ddb, tableName, waiting);
-    await putWaitItem(ddb, tableName, waiting);
-    return { ok: true, eligibility: AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION };
-  }
-
   await saveMeta(ddb, tableName, {
     ...meta,
     auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
     updatedAt: nowIso,
   });
   await clearWaitItem(ddb, tableName, meta.batchId);
-  await cleanupManagedSource(s3, bucket, sourceKey, meta.batchId);
   return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE, reason: distribution.reason };
 }
 
@@ -543,9 +398,6 @@ function canDownloadAuditOriginal(meta) {
 }
 
 module.exports = {
-  ASSIGNMENT_PENDING,
-  ASSIGNMENT_ASSIGNING,
-  ASSIGNMENT_ASSIGNED,
   evaluateBatchDistribution,
   promoteImportAudit,
   promoteWaitingImportAudits,
