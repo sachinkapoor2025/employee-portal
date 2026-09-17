@@ -113,6 +113,18 @@ assert.ok(
   "DocumentsBucket lifecycle must use rule-level Prefix task-imports/"
 );
 assert.ok(
+  /ExpireTaskImports[\s\S]*Status:\s*Disabled/.test(template),
+  "task-imports/ originals must not auto-expire"
+);
+assert.ok(
+  template.includes("Path: /task-imports"),
+  "API Gateway route for import history must exist"
+);
+assert.ok(
+  template.includes("Path: /task-imports/{batchId}/download-url"),
+  "API Gateway route for import download-url must exist"
+);
+assert.ok(
   template.includes("Path: /task-imports/upload-url"),
   "API Gateway route for upload-url must exist"
 );

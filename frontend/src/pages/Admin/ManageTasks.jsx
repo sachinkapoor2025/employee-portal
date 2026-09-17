@@ -629,6 +629,13 @@ export default function ManageTasks() {
             </button>
             <button
               type="button"
+              className="dgv-btn dgv-btn--outline"
+              onClick={() => navigate("/admin/task-imports")}
+            >
+              Import History
+            </button>
+            <button
+              type="button"
               className="dgv-btn dgv-btn--primary"
               onClick={() => {
                 const next = {

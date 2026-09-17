@@ -481,45 +481,82 @@ export default function ManageProjects() {
           </>
         }
       >
-        {confirm?.type === "delete" && confirm.project?.name ? (
-          <p
-            data-testid="delete-project-name"
-            style={{ margin: "0 0 12px", fontWeight: 600, color: colors.text }}
-          >
-            {confirm.project.name}
-          </p>
-        ) : null}
-        <p style={{ margin: 0, color: colors.text, lineHeight: 1.5 }}>
-          {confirmCopy.body}
-        </p>
-        {confirmCopy.detail ? (
-          <p style={{ margin: "12px 0 0", color: colors.text, lineHeight: 1.5 }}>
-            {confirmCopy.detail}
-          </p>
-        ) : null}
-        {confirm?.type === "delete" && confirmCopy.retain ? (
-          <p style={{ margin: "12px 0 0", color: colors.text, lineHeight: 1.5 }}>
-            {confirmCopy.retain}
-          </p>
-        ) : null}
         {confirm?.type === "delete" ? (
-          <div style={{ marginTop: 16 }}>
+          <div className="dgv-project-delete-confirm">
             <label style={formLabel} htmlFor="delete-project-confirm-name">
               {confirmCopy.confirmLabel}
             </label>
+            <p
+              id="delete-project-name-intro"
+              className="dgv-project-delete-confirm__hint"
+            >
+              {confirmCopy.confirmIntro}
+            </p>
+            {confirm.project?.name ? (
+              <p
+                id="delete-project-name"
+                data-testid="delete-project-name"
+                className="dgv-project-delete-confirm__name"
+              >
+                {confirm.project.name}
+              </p>
+            ) : null}
+            <p
+              id="delete-project-name-hint"
+              className="dgv-project-delete-confirm__hint"
+            >
+              {confirmCopy.confirmHint}
+            </p>
             <input
               id="delete-project-confirm-name"
+              className="dgv-input"
               style={{ ...formInput, marginBottom: 0 }}
               type="text"
               value={confirmName}
               autoComplete="off"
               autoCorrect="off"
+              autoCapitalize="off"
               spellCheck={false}
               disabled={busy}
-              placeholder=""
+              placeholder={
+                confirmCopy.confirmPlaceholder || "Enter project name"
+              }
+              aria-describedby={[
+                "delete-project-name-intro",
+                confirm.project?.name ? "delete-project-name" : null,
+                "delete-project-name-hint",
+              ]
+                .filter(Boolean)
+                .join(" ")}
               onChange={(e) => setConfirmName(e.target.value)}
             />
           </div>
+        ) : null}
+        {confirm?.type === "delete" ? (
+          <div className="dgv-project-delete-warning" role="status">
+            <p>{confirmCopy.body}</p>
+            {confirmCopy.detail ? <p>{confirmCopy.detail}</p> : null}
+          </div>
+        ) : (
+          <>
+            <p style={{ margin: 0, color: colors.text, lineHeight: 1.5 }}>
+              {confirmCopy.body}
+            </p>
+            {confirmCopy.detail ? (
+              <p
+                style={{
+                  margin: "12px 0 0",
+                  color: colors.text,
+                  lineHeight: 1.5,
+                }}
+              >
+                {confirmCopy.detail}
+              </p>
+            ) : null}
+          </>
+        )}
+        {confirm?.type === "delete" && confirmCopy.retain ? (
+          <p className="dgv-project-delete-retain">{confirmCopy.retain}</p>
         ) : null}
         {confirmError ? (
           <div className="dgv-alert dgv-alert--error" style={{ marginTop: 16 }}>

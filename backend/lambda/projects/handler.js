@@ -23,6 +23,7 @@ const taskImport = require("./taskImport");
 const taskImportPreview = require("./taskImportPreview");
 const taskImportConfirm = require("./taskImportConfirm");
 const projectManage = require("./projectManage");
+const taskImportHistory = require("./taskImportHistory");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -806,6 +807,44 @@ exports.handler = async (event) => {
       const result = await taskImportConfirm.handleConfirmRequest({
         user: { ...user, createdByName },
         batchId: confirmBatchId,
+        ddb,
+        s3,
+      });
+      return json(result.statusCode, result.body);
+    }
+
+    const importDownloadId = taskImportHistory.downloadPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (importDownloadId && method === "GET") {
+      const result = await taskImportHistory.handleGetTaskImportDownloadUrl({
+        user,
+        batchId: importDownloadId,
+        ddb,
+        s3,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (taskImportHistory.listPathMatch(path) && method === "GET") {
+      const qs = event.queryStringParameters || {};
+      const result = await taskImportHistory.handleListTaskImports({
+        user,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        limit: qs.limit,
+        nextToken: qs.nextToken,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const importDetailId = taskImportHistory.detailPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (importDetailId && method === "GET") {
+      const result = await taskImportHistory.handleGetTaskImport({
+        user,
+        batchId: importDetailId,
         ddb,
         s3,
       });

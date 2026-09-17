@@ -3,10 +3,10 @@ export function normalizeProjectName(name) {
 }
 
 export function projectNamesMatch(a, b) {
-  return (
-    normalizeProjectName(a).toLowerCase() ===
-    normalizeProjectName(b).toLowerCase()
-  );
+  const left = normalizeProjectName(a);
+  const right = normalizeProjectName(b);
+  if (!left || !right) return false;
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 export function isDeletedProjectAction(action) {
@@ -17,12 +17,16 @@ export function deleteProjectConfirmCopy(name) {
   const label = normalizeProjectName(name) || "this project";
   return {
     title: "Delete Project?",
-    body: `This will permanently delete ${label}. This cannot be undone.`,
+    body: `This is a permanent deletion. ${label} cannot be restored after it is deleted.`,
     detail:
-      "Associated tasks and task-owned records will be permanently deleted, including active, completed, and archived tasks, assignments, comments, activity, and registered attachments.",
+      "The project and its related tasks and attachments may be deleted according to the backend deletion rules.",
     retain:
       "Excel Import History, users, notifications, reminders, time entries, and Documents data are retained.",
-    confirmLabel: `Type ${label} to confirm`,
+    confirmLabel: "Type the project name to confirm",
+    confirmIntro:
+      "To confirm permanent deletion, type the following project name:",
+    confirmHint: "Enter the project name exactly as shown above.",
+    confirmPlaceholder: "Enter project name",
   };
 }
 

@@ -15,6 +15,7 @@ const {
   buildS3Key,
   importPk,
   rowSk,
+  syncImportHistory,
 } = require("./taskImport");
 const {
   ROW_STATUS,
@@ -401,6 +402,7 @@ async function handlePreviewRequest({
       Item: nextMeta,
     })
   );
+  await syncImportHistory(ddb, tableName, nextMeta);
 
   return {
     statusCode: 200,

@@ -15,12 +15,20 @@ test("delete confirmation copy describes permanent deletion and retention", () =
   const copy = deleteProjectConfirmCopy("Portal");
   expect(copy.title).toBe("Delete Project?");
   expect(copy.body).toBe(
-    "This will permanently delete Portal. This cannot be undone."
+    "This is a permanent deletion. Portal cannot be restored after it is deleted."
   );
-  expect(copy.detail).toMatch(/Associated tasks and task-owned records/i);
+  expect(copy.detail).toMatch(/related tasks and attachments/i);
+  expect(copy.detail).not.toMatch(/automatically be archived/i);
   expect(copy.retain).toMatch(/Excel Import History/i);
   expect(copy.retain).toMatch(/Documents data are retained/i);
-  expect(copy.confirmLabel).toBe("Type Portal to confirm");
+  expect(copy.confirmLabel).toBe("Type the project name to confirm");
+  expect(copy.confirmIntro).toBe(
+    "To confirm permanent deletion, type the following project name:"
+  );
+  expect(copy.confirmHint).toBe(
+    "Enter the project name exactly as shown above."
+  );
+  expect(copy.confirmPlaceholder).toBe("Enter project name");
 });
 
 test("project name matching matches backend namesMatch", () => {
@@ -29,6 +37,8 @@ test("project name matching matches backend namesMatch", () => {
   expect(projectNamesMatch("Portal", "Other")).toBe(false);
   expect(projectNamesMatch("", "Portal")).toBe(false);
   expect(projectNamesMatch("Portal", "")).toBe(false);
+  expect(projectNamesMatch("   ", "Portal")).toBe(false);
+  expect(projectNamesMatch("", "")).toBe(false);
 });
 
 test("result copy for deleted vs archived", () => {

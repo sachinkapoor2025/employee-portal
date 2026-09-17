@@ -27,6 +27,8 @@ import ManageUsers from "./pages/Admin/ManageUsers";
 import AdminEmployeeProfile from "./pages/Admin/AdminEmployeeProfile";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import ManageProjects from "./pages/Admin/ManageProjects";
+import TaskImportHistory from "./pages/Admin/TaskImportHistory";
+import TaskImportBatch from "./pages/Admin/TaskImportBatch";
 import TaskDetails from "./pages/Admin/TaskDetails";
 import Resignations from "./pages/Admin/Resignations";
 import AddTraining from "./pages/Admin/AddTraining";
@@ -354,6 +356,22 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ManageProjects />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/task-imports"
+          element={
+            <RequireAuth adminOnly>
+              <TaskImportHistory />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/task-imports/:batchId"
+          element={
+            <RequireAuth adminOnly>
+              <TaskImportBatch />
             </RequireAuth>
           }
         />

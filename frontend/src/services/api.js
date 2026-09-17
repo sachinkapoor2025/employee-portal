@@ -255,6 +255,17 @@ export const previewTaskImport = (batchId) =>
 
 export const confirmTaskImport = (batchId) =>
   api(`/task-imports/${encodeURIComponent(batchId)}/confirm`, "POST");
+export const fetchTaskImports = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.nextToken) qs.set("nextToken", params.nextToken);
+  const query = qs.toString();
+  return api(`/task-imports${query ? `?${query}` : ""}`, "GET");
+};
+export const fetchTaskImport = (batchId) =>
+  api(`/task-imports/${encodeURIComponent(batchId)}`, "GET");
+export const getTaskImportDownloadUrl = (batchId) =>
+  api(`/task-imports/${encodeURIComponent(batchId)}/download-url`, "GET");
 
 export const updateTask = (data) => api("/tasks", "PUT", data);
 export const archiveTask = (taskId) =>

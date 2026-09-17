@@ -14,6 +14,7 @@ const {
   buildS3Key,
   importPk,
   rowSk,
+  syncImportHistory,
 } = require("./taskImport");
 const { ROW_STATUS } = require("./taskImportParse");
 const {
@@ -260,6 +261,7 @@ async function getMeta(ddb, tableName, batchId) {
 
 async function putMeta(ddb, tableName, meta) {
   await ddb.send(new PutCommand({ TableName: tableName, Item: meta }));
+  await syncImportHistory(ddb, tableName, meta);
 }
 
 async function getTask(ddb, tableName, taskId) {
@@ -511,6 +513,7 @@ async function claimBatchForProcessing(ddb, tableName, batchId, now, owner, conf
         ReturnValues: "ALL_NEW",
       })
     );
+    await syncImportHistory(ddb, tableName, res.Attributes);
     return { ok: true, meta: res.Attributes };
   } catch (err) {
     if (!isConditionalCheckFailed(err)) throw err;
@@ -532,6 +535,7 @@ async function claimBatchForProcessing(ddb, tableName, batchId, now, owner, conf
         ReturnValues: "ALL_NEW",
       })
     );
+    await syncImportHistory(ddb, tableName, res.Attributes);
     return { ok: true, meta: res.Attributes, reclaimed: true };
   } catch (err) {
     if (isConditionalCheckFailed(err)) {

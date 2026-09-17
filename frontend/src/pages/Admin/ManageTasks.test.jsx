@@ -5,8 +5,9 @@ jest.mock("../../components/Layout", () => {
 });
 
 jest.mock("../../components/TaskImportModal", () => {
-  return function TaskImportModal() {
-    return null;
+  return function TaskImportModal({ open }) {
+    if (!open) return null;
+    return <div role="dialog" aria-label="Import Tasks">Import Tasks modal</div>;
   };
 });
 
@@ -127,6 +128,32 @@ test("selecting a project in the task filter does not show Delete Project", asyn
   expect(
     screen.queryByRole("button", { name: "Delete Project" })
   ).not.toBeInTheDocument();
+});
+
+test("Import History button opens the history page", async () => {
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  expect(screen.getByRole("button", { name: "Import History" })).toBeInTheDocument();
+  userEvent.click(screen.getByRole("button", { name: "Import History" }));
+  expect(mockNavigate).toHaveBeenCalledWith("/admin/task-imports");
+});
+
+test("Import Tasks still opens the import modal", async () => {
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  userEvent.click(screen.getByRole("button", { name: "Import Tasks" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Import Tasks" })
+  ).toBeInTheDocument();
+});
+
+test("header keeps Project, Import Tasks, Import History, and + Task", async () => {
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  expect(screen.getByRole("button", { name: "Project" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Import Tasks" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Import History" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "+ Task" })).toBeInTheDocument();
 });
 
 test("New Task Create New Project opens the shared create form", async () => {

@@ -137,7 +137,13 @@ test("Archive Project confirms then PATCHes ARCHIVED", async () => {
     )
   ).toBeInTheDocument();
   expect(
-    within(dialog).queryByLabelText(/Type Portal to confirm/i)
+    within(dialog).queryByLabelText(/Type the project name to confirm/i)
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByPlaceholderText("Enter project name")
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByTestId("delete-project-name")
   ).not.toBeInTheDocument();
   userEvent.click(within(dialog).getByRole("button", { name: "Archive Project" }));
   await waitFor(() => {
@@ -178,31 +184,59 @@ test("empty project is permanently deleted after typing the project name", async
   userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
-  expect(within(dialog).getByTestId("delete-project-name")).toHaveTextContent(
-    "Portal"
-  );
+  const highlightedName = within(dialog).getByTestId("delete-project-name");
+  expect(highlightedName).toBeVisible();
+  expect(highlightedName).toHaveClass("dgv-project-delete-confirm__name");
+  expect(highlightedName).toHaveTextContent("Portal");
   expect(
     within(dialog).getByText(
-      "This will permanently delete Portal. This cannot be undone."
+      "To confirm permanent deletion, type the following project name:"
     )
+  ).toBeVisible();
+  expect(
+    within(dialog).getByText("Enter the project name exactly as shown above.")
+  ).toBeVisible();
+  expect(
+    within(dialog).getByText(
+      "This is a permanent deletion. Portal cannot be restored after it is deleted."
+    )
+  ).toBeVisible();
+  expect(
+    within(dialog).getByText(/related tasks and attachments/i)
   ).toBeInTheDocument();
   expect(
-    within(dialog).getByText(/Associated tasks and task-owned records/i)
-  ).toBeInTheDocument();
+    within(dialog).queryByText(/will automatically be archived/i)
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByText(/projects with existing tasks will be archived/i)
+  ).not.toBeInTheDocument();
   expect(
     within(dialog).getByText(/Excel Import History/i)
   ).toBeInTheDocument();
   const submit = within(dialog).getByRole("button", { name: "Delete Project" });
   expect(submit).toBeDisabled();
-  const nameInput = within(dialog).getByLabelText("Type Portal to confirm");
+  const nameInput = within(dialog).getByLabelText(
+    "Type the project name to confirm"
+  );
+  expect(nameInput).toBeVisible();
+  expect(nameInput).toHaveAttribute("placeholder", "Enter project name");
+  expect(nameInput).toHaveValue("");
+  expect(
+    nameInput.compareDocumentPosition(highlightedName) &
+      Node.DOCUMENT_POSITION_PRECEDING
+  ).toBe(Node.DOCUMENT_POSITION_PRECEDING);
   userEvent.type(nameInput, "Wrong");
   expect(submit).toBeDisabled();
   userEvent.clear(nameInput);
-  userEvent.type(nameInput, "Portal");
+  expect(submit).toBeDisabled();
+  userEvent.type(nameInput, "portal");
+  expect(submit).toBeEnabled();
+  userEvent.clear(nameInput);
+  userEvent.type(nameInput, " Portal ");
   expect(submit).toBeEnabled();
   userEvent.click(submit);
   await waitFor(() => {
-    expect(deleteProject).toHaveBeenCalledWith(PROJECT.projectId, "Portal");
+    expect(deleteProject).toHaveBeenCalledWith(PROJECT.projectId, " Portal ");
   });
   expect(
     await screen.findByText("Project deleted successfully.")
@@ -226,6 +260,21 @@ test("Cancel closes delete confirmation without an API request", async () => {
   expect(screen.getByText("Portal")).toBeInTheDocument();
 });
 
+test("highlighted delete confirmation name stays wrapped for long project names", async () => {
+  const longName =
+    "DGV-Employee-Portal-Strategic-Initiative-AlphaBetaGammaDeltaEpsilonZetaEtaTheta";
+  fetchProjects.mockResolvedValue([{ ...PROJECT, name: longName }]);
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
+  const highlightedName = within(dialog).getByTestId("delete-project-name");
+  expect(highlightedName).toBeVisible();
+  expect(highlightedName).toHaveTextContent(longName);
+  expect(highlightedName).toHaveClass("dgv-project-delete-confirm__name");
+  expect(within(dialog).getByRole("button", { name: "Delete Project" })).toBeDisabled();
+});
+
 test("loading state prevents duplicate delete submissions", async () => {
   let resolveDelete;
   deleteProject.mockImplementation(
@@ -238,7 +287,10 @@ test("loading state prevents duplicate delete submissions", async () => {
   userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
-  userEvent.type(within(dialog).getByLabelText("Type Portal to confirm"), "Portal");
+  userEvent.type(
+    within(dialog).getByLabelText("Type the project name to confirm"),
+    "Portal"
+  );
   const submit = within(dialog).getByRole("button", { name: "Delete Project" });
   userEvent.click(submit);
   expect(await within(dialog).findByRole("button", { name: "Deleting..." })).toBeDisabled();
@@ -267,7 +319,9 @@ test("failed deletion keeps the confirmation input and shows an error", async ()
   userEvent.click(screen.getByRole("button", { name: "Take Action" }));
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
-  const nameInput = within(dialog).getByLabelText("Type Portal to confirm");
+  const nameInput = within(dialog).getByLabelText(
+    "Type the project name to confirm"
+  );
   userEvent.type(nameInput, "Portal");
   userEvent.click(within(dialog).getByRole("button", { name: "Delete Project" }));
   await waitFor(() => {
@@ -297,7 +351,10 @@ test("S3 cleanup failure shows the backend code and does not remove the project"
   userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
-  userEvent.type(within(dialog).getByLabelText("Type Portal to confirm"), " portal ");
+  userEvent.type(
+    within(dialog).getByLabelText("Type the project name to confirm"),
+    " portal "
+  );
   userEvent.click(within(dialog).getByRole("button", { name: "Delete Project" }));
   await waitFor(() => {
     expect(deleteProject).toHaveBeenCalledWith(PROJECT.projectId, " portal ");
@@ -309,4 +366,39 @@ test("S3 cleanup failure shows the backend code and does not remove the project"
     screen.queryByText("Project deleted successfully.")
   ).not.toBeInTheDocument();
   expect(screen.getByText("Portal", { selector: ".dgv-projects-table__name" })).toBeInTheDocument();
+});
+
+test("legacy ARCHIVED delete response is not treated as successful deletion", async () => {
+  deleteProject.mockResolvedValue({
+    action: "ARCHIVED",
+    projectId: PROJECT.projectId,
+    name: PROJECT.name,
+  });
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
+  const nameInput = within(dialog).getByLabelText(
+    "Type the project name to confirm"
+  );
+  userEvent.type(nameInput, "Portal");
+  userEvent.click(within(dialog).getByRole("button", { name: "Delete Project" }));
+  await waitFor(() => {
+    expect(deleteProject).toHaveBeenCalledWith(PROJECT.projectId, "Portal");
+  });
+  expect(
+    await screen.findAllByText(/not permanently deleted/i)
+  ).not.toHaveLength(0);
+  expect(screen.getByRole("dialog", { name: "Delete Project?" })).toBeInTheDocument();
+  expect(nameInput).toHaveValue("Portal");
+  expect(updateProject).not.toHaveBeenCalled();
+  expect(
+    screen.queryByText("Project deleted successfully.")
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Project archived.")).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("Project archived because it contains existing tasks.")
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("Portal", { selector: ".dgv-projects-table__name" })).toBeInTheDocument();
+  expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
 });

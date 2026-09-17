@@ -164,6 +164,16 @@ function buildHistoryCopy(meta) {
   };
 }
 
+async function syncImportHistory(ddb, tableName, meta) {
+  if (!ddb || !tableName || !meta?.batchId || !meta?.uploadedAt) return;
+  await ddb.send(
+    new PutCommand({
+      TableName: tableName,
+      Item: buildHistoryCopy(meta),
+    })
+  );
+}
+
 async function handleUploadUrlRequest({
   user,
   body = {},
@@ -252,6 +262,7 @@ module.exports = {
   validateUploadMeta,
   buildImportMeta,
   buildHistoryCopy,
+  syncImportHistory,
   handleUploadUrlRequest,
   TASKS_SHEET_NAME: taskImportParse.TASKS_SHEET_NAME,
   TASK_IMPORT_COLUMNS: taskImportParse.TASK_IMPORT_COLUMNS,

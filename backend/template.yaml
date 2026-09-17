@@ -15,7 +15,7 @@ Parameters:
     Default: 90
     MinValue: 1
     MaxValue: 3650
-    Description: Days to retain task import Excel files under the task-imports/ prefix in DocumentsBucket
+    Description: Unused while ExpireTaskImports is Disabled so original Excel files under task-imports/ are retained indefinitely
 
 Globals:
   Function:
@@ -660,7 +660,7 @@ Resources:
       LifecycleConfiguration:
         Rules:
           - Id: ExpireTaskImports
-            Status: Enabled
+            Status: Disabled
             Prefix: task-imports/
             ExpirationInDays: !Ref TaskImportRetentionDays
   ImageUploadFunction:
@@ -1028,6 +1028,24 @@ Resources:
           Properties:
             Path: /task-imports/{batchId}/confirm
             Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskImportsListApi:
+          Type: Api
+          Properties:
+            Path: /task-imports
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskImportsDownloadUrlApi:
+          Type: Api
+          Properties:
+            Path: /task-imports/{batchId}/download-url
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskImportsGetApi:
+          Type: Api
+          Properties:
+            Path: /task-imports/{batchId}
+            Method: GET
             RestApiId: !Ref ApiGateway
         TasksPutApi:
           Type: Api
