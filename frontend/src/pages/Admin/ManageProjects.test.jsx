@@ -175,7 +175,7 @@ test("empty project is permanently deleted after confirmation", async () => {
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
   expect(
-    within(dialog).getByText("Are you sure you want to remove this project?")
+    within(dialog).getByText("Are you sure you want to permanently delete this project?")
   ).toBeInTheDocument();
   userEvent.click(within(dialog).getByRole("button", { name: "Delete Project" }));
   await waitFor(() => {
@@ -186,25 +186,31 @@ test("empty project is permanently deleted after confirmation", async () => {
   ).toBeInTheDocument();
 });
 
-test("project with tasks is archived after confirmation", async () => {
-  deleteProject.mockResolvedValue({
-    action: "ARCHIVED",
-    projectId: PROJECT.projectId,
-    name: PROJECT.name,
-    taskCount: 2,
-  });
+test("project with tasks is blocked after confirmation", async () => {
+  const conflict =
+    "This project cannot be permanently deleted because it contains existing tasks or task history. Please archive the project instead.";
+  deleteProject.mockRejectedValue(new Error(conflict));
   render(<ManageProjects />);
-  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  expect(await screen.findByText("Portal")).toBeInTheDocument();
+  userEvent.click(screen.getByRole("button", { name: "Take Action" }));
   userEvent.click(screen.getByRole("menuitem", { name: "Delete Project" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Project?" });
   expect(
-    within(dialog).getByText(/archived so existing tasks and history are preserved/i)
+    within(dialog).getByText(/cannot be permanently deleted/i)
+  ).toBeInTheDocument();
+  expect(
+    within(dialog).getByText(/Archive the project instead/i)
   ).toBeInTheDocument();
   userEvent.click(within(dialog).getByRole("button", { name: "Delete Project" }));
   await waitFor(() => {
     expect(deleteProject).toHaveBeenCalledWith(PROJECT.projectId);
   });
+  expect(await screen.findByText(conflict)).toBeInTheDocument();
   expect(
-    await screen.findByText("Project archived because it contains existing tasks.")
-  ).toBeInTheDocument();
+    screen.queryByText("Project archived because it contains existing tasks.")
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Project archived.")).not.toBeInTheDocument();
+  expect(updateProject).not.toHaveBeenCalled();
+  expect(screen.getByText("Portal")).toBeInTheDocument();
+  expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
 });

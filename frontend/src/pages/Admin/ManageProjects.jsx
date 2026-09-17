@@ -162,6 +162,8 @@ export default function ManageProjects() {
       setMessage(deleteProjectResultCopy(result?.action));
       await load();
     } catch (err) {
+      setConfirm(null);
+      setMessage("");
       setError(err?.message || "Unable to update project.");
     } finally {
       setBusy(false);

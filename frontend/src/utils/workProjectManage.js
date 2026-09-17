@@ -1,9 +1,9 @@
 export function deleteProjectConfirmCopy() {
   return {
     title: "Delete Project?",
-    body: "Are you sure you want to remove this project?",
+    body: "Are you sure you want to permanently delete this project?",
     detail:
-      "For projects with existing tasks, the project will be archived so existing tasks and history are preserved. Projects with no tasks will be permanently deleted.",
+      "Projects with existing tasks or task history cannot be permanently deleted. Archive the project instead to preserve tasks and history. Projects with no related tasks will be permanently deleted.",
   };
 }
 

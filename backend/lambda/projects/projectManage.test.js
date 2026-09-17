@@ -6,8 +6,9 @@ const {
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
-  ACTION_ARCHIVED,
   ACTION_DELETED,
+  PROJECT_HAS_TASKS,
+  PROJECT_HAS_TASKS_MESSAGE,
   STATUS_ACTIVE,
   STATUS_ARCHIVED,
   countActiveProjects,
@@ -81,16 +82,43 @@ function createMemoryDdb() {
         return {};
       }
       if (command instanceof QueryCommand) {
-        const { TableName, ExpressionAttributeValues = {} } = command.input;
+        const {
+          TableName,
+          ExpressionAttributeValues = {},
+          Limit,
+          ExclusiveStartKey,
+        } = command.input;
         const pk = ExpressionAttributeValues[":pk"];
         const skPrefix = ExpressionAttributeValues[":sk"];
-        const found = items
+        let found = items
           .filter((row) => row.TableName === TableName && row.Item.PK === pk)
           .filter((row) =>
             skPrefix ? String(row.Item.SK).startsWith(skPrefix) : true
           )
           .map((row) => ({ ...row.Item }));
-        return { Items: found, Count: found.length };
+        found.sort((a, b) => String(a.SK).localeCompare(String(b.SK)));
+        if (ExclusiveStartKey) {
+          const idx = found.findIndex(
+            (item) =>
+              item.PK === ExclusiveStartKey.PK &&
+              item.SK === ExclusiveStartKey.SK
+          );
+          found = idx >= 0 ? found.slice(idx + 1) : found;
+        }
+        const sliced =
+          Number.isFinite(Number(Limit)) && Number(Limit) > 0
+            ? found.slice(0, Number(Limit))
+            : found;
+        const last = sliced[sliced.length - 1];
+        const lastKey =
+          last && sliced.length < found.length
+            ? { PK: last.PK, SK: last.SK }
+            : undefined;
+        return {
+          Items: sliced,
+          Count: sliced.length,
+          LastEvaluatedKey: lastKey,
+        };
       }
       throw new Error(`unexpected command ${command.constructor.name}`);
     },
@@ -211,30 +239,53 @@ async function run() {
     assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
   });
 
-  await test("C. DELETE active project with tasks archives instead of deleting", async () => {
+  await test("C. DELETE project with active task copies returns 409 and does not mutate", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     const copy = taskCopy({ projectId: ACTIVE_ID, taskId: "t1" });
     const entity = entityTask(copy);
     ddb.seed(TABLE, copy);
     ddb.seed(TABLE, entity);
+    const before = JSON.stringify(ddb.of(TABLE));
 
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(result.body.action, ACTION_ARCHIVED);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.strictEqual(result.body.error, PROJECT_HAS_TASKS_MESSAGE);
+    assert.strictEqual(result.body.message, PROJECT_HAS_TASKS_MESSAGE);
     assert.strictEqual(result.body.projectId, ACTIVE_ID);
-    assert.strictEqual(result.body.name, "Portal");
     assert.strictEqual(result.body.taskCount, 1);
 
     const stored = await getProject(ddb, TABLE, ACTIVE_ID);
     assert.ok(stored);
-    assert.strictEqual(stored.status, STATUS_ARCHIVED);
-    assert.strictEqual(stored.archivedAt, NOW);
-    assert.strictEqual(stored.archivedBy, ADMIN.email);
-    assert.strictEqual(stored.name, "Portal");
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
+    assert.strictEqual(stored.archivedAt, undefined);
+    assert.strictEqual(JSON.stringify(ddb.of(TABLE)), before);
   });
 
-  await test("archived and completed task copies still force archive", async () => {
+  await test("DELETE with archived task copies returns 409 and does not mutate", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    ddb.seed(
+      TABLE,
+      taskCopy({
+        projectId: ACTIVE_ID,
+        taskId: "archived-1",
+        archived: true,
+        status: "TODO",
+      })
+    );
+    const before = JSON.stringify(ddb.of(TABLE));
+    const result = await del(ddb, { projectId: ACTIVE_ID });
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.strictEqual(result.body.taskCount, 1);
+    const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
+    assert.strictEqual(JSON.stringify(ddb.of(TABLE)), before);
+  });
+
+  await test("DELETE with completed task copies returns 409 and does not mutate", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     ddb.seed(
@@ -242,36 +293,93 @@ async function run() {
       taskCopy({
         projectId: ACTIVE_ID,
         taskId: "done-1",
-        archived: true,
+        archived: false,
         status: "DONE",
       })
     );
+    const before = JSON.stringify(ddb.of(TABLE));
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.body.action, ACTION_ARCHIVED);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
     assert.strictEqual(result.body.taskCount, 1);
-    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
+    const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
+    assert.strictEqual(JSON.stringify(ddb.of(TABLE)), before);
+  });
+
+  await test("DELETE task lookup failure does not delete or archive", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const orig = ddb.send.bind(ddb);
+    ddb.send = async (command) => {
+      if (command instanceof QueryCommand) {
+        throw new Error("simulated dynamo query failure");
+      }
+      return orig(command);
+    };
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 500);
+    assert.match(result.body.error, /Unable to verify project tasks/);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.ok(stored);
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
+  });
+
+  await test("DELETE task lookup paginates through all task copies", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    ddb.seed(TABLE, taskCopy({ projectId: ACTIVE_ID, taskId: "t-a" }));
+    ddb.seed(TABLE, taskCopy({ projectId: ACTIVE_ID, taskId: "t-b" }));
+    ddb.seed(TABLE, taskCopy({ projectId: ACTIVE_ID, taskId: "t-c" }));
+    const orig = ddb.send.bind(ddb);
+    let taskQueries = 0;
+    ddb.send = async (command) => {
+      if (
+        command instanceof QueryCommand &&
+        command.input.ExpressionAttributeValues?.[":sk"] === "TASK#"
+      ) {
+        command.input.Limit = 1;
+        taskQueries += 1;
+      }
+      return orig(command);
+    };
+    const result = await del(ddb, { projectId: ACTIVE_ID });
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.taskCount, 3);
+    assert.ok(taskQueries >= 3);
+    const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
   });
 
   await test("D. archived project remains resolvable by getProjectName", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    ddb.seed(TABLE, taskCopy({ projectId: ACTIVE_ID, taskId: "t1" }));
-    await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(
-      await getProjectName(ddb, TABLE, ACTIVE_ID),
-      "Portal"
-    );
     assert.strictEqual(
       await getProjectName(ddb, TABLE, ARCHIVED_ID),
       "Legacy Archive"
     );
+    await handlePatchProject({
+      user: ADMIN,
+      projectId: ACTIVE_ID,
+      body: { status: "ARCHIVED" },
+      ddb,
+      tableName: TABLE,
+      now: NOW,
+    });
+    assert.strictEqual(await getProjectName(ddb, TABLE, ACTIVE_ID), "Portal");
   });
 
   await test("E. GET /projects excludes ARCHIVED projects", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    ddb.seed(TABLE, taskCopy({ projectId: ACTIVE_ID, taskId: "t1" }));
-    await del(ddb, { projectId: ACTIVE_ID });
+    await handlePatchProject({
+      user: ADMIN,
+      projectId: ACTIVE_ID,
+      body: { status: "ARCHIVED" },
+      ddb,
+      tableName: TABLE,
+      now: NOW,
+    });
 
     const listed = await handleListProjects({ ddb, tableName: TABLE });
     assert.strictEqual(listed.statusCode, 200);
@@ -296,7 +404,7 @@ async function run() {
     assert.strictEqual(listed.body[0].projectId, "legacy");
   });
 
-  await test("F. existing task references remain untouched when archived", async () => {
+  await test("F. blocked DELETE leaves task copies and the project untouched", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     const copy = taskCopy({ projectId: ACTIVE_ID, taskId: "keep-1" });
@@ -305,12 +413,15 @@ async function run() {
     ddb.seed(TABLE, entity);
     const before = ddb.of(TABLE).filter((item) => item.taskId === "keep-1");
 
-    await del(ddb, { projectId: ACTIVE_ID });
+    const result = await del(ddb, { projectId: ACTIVE_ID });
+    assert.strictEqual(result.statusCode, 409);
 
     const after = ddb.of(TABLE).filter((item) => item.taskId === "keep-1");
     assert.strictEqual(after.length, 2);
     assert.deepStrictEqual(after, before);
     assert.strictEqual(await countProjectTasks(ddb, TABLE, ACTIVE_ID), 1);
+    const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+    assert.strictEqual(stored.status, STATUS_ACTIVE);
   });
 
   await test("G. employee cannot DELETE /projects/{projectId}", async () => {

@@ -11,6 +11,9 @@ const STATUS_ARCHIVED = "ARCHIVED";
 const STATUS_ALL = "ALL";
 const ACTION_ARCHIVED = "ARCHIVED";
 const ACTION_DELETED = "DELETED";
+const PROJECT_HAS_TASKS = "PROJECT_HAS_TASKS";
+const PROJECT_HAS_TASKS_MESSAGE =
+  "This project cannot be permanently deleted because it contains existing tasks or task history. Please archive the project instead.";
 
 function projectSk(projectId) {
   return `PROJECT#${projectId}`;
@@ -187,7 +190,6 @@ async function handleDeleteProject({
   projectId,
   ddb,
   tableName,
-  now,
 } = {}) {
   if (!user?.isAdmin) {
     return { statusCode: 403, body: { error: "Admin required" } };
@@ -205,33 +207,50 @@ async function handleDeleteProject({
     return { statusCode: 404, body: { error: "Project not found" } };
   }
 
-  const taskCount = await countProjectTasks(ddb, tableName, id);
-  const timestamp = now || new Date().toISOString();
-
-  if (taskCount > 0) {
-    await ddb.send(
-      new PutCommand({
-        TableName: tableName,
-        Item: {
-          ...project,
-          status: STATUS_ARCHIVED,
-          archivedAt: timestamp,
-          archivedBy: user.email || "",
-        },
-      })
+  let taskCount;
+  try {
+    taskCount = await countProjectTasks(ddb, tableName, id);
+  } catch (err) {
+    console.error(
+      "PROJECT_DELETE_TASK_LOOKUP_FAILED",
+      JSON.stringify({ projectId: id })
     );
     return {
-      statusCode: 200,
-      body: deleteResponse(ACTION_ARCHIVED, project, taskCount),
+      statusCode: 500,
+      body: { error: "Unable to verify project tasks" },
     };
   }
 
-  await ddb.send(
-    new DeleteCommand({
-      TableName: tableName,
-      Key: { PK: PROJECT_ENTITY_PK, SK: projectSk(id) },
-    })
-  );
+  if (taskCount > 0) {
+    return {
+      statusCode: 409,
+      body: {
+        error: PROJECT_HAS_TASKS_MESSAGE,
+        message: PROJECT_HAS_TASKS_MESSAGE,
+        code: PROJECT_HAS_TASKS,
+        projectId: id,
+        taskCount,
+      },
+    };
+  }
+
+  try {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: tableName,
+        Key: { PK: PROJECT_ENTITY_PK, SK: projectSk(id) },
+      })
+    );
+  } catch (err) {
+    console.error(
+      "PROJECT_DELETE_FAILED",
+      JSON.stringify({ projectId: id })
+    );
+    return {
+      statusCode: 500,
+      body: { error: "Unable to delete project" },
+    };
+  }
   return {
     statusCode: 200,
     body: deleteResponse(ACTION_DELETED, project, 0),
@@ -332,6 +351,8 @@ module.exports = {
   STATUS_ALL,
   ACTION_ARCHIVED,
   ACTION_DELETED,
+  PROJECT_HAS_TASKS,
+  PROJECT_HAS_TASKS_MESSAGE,
   projectPathMatch,
   isActiveProject,
   filterActiveProjects,
