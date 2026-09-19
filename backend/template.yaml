@@ -995,6 +995,12 @@ Resources:
                 - ses:SendEmail
                 - ses:SendRawEmail
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:aws:s3:::${DocumentsBucket}/task-imports/tmp/*"
+                - !Sub "arn:aws:s3:::${DocumentsBucket}/task-imports/hold/*"
       Events:
         ProjectsGetApi:
           Type: Api
