@@ -74,8 +74,7 @@ function canAssignPortalRole(actorRole, targetRole) {
   return true;
 }
 
-/** Active portal administrators from UserAccess rows (no hardcoded emails). */
-function activeAdminEmailsFromAccess(rows = []) {
+function activeEmailsFromAccess(rows = [], rolePredicate) {
   const seen = new Set();
   const out = [];
   for (const row of rows) {
@@ -84,11 +83,31 @@ function activeAdminEmailsFromAccess(rows = []) {
       .toLowerCase();
     if (!email || !email.includes("@") || seen.has(email)) continue;
     if (String(row.status || "").toUpperCase() !== "ACTIVE") continue;
-    if (!isAdminPortalRole(row.role)) continue;
+    if (!rolePredicate(row.role)) continue;
     seen.add(email);
     out.push(email);
   }
   return out;
+}
+
+/** Active portal administrators from UserAccess rows (no hardcoded emails). */
+function activeAdminEmailsFromAccess(rows = []) {
+  return activeEmailsFromAccess(rows, isAdminPortalRole);
+}
+
+function isAdminOrSuperAdminRole(role) {
+  const r = normalizeRole(role);
+  return r === ROLES.SUPER_ADMIN || r === ROLES.ADMIN;
+}
+
+/** Active SUPER_ADMIN emails only (excludes ADMIN/MANAGER and inactive users). */
+function activeSuperAdminEmailsFromAccess(rows = []) {
+  return activeEmailsFromAccess(rows, isSuperAdminRole);
+}
+
+/** Active ADMIN + SUPER_ADMIN emails (excludes MANAGER and inactive users). */
+function activeCompletionAdminEmailsFromAccess(rows = []) {
+  return activeEmailsFromAccess(rows, isAdminOrSuperAdminRole);
 }
 
 module.exports = {
@@ -104,4 +123,6 @@ module.exports = {
   canManageUserAccessLifecycle,
   canAssignPortalRole,
   activeAdminEmailsFromAccess,
+  activeSuperAdminEmailsFromAccess,
+  activeCompletionAdminEmailsFromAccess,
 };

@@ -1,7 +1,9 @@
-const { PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { UpdateCommand, ScanCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
 const escalation = require("./escalation");
 const { redAdminNotifyCopy } = require("./zoneNotify");
 const { sendEmail } = require("../common/email");
+const { notifyFromAddress, notifyFromName } = require("./notifyFrom");
+const { activeCompletionAdminEmailsFromAccess } = require("../common/roles");
 
 function isConditionalCheckFailed(err) {
   return String(err?.name || "") === "ConditionalCheckFailedException";
@@ -52,9 +54,9 @@ function allIntendedRecipientsDelivered(map, emails) {
 }
 
 /**
- * Exclusive DynamoDB claim: NOT_SENT/PENDING/FAILED → SENDING.
- * Concurrent claimants lose the conditional put and must not send.
- * Recipients map is copied from the loaded item so retries keep MessageIds.
+ * Exclusive claim: NOT_SENT/PENDING/FAILED/stale SENDING → SENDING.
+ * Updates only Red notify attributes. Never Puts the assignment item.
+ * Recipients/MessageIds and business fields stay on the stored item.
  */
 async function claimRedAdminNotify(ddb, {
   tableName,
@@ -64,29 +66,52 @@ async function claimRedAdminNotify(ddb, {
   staleMs = escalation.RED_ADMIN_CLAIM_STALE_MS,
 }) {
   if (!tableName || !item || !item.PK || !item.SK) return { ok: false, reason: "INVALID_ITEM" };
-  const claimed = {
-    ...item,
-    redAdminNotifyStatus: "SENDING",
-    redAdminNotifyClaimedAt: nowIso,
-    redAdminNotifyRecipients: normalizeRecipientMap(item.redAdminNotifyRecipients),
-  };
+  const key = { PK: item.PK, SK: item.SK };
   try {
-    await ddb.send(
-      new PutCommand({
+    const current = await ddb.send(
+      new GetCommand({
         TableName: tableName,
-        Item: claimed,
+        Key: key,
+      })
+    );
+    const stored = current.Item;
+    if (!stored) return { ok: false, reason: "MISSING_ITEM" };
+    if (
+      !escalation.canClaimRedAdminStatus(
+        stored.redAdminNotifyStatus,
+        stored.redAdminNotifyClaimedAt,
+        nowMs,
+        staleMs
+      )
+    ) {
+      return { ok: false, reason: "ALREADY_CLAIMED" };
+    }
+    const attempts = Number(stored.redAdminNotifyAttempts || 0) + 1;
+    const res = await ddb.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: key,
+        UpdateExpression: "SET #status = :sending, #claimed = :now, #attempts = :attempts",
         ConditionExpression:
-          "attribute_not_exists(redAdminNotifyStatus) OR attribute_type(redAdminNotifyStatus, :nullType) OR redAdminNotifyStatus = :pending OR redAdminNotifyStatus = :failed OR (redAdminNotifyStatus = :sending AND redAdminNotifyClaimedAt < :staleBefore)",
+          "attribute_exists(PK) AND (attribute_not_exists(#status) OR attribute_type(#status, :nullType) OR #status = :pending OR #status = :failed OR (#status = :sending AND #claimed < :staleBefore))",
+        ExpressionAttributeNames: {
+          "#status": "redAdminNotifyStatus",
+          "#claimed": "redAdminNotifyClaimedAt",
+          "#attempts": "redAdminNotifyAttempts",
+        },
         ExpressionAttributeValues: {
           ":nullType": "NULL",
           ":pending": "PENDING",
           ":failed": "FAILED",
           ":sending": "SENDING",
           ":staleBefore": staleBeforeIso(nowIso, nowMs, staleMs),
+          ":now": nowIso,
+          ":attempts": attempts,
         },
+        ReturnValues: "ALL_NEW",
       })
     );
-    return { ok: true, item: claimed };
+    return { ok: true, item: res.Attributes || {} };
   } catch (err) {
     if (isConditionalCheckFailed(err)) {
       return { ok: false, reason: "ALREADY_CLAIMED" };
@@ -169,15 +194,46 @@ async function persistRedAdminRecipient(ddb, {
   }
 }
 
+async function scanAccessRows(ddb, accessTable) {
+  if (!ddb || !accessTable) return [];
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(
+      new ScanCommand({
+        TableName: accessTable,
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+async function resolveRedZoneAccessRows({
+  listAccessRows,
+  accessRows,
+  ddb,
+  accessTable,
+}) {
+  if (Array.isArray(accessRows)) return accessRows;
+  if (typeof listAccessRows === "function") return (await listAccessRows()) || [];
+  return scanAccessRows(ddb, accessTable);
+}
+
 /**
- * Red Zone alert: SES email to every active admin. Never writes an in-app bell.
- * Skips admins who already have a persisted MessageId for this assignment.
+ * Red Zone alert: SES email to active Admin and Super Admin users.
+ * Never writes an in-app bell. Recipients are resolved from UserAccess.
  */
 async function notifyAdminsTaskEnteredRed({
   task,
   assignment,
   redAt,
-  adminEmails,
+  listAccessRows,
+  accessRows,
+  ddb,
+  accessTable,
   getAssigneeProfile,
   getProjectName,
   sendEmail: sendEmailFn,
@@ -187,25 +243,68 @@ async function notifyAdminsTaskEnteredRed({
   nowIso,
 }) {
   const mailer = typeof sendEmailFn === "function" ? sendEmailFn : sendEmail;
+  const from = notifyFromAddress();
+  const fromName = notifyFromName();
   const taskId = task.taskId;
   const title = task.title || "";
   const assignmentEmail = escalation.normalizeEmail(assignment.email);
-  const emails = Array.isArray(adminEmails) ? adminEmails : [];
+  let rows = [];
+  let lookupFailed = false;
+  try {
+    rows = await resolveRedZoneAccessRows({
+      listAccessRows,
+      accessRows,
+      ddb,
+      accessTable,
+    });
+  } catch (err) {
+    lookupFailed = true;
+    console.error(
+      "RED_ADMIN_RECIPIENT_LOOKUP_FAILED",
+      JSON.stringify({ taskId })
+    );
+    console.error(err);
+    rows = [];
+  }
+  if (lookupFailed) {
+    return "FAILED";
+  }
+  const seen = new Set();
+  const emails = [];
+  for (const email of activeCompletionAdminEmailsFromAccess(rows)) {
+    const addr = escalation.normalizeEmail(email);
+    if (!addr || !addr.includes("@") || seen.has(addr)) continue;
+    if (assignmentEmail && addr === assignmentEmail) continue;
+    seen.add(addr);
+    emails.push(addr);
+  }
+  console.log(
+    "RED_ADMIN_RECIPIENTS",
+    JSON.stringify({
+      taskId,
+      count: emails.length,
+      recipients: emails,
+    })
+  );
   const delivered = normalizeRecipientMap(
     existingRecipients || assignment.redAdminNotifyRecipients
   );
   const notifiedAt = nowIso || new Date(nowMs).toISOString();
   if (!emails.length) {
+    const reason = assignmentEmail
+      ? "no remaining administrators after exclusions"
+      : "no active administrators";
     console.log(
       "RED_ADMIN_NOTIFY_SKIPPED",
       JSON.stringify({
         taskId,
         assignmentEmail,
         title,
-        reason: "no active administrators",
+        reason,
       })
     );
-    return "FAILED";
+    // No remaining recipients is a completed outcome, not a retryable SES failure.
+    return assignmentEmail ? "SENT" : "FAILED";
   }
 
   let profile = {};
@@ -279,6 +378,8 @@ async function notifyAdminsTaskEnteredRed({
         subject: copy.subject || copy.title,
         text: copy.message,
         html: copy.html,
+        from,
+        fromName,
       });
       if (!result || !result.ok || !result.messageId) {
         failed += 1;

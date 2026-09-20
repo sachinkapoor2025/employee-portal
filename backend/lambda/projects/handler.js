@@ -17,13 +17,20 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
 const escalation = require("./escalation");
 const { zoneNotifyCopy } = require("./zoneNotify");
-const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify, persistRedAdminRecipient, isConditionalCheckFailed } = require("./redAdminNotify");
-const { activeAdminEmailsFromAccess } = require("../common/roles");
+const { notifyAdminsTaskEnteredRed, claimRedAdminNotify, finalizeRedAdminNotify, persistRedAdminRecipient } = require("./redAdminNotify");
+const { activeAdminEmailsFromAccess, activeCompletionAdminEmailsFromAccess } = require("../common/roles");
+const {
+  putTaskCopiesSafe,
+  putAssignmentSafe,
+  assertPersistOk,
+  PersistConflictError,
+} = require("./taskNotifyPersist");
 const taskImport = require("./taskImport");
 const taskImportPreview = require("./taskImportPreview");
 const taskImportConfirm = require("./taskImportConfirm");
 const projectManage = require("./projectManage");
 const taskImportHistory = require("./taskImportHistory");
+const { notifyTaskCompleted } = require("./taskCompleteNotify");
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -143,21 +150,14 @@ async function getTask(taskId) {
 }
 
 async function putTaskCopies(task) {
-  await ddb.send(
-    new PutCommand({ TableName: process.env.WORK_TABLE, Item: task })
-  );
-  if (task.projectId) {
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.WORK_TABLE,
-        Item: {
-          ...task,
-          PK: `PROJECT#${task.projectId}`,
-          SK: `TASK#${task.taskId}`,
-        },
-      })
-    );
-  }
+  const result = await putTaskCopiesSafe(ddb, process.env.WORK_TABLE, task);
+  assertPersistOk(result, {
+    op: "putTaskCopies",
+    taskId: task?.taskId || "",
+    PK: task?.PK || "",
+    SK: task?.SK || "",
+  });
+  return result;
 }
 
 async function appendActivity(taskId, action, detail, actorEmail, extra = {}) {
@@ -220,36 +220,19 @@ async function writeAssignment(taskId, assignment, options = {}) {
     redAdminNotifyClaimedAt: assignment.redAdminNotifyClaimedAt || null,
     redAdminNotifiedAt: assignment.redAdminNotifiedAt || null,
     redAdminNotifyRecipients: assignment.redAdminNotifyRecipients || {},
+    redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
   };
-  const params = {
-    TableName: process.env.WORK_TABLE,
-    Item: item,
-  };
-  if (options.preserveNotify) {
-    const incoming = escalation.redAdminNotifyStatusOf(assignment);
-    params.ConditionExpression =
-      "attribute_not_exists(redAdminNotifyStatus) OR attribute_type(redAdminNotifyStatus, :nullType) OR redAdminNotifyStatus = :incoming OR (redAdminNotifyStatus <> :sent AND redAdminNotifyStatus <> :sending)";
-    params.ExpressionAttributeValues = {
-      ":nullType": "NULL",
-      ":incoming": incoming || "PENDING",
-      ":sent": "SENT",
-      ":sending": "SENDING",
-    };
-  }
-  try {
-    await ddb.send(new PutCommand(params));
-    return item;
-  } catch (err) {
-    if (options.preserveNotify && isConditionalCheckFailed(err)) {
-      console.log(
-        "ASSIGNMENT_PRESERVE_SKIPPED",
-        JSON.stringify({ taskId, email })
-      );
-      return null;
-    }
-    throw err;
-  }
+  void options;
+  const result = await putAssignmentSafe(ddb, process.env.WORK_TABLE, item);
+  assertPersistOk(result, {
+    op: "writeAssignment",
+    taskId,
+    email,
+    PK: item.PK,
+    SK: item.SK,
+  });
+  return result.item;
 }
 
 async function resolveAssignments(task) {
@@ -281,6 +264,7 @@ function snapshotTask(task, assignments) {
       redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
       redAdminNotifiedAt: a.redAdminNotifiedAt || null,
       redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
+      redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
       removed: !!a.removed,
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
@@ -293,7 +277,13 @@ async function persistAssignmentsAndTask(task, assignments, options = {}) {
   }
   const merged = snapshotTask(task, assignments);
   merged.updatedAt = new Date().toISOString();
-  await putTaskCopies(merged);
+  const copies = await putTaskCopies(merged);
+  assertPersistOk(copies, {
+    op: "persistTask",
+    taskId: task.taskId,
+    PK: merged.PK,
+    SK: merged.SK,
+  });
   return merged;
 }
 
@@ -313,6 +303,7 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
       channel: channels.channel,
       emailEnabled: channels.emailEnabled,
       inAppEnabled: channels.inAppEnabled,
+      inAppSk: channels.inAppSk,
     });
   } catch (err) {
     console.error("Task notification failed", err);
@@ -377,12 +368,13 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
         deadline: task.dueDate,
         zoneStartedAt: ev.timestamp,
       });
+      const dedupKey = `${task.taskId}#${a.email}#${ev.action}#${task.dueDate || ""}`;
       await notifyTaskEvent(
         a.email,
         copy.type,
         copy.title,
         copy.message,
-        `${task.taskId}#${a.email}#${ev.action}#${task.dueDate || ""}`,
+        dedupKey,
         {
           taskId: task.taskId,
           zone: copy.zone,
@@ -390,7 +382,12 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
           deadline: task.dueDate || null,
           zoneStartedAt: ev.timestamp,
         },
-        { channel: "inapp" }
+        {
+          channel: "inapp",
+          inAppSk: orange
+            ? undefined
+            : `NOTIFY#TASK_RED#${dedupKey}`,
+        }
       );
     }
   }
@@ -403,7 +400,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
 
   let saved;
   if (changed) {
-    saved = await persistAssignmentsAndTask(task, next, { preserveNotify: true });
+    saved = await persistAssignmentsAndTask(task, next);
   } else {
     saved = snapshotTask(task, next);
   }
@@ -417,20 +414,14 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   });
   if (!pendingAdmin.length) return saved;
 
-  let adminEmails = [];
+  let listAccessRows;
   try {
-    adminEmails =
-      typeof resolveAdmins === "function"
-        ? await resolveAdmins()
-        : resolveAdmins || [];
-    console.log(
-      "RED_ADMIN_RECIPIENTS",
-      JSON.stringify({
-        taskId: task.taskId,
-        count: adminEmails.length,
-        recipients: adminEmails,
-      })
-    );
+    if (typeof resolveAdmins === "function") {
+      listAccessRows = resolveAdmins;
+    } else if (Array.isArray(resolveAdmins)) {
+      const rows = resolveAdmins;
+      listAccessRows = async () => rows;
+    }
   } catch (err) {
     console.error(
       "RED_ADMIN_EMAIL_FAILED",
@@ -463,6 +454,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
       redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
       redAdminNotifiedAt: a.redAdminNotifiedAt || null,
       redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
+      redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
       removed: !!a.removed,
     };
     let claimed;
@@ -494,6 +486,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
     }
     a.redAdminNotifyStatus = "SENDING";
     a.redAdminNotifyClaimedAt = nowIso;
+    a.redAdminNotifyAttempts = claimed.item.redAdminNotifyAttempts;
     a.redAdminNotifyRecipients = claimed.item.redAdminNotifyRecipients || {};
     let notifyStatus = "FAILED";
     try {
@@ -501,7 +494,9 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
         task: saved,
         assignment: a,
         redAt: redAtByEmail[email] || redStartedFallback,
-        adminEmails,
+        listAccessRows,
+        ddb,
+        accessTable: process.env.USER_ACCESS_TABLE,
         getAssigneeProfile,
         getProjectName,
         existingRecipients: a.redAdminNotifyRecipients,
@@ -591,6 +586,11 @@ async function listActiveAdminEmails() {
   return activeAdminEmailsFromAccess(rows);
 }
 
+async function listRedZoneAdminEmails() {
+  const rows = await scanAccessRows();
+  return activeCompletionAdminEmailsFromAccess(rows);
+}
+
 function isBlockedAccessStatus(status) {
   return String(status || "").toUpperCase() === "BLOCKED";
 }
@@ -647,10 +647,10 @@ async function blockedNewAssignees(requestedEmails, currentActiveEmails = []) {
 
 async function runEscalationSweep() {
   const tasks = await queryAllTasks();
-  let adminEmails;
+  let accessRows;
   const resolveAdmins = async () => {
-    if (!adminEmails) adminEmails = await listActiveAdminEmails();
-    return adminEmails;
+    if (!accessRows) accessRows = await scanAccessRows();
+    return accessRows;
   };
   await taskImportConfirm.assignDueScheduledTasks({
     ddb,
@@ -1348,6 +1348,7 @@ exports.handler = async (event) => {
 
       const nowIso = new Date().toISOString();
       const nowMs = Date.now();
+      let completionTransitioned = false;
       const merged = {
         ...existing,
         ...allowed,
@@ -1385,6 +1386,7 @@ exports.handler = async (event) => {
       const applyStatusToAssignment = async (target, nextStatus) => {
         if (!target || target.removed) return;
         if (nextStatus === "DONE") {
+          const wasComplete = escalation.isComplete(target.status);
           const completed = escalation.completeAssignment(
             target,
             merged.dueDate,
@@ -1392,26 +1394,16 @@ exports.handler = async (event) => {
             nowIso
           );
           Object.assign(target, completed);
-          await appendActivity(
-            taskId,
-            "task_completed",
-            `Completed by ${target.email} (zone ${completed.completedZone})`,
-            user.email,
-            { assignmentEmail: target.email, zone: completed.completedZone }
-          );
-          const completedForOther =
-            !!user.isAdmin &&
-            escalation.normalizeEmail(target.email) !==
-              escalation.normalizeEmail(user.email);
-          await notifyTaskEvent(
-            target.email,
-            "TASK_COMPLETED",
-            `Task completed: ${merged.title}`,
-            `"${merged.title}" was marked completed.`,
-            `${taskId}#${target.email}#completed#${nowIso}`,
-            { taskId },
-            completedForOther ? { channel: "inapp" } : {}
-          );
+          if (!wasComplete && escalation.isComplete(target.status)) {
+            completionTransitioned = true;
+            await appendActivity(
+              taskId,
+              "task_completed",
+              `Completed by ${target.email} (zone ${completed.completedZone})`,
+              user.email,
+              { assignmentEmail: target.email, zone: completed.completedZone }
+            );
+          }
         } else {
           const prev = target.status;
           target.status = nextStatus;
@@ -1679,6 +1671,33 @@ exports.handler = async (event) => {
       }
 
       const saved = await persistAssignmentsAndTask(merged, assignments);
+      if (completionTransitioned && escalation.isComplete(saved.status)) {
+        try {
+          let projectName = "";
+          try {
+            projectName = (await getProjectName(saved.projectId)) || "";
+          } catch (err) {
+            console.error("TASK_COMPLETED_PROJECT_NAME_ERROR", err?.name);
+          }
+          await notifyTaskCompleted({
+            ddb,
+            tableName: process.env.WORK_TABLE,
+            accessTable: process.env.USER_ACCESS_TABLE,
+            task: saved,
+            completedBy: user.email,
+            completedByName: user.name || user.email,
+            completedAt: nowIso,
+            nowMs,
+            projectName,
+          });
+        } catch (err) {
+          console.error(
+            "TASK_COMPLETED_EMAIL_ERROR",
+            JSON.stringify({ taskId })
+          );
+          console.error(err);
+        }
+      }
       void projectId;
       return json(
         200,
@@ -1700,7 +1719,13 @@ exports.handler = async (event) => {
         status: existing.status,
         updatedAt: new Date().toISOString(),
       };
-      await putTaskCopies(merged);
+      const copies = await putTaskCopies(merged);
+      assertPersistOk(copies, {
+        op: "archiveTask",
+        taskId,
+        PK: merged.PK,
+        SK: merged.SK,
+      });
       await appendActivity(taskId, "task_archived", "Task archived", user.email);
       return json(200, { message: "Task archived", task: merged });
     }
@@ -1757,6 +1782,9 @@ exports.handler = async (event) => {
 
     return json(405, { error: "Method not allowed" });
   } catch (err) {
+    if (err instanceof PersistConflictError) {
+      return json(err.statusCode || 409, { error: err.message });
+    }
     console.error("Projects error:", err);
     return json(500, { error: "Internal server error" });
   }

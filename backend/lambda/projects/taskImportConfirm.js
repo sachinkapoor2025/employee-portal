@@ -7,6 +7,7 @@ const {
 } = require("@aws-sdk/lib-dynamodb");
 const escalation = require("./escalation");
 const { isConditionalCheckFailed } = require("./redAdminNotify");
+const { putTaskCopiesSafe, putAssignmentSafe, assertPersistOk } = require("./taskNotifyPersist");
 const {
   AUDIT_ELIGIBILITY,
   IMPORT_STATUSES,
@@ -33,11 +34,19 @@ const {
   cleanupNonEligibleOriginal,
   promoteImportAudit,
 } = require("./taskImportAudit");
+const { sendCompletedImportSummaryEmail } = require("./taskImportSummary");
+const {
+  assignedNotifyKey,
+  getAccessRow,
+  isActiveAccess,
+  notifyExcelAssignment,
+} = require("./taskImportAssignNotify");
 
 const ROW_IMPORTED = "IMPORTED";
 const ASSIGNMENT_PENDING = "PENDING";
 const ASSIGNMENT_ASSIGNING = "ASSIGNING";
 const ASSIGNMENT_ASSIGNED = "ASSIGNED";
+const ASSIGNMENT_SKIPPED = "SKIPPED";
 const LAMBDA_TIMEOUT_MS = 120000;
 const DEFAULT_PROCESSING_LEASE_MS = 180000;
 const DEFAULT_SCHEDULED_ASSIGN_LEASE_MS = 180000;
@@ -116,16 +125,14 @@ function importedTaskId(batchId, rowNumber) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-function assignedNotifyKey(taskId, email) {
-  return `${taskId}#${escalation.normalizeEmail(email)}#assigned`;
-}
-
 function isPendingScheduledTask(task) {
   const mode = String(task?.assignmentMode || "").toUpperCase();
   const state = String(task?.assignmentState || "").toUpperCase();
   return (
     mode === "SCHEDULED" &&
-    (state === ASSIGNMENT_PENDING || state === ASSIGNMENT_ASSIGNING)
+    (state === ASSIGNMENT_PENDING ||
+      state === ASSIGNMENT_ASSIGNING ||
+      state === ASSIGNMENT_SKIPPED)
   );
 }
 
@@ -152,6 +159,7 @@ function snapshotTask(task, assignments) {
       redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
       redAdminNotifiedAt: a.redAdminNotifiedAt || null,
       redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
+      redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
       removed: !!a.removed,
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
@@ -159,19 +167,14 @@ function snapshotTask(task, assignments) {
 }
 
 async function putTaskCopies(ddb, tableName, task) {
-  await ddb.send(new PutCommand({ TableName: tableName, Item: task }));
-  if (task.projectId) {
-    await ddb.send(
-      new PutCommand({
-        TableName: tableName,
-        Item: {
-          ...task,
-          PK: `PROJECT#${task.projectId}`,
-          SK: `TASK#${task.taskId}`,
-        },
-      })
-    );
-  }
+  const result = await putTaskCopiesSafe(ddb, tableName, task);
+  assertPersistOk(result, {
+    op: "putTaskCopies",
+    taskId: task?.taskId || "",
+    PK: task?.PK || "",
+    SK: task?.SK || "",
+  });
+  return result;
 }
 
 async function writeAssignment(ddb, tableName, taskId, assignment) {
@@ -196,10 +199,18 @@ async function writeAssignment(ddb, tableName, taskId, assignment) {
     redAdminNotifyClaimedAt: assignment.redAdminNotifyClaimedAt || null,
     redAdminNotifiedAt: assignment.redAdminNotifiedAt || null,
     redAdminNotifyRecipients: assignment.redAdminNotifyRecipients || {},
+    redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
   };
-  await ddb.send(new PutCommand({ TableName: tableName, Item: item }));
-  return item;
+  const result = await putAssignmentSafe(ddb, tableName, item);
+  assertPersistOk(result, {
+    op: "writeAssignment",
+    taskId,
+    email,
+    PK: item.PK,
+    SK: item.SK,
+  });
+  return result.item;
 }
 
 async function persistAssignmentsAndTask(ddb, tableName, task, assignments) {
@@ -235,22 +246,20 @@ async function appendActivity(ddb, tableName, taskId, action, detail, actorEmail
   );
 }
 
-async function notifyAssigned(ddb, email, title, taskId) {
-  const { dispatchNotification } = require("../common/notify");
-  const dedupKey = assignedNotifyKey(taskId, email);
-  await dispatchNotification(ddb, {
-    email,
-    type: "TASK_ASSIGNED",
-    title: `New task assigned: ${title}`,
-    subject: `New task assigned: ${title}`,
-    message: `You have been assigned "${title}".`,
-    reason: "TASK_ASSIGNED",
-    dedupKey,
-    extra: { taskId },
-    channel: "inapp",
-    emailEnabled: false,
-    inAppEnabled: true,
-    inAppSk: `NOTIFY#TASK_ASSIGNED#${dedupKey}`,
+async function notifyAssigned(ddb, email, title, taskId, extra = {}) {
+  await notifyExcelAssignment({
+    ddb,
+    accessTable: extra.accessTable,
+    listAccessRows: extra.listAccessRows,
+    kind: extra.kind || "immediate",
+    assigneeEmails: [email],
+    task: {
+      taskId,
+      title,
+      importBatchId: extra.importBatchId,
+      createdBy: extra.createdBy,
+      createdByName: extra.createdByName,
+    },
   });
 }
 
@@ -319,14 +328,28 @@ async function createImmediateTask({
   createdByName,
   now,
   nowMs,
+  accessTable,
+  listAccessRows,
 }) {
   const taskId = importedTaskId(batchId, row.rowNumber);
   const existing = await getTask(ddb, tableName, taskId);
   const emails = (row.resolvedAssignees || []).map((item) => item.email);
+  const notifyOpts = {
+    ddb,
+    accessTable,
+    listAccessRows,
+    kind: "immediate",
+    assigneeEmails: emails,
+    task: {
+      taskId,
+      title: existing?.title || row.values.taskTitle,
+      importBatchId: batchId,
+      createdBy: user.email,
+      createdByName,
+    },
+  };
   if (existing) {
-    for (const email of emails) {
-      await notifyAssigned(ddb, email, existing.title || row.values.taskTitle, taskId);
-    }
+    await notifyExcelAssignment(notifyOpts);
     return { taskId, assignmentMode: "IMMEDIATE", status: "ASSIGNED", reused: true };
   }
   const assignments = emails.map((email) => ({
@@ -379,9 +402,15 @@ async function createImmediateTask({
       user.email,
       { timestamp: now }
     );
-    for (const email of emails) {
-      await notifyAssigned(ddb, email, item.title, taskId);
-    }
+    await notifyExcelAssignment({
+      ...notifyOpts,
+      task: {
+        ...notifyOpts.task,
+        title: item.title,
+        createdBy: user.email,
+        createdByName,
+      },
+    });
   }
   return { taskId, assignmentMode: "IMMEDIATE", status: "ASSIGNED", reused: false };
 }
@@ -551,6 +580,42 @@ async function claimBatchForProcessing(ddb, tableName, batchId, now, owner, conf
   }
 }
 
+async function maybeSendCompletedImportSummary(opts) {
+  try {
+    return await sendCompletedImportSummaryEmail(opts);
+  } catch (err) {
+    console.error(
+      "TASK_IMPORT_SUMMARY_ERROR",
+      JSON.stringify({ batchId: opts?.batchId || null })
+    );
+    console.error(err);
+    return { skipped: true, reason: "UNHANDLED" };
+  }
+}
+
+async function respondCompletedImport({
+  ddb,
+  tableName,
+  accessTable,
+  meta,
+  now,
+  nowMs,
+  listAccessRows,
+}) {
+  const response = await confirmResponseFromRows(ddb, tableName, meta);
+  await maybeSendCompletedImportSummary({
+    ddb,
+    tableName,
+    accessTable,
+    batchId: meta.batchId,
+    tasks: response.body.tasks || [],
+    now,
+    nowMs,
+    listAccessRows,
+  });
+  return response;
+}
+
 async function handleConfirmRequest({
   user,
   batchId,
@@ -563,6 +628,7 @@ async function handleConfirmRequest({
   accessTable = process.env.USER_ACCESS_TABLE,
   listProjects,
   loadUserAccess,
+  listAccessRows,
 } = {}) {
   if (!user?.isAdmin) {
     return { statusCode: 403, body: { error: "Admin required" } };
@@ -599,7 +665,15 @@ async function handleConfirmRequest({
     };
   }
   if (current === IMPORT_STATUSES.COMPLETED) {
-    return confirmResponseFromRows(ddb, tableName, existingMeta);
+    return respondCompletedImport({
+      ddb,
+      tableName,
+      accessTable,
+      meta: existingMeta,
+      now,
+      nowMs,
+      listAccessRows,
+    });
   }
 
   const updatedAt = now || new Date().toISOString();
@@ -627,7 +701,15 @@ async function handleConfirmRequest({
       return { statusCode: 404, body: { error: "Import batch not found." } };
     }
     if (latest.status === IMPORT_STATUSES.COMPLETED) {
-      return confirmResponseFromRows(ddb, tableName, latest);
+      return respondCompletedImport({
+        ddb,
+        tableName,
+        accessTable,
+        meta: latest,
+        now,
+        nowMs,
+        listAccessRows,
+      });
     }
     if (
       latest.status === IMPORT_STATUSES.PROCESSING &&
@@ -763,6 +845,8 @@ async function handleConfirmRequest({
               createdByName,
               now: updatedAt,
               nowMs: clockMs,
+              accessTable,
+              listAccessRows,
             });
       await markRowImported(ddb, tableName, id, row, result, updatedAt);
       tasks.push({
@@ -807,18 +891,45 @@ async function handleConfirmRequest({
     updatedAt,
   });
   if (status === IMPORT_STATUSES.COMPLETED) {
-    await promoteImportAudit({
+    try {
+      await promoteImportAudit({
+        ddb,
+        s3,
+        tableName,
+        bucket,
+        batchId: id,
+        now: updatedAt,
+        nowMs: clockMs,
+      });
+    } catch (err) {
+      console.error(
+        "TASK_IMPORT_AUDIT_PROMOTE_ERROR",
+        JSON.stringify({ batchId: id })
+      );
+      console.error(err);
+    }
+    await maybeSendCompletedImportSummary({
       ddb,
-      s3,
       tableName,
-      bucket,
+      accessTable,
       batchId: id,
+      tasks,
       now: updatedAt,
       nowMs: clockMs,
+      listAccessRows,
     });
   }
 
-  const latest = (await getMeta(ddb, tableName, id)) || {};
+  let latest = {};
+  try {
+    latest = (await getMeta(ddb, tableName, id)) || {};
+  } catch (err) {
+    console.error(
+      "TASK_IMPORT_CONFIRM_META_READ_ERROR",
+      JSON.stringify({ batchId: id })
+    );
+    console.error(err);
+  }
   return {
     statusCode: 200,
     body: {
@@ -834,15 +945,86 @@ async function handleConfirmRequest({
   };
 }
 
-async function activateScheduledTask(ddb, tableName, task, nowMs, nowIso) {
+async function skipInactiveScheduledAssignment(
+  ddb,
+  tableName,
+  task,
+  skippedEmails,
+  nowIso
+) {
+  const next = {
+    ...task,
+    assignmentState: ASSIGNMENT_SKIPPED,
+    assignmentSkipReason: "EMPLOYEE_INACTIVE",
+    assignmentSkippedEmails: skippedEmails,
+    assignmentSkippedAt: nowIso,
+    updatedAt: nowIso,
+  };
+  delete next.assigningStartedAt;
+  delete next.assigningOwner;
+  await putTaskCopies(ddb, tableName, next);
+  const actor = escalation.normalizeEmail(task.createdBy) || "";
+  await appendActivity(
+    ddb,
+    tableName,
+    task.taskId,
+    "task_assignment_skipped",
+    `Scheduled assignment skipped; inactive employee(s): ${skippedEmails.join(", ")}`,
+    actor,
+    {
+      timestamp: nowIso,
+      actorName: task.createdByName || "",
+      skippedEmails,
+    }
+  );
+  console.warn(
+    "TASK_IMPORT_SCHEDULED_SKIPPED_INACTIVE",
+    JSON.stringify({
+      taskId: task.taskId,
+      skippedEmails,
+    })
+  );
+  return next;
+}
+
+async function activateScheduledTask(
+  ddb,
+  tableName,
+  task,
+  nowMs,
+  nowIso,
+  { accessTable, listAccessRows, loadUserAccess } = {}
+) {
   const emails = (task.pendingAssignees || task.assignees || [])
     .map((email) => escalation.normalizeEmail(email))
     .filter(Boolean);
-  const assignments = emails.map((email) => ({
+  const active = [];
+  const skipped = [];
+  for (const email of emails) {
+    // Missing row (null) and non-ACTIVE status are inactive → SKIPPED.
+    // Lookup/runtime errors throw and leave ASSIGNING for lease retry.
+    const access = await getAccessRow(ddb, accessTable, email, loadUserAccess);
+    if (isActiveAccess(access)) active.push(email);
+    else skipped.push(email);
+  }
+  const assignedBy =
+    escalation.normalizeEmail(task.createdBy) ||
+    escalation.normalizeEmail(task.assignedBy) ||
+    "";
+  if (!active.length) {
+    return skipInactiveScheduledAssignment(
+      ddb,
+      tableName,
+      task,
+      skipped.length ? skipped : emails,
+      nowIso
+    );
+  }
+  const assignments = active.map((email) => ({
     email,
     status: "TODO",
     assignedAt: nowIso,
-    assignedBy: "system",
+    assignedBy,
     recordedZone: escalation.zoneAt(
       escalation.parseDeadlineMs(task.dueDate),
       nowMs
@@ -852,6 +1034,9 @@ async function activateScheduledTask(ddb, tableName, task, nowMs, nowIso) {
     {
       ...task,
       assignmentState: ASSIGNMENT_ASSIGNED,
+      assignmentSkipReason: skipped.length ? "EMPLOYEE_INACTIVE" : undefined,
+      assignmentSkippedEmails: skipped.length ? skipped : undefined,
+      assignmentSkippedAt: skipped.length ? nowIso : undefined,
       updatedAt: nowIso,
     },
     assignments
@@ -859,19 +1044,48 @@ async function activateScheduledTask(ddb, tableName, task, nowMs, nowIso) {
   delete next.assigningStartedAt;
   delete next.assigningOwner;
   await persistAssignmentsAndTask(ddb, tableName, next, assignments);
-  if (emails.length) {
+  if (skipped.length) {
+    await appendActivity(
+      ddb,
+      tableName,
+      task.taskId,
+      "task_assignment_skipped",
+      `Scheduled assignment skipped for inactive employee(s): ${skipped.join(", ")}`,
+      assignedBy,
+      {
+        timestamp: nowIso,
+        actorName: task.createdByName || "",
+        skippedEmails: skipped,
+      }
+    );
+  }
+  if (active.length) {
     await appendActivity(
       ddb,
       tableName,
       task.taskId,
       "task_assigned",
-      `Assigned to ${emails.join(", ")}`,
-      "system",
-      { timestamp: nowIso }
+      `Assigned to ${active.join(", ")}`,
+      assignedBy,
+      {
+        timestamp: nowIso,
+        actorName: task.createdByName || "",
+      }
     );
-    for (const email of emails) {
-      await notifyAssigned(ddb, email, task.title, task.taskId);
-    }
+    await notifyExcelAssignment({
+      ddb,
+      accessTable,
+      listAccessRows,
+      kind: "scheduled",
+      assigneeEmails: active,
+      task: {
+        taskId: task.taskId,
+        title: task.title,
+        importBatchId: task.importBatchId,
+        createdBy: assignedBy,
+        createdByName: task.createdByName,
+      },
+    });
   }
   return next;
 }
@@ -935,7 +1149,10 @@ async function claimScheduledActivation(ddb, tableName, task, nowIso, nowMs, own
 async function assignDueScheduledTasks({
   ddb,
   tableName = process.env.WORK_TABLE,
+  accessTable = process.env.USER_ACCESS_TABLE,
   nowMs = Date.now(),
+  listAccessRows,
+  loadUserAccess,
 } = {}) {
   if (!tableName) return { processed: 0 };
   const { queryAll } = require("./taskImportPreview");
@@ -966,7 +1183,11 @@ async function assignDueScheduledTasks({
     );
     if (!claimed.ok) continue;
     try {
-      await activateScheduledTask(ddb, tableName, claimed.task, nowMs, nowIso);
+      await activateScheduledTask(ddb, tableName, claimed.task, nowMs, nowIso, {
+        accessTable,
+        listAccessRows,
+        loadUserAccess,
+      });
       processed += 1;
     } catch (err) {
       console.error(
@@ -984,6 +1205,7 @@ module.exports = {
   ASSIGNMENT_PENDING,
   ASSIGNMENT_ASSIGNING,
   ASSIGNMENT_ASSIGNED,
+  ASSIGNMENT_SKIPPED,
   BATCH_ID_RE,
   confirmPathMatch,
   importedTaskId,

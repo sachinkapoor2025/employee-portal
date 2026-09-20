@@ -38,9 +38,11 @@ function buildCommand({ source, to, subject, text, html }) {
  * Send an email through the existing AWS SES account used by this stack.
  * Success requires a provider MessageId. Secrets are never logged.
  */
-async function sendEmail({ to, subject, text, html }) {
-  const fromRaw = process.env.NOTIFICATION_FROM_EMAIL || "";
-  const { name, address } = parseFrom(fromRaw);
+async function sendEmail({ to, subject, text, html, from, fromName } = {}) {
+  const fromRaw = String(from || process.env.NOTIFICATION_FROM_EMAIL || "").trim();
+  const parsed = parseFrom(fromRaw);
+  const address = parsed.address;
+  const name = String(fromName || parsed.name || "").trim();
   const recipient = String(to || "").trim().toLowerCase();
   if (!address || !recipient || !subject) {
     console.error(

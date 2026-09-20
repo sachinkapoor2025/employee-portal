@@ -351,6 +351,22 @@ assert.strictEqual(needsRedAdminNotify({}, {}, true), true);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, true), false);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "SENT" }, {}, false), false);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "FAILED" }, {}, false), true);
+assert.strictEqual(
+  needsRedAdminNotify(
+    {},
+    { email: "a@mydgv.com", status: "TODO", redAdminNotifyStatus: "FAILED", redAdminNotifyAttempts: 5 },
+    false
+  ),
+  false
+);
+assert.strictEqual(
+  needsRedAdminNotify(
+    {},
+    { email: "a@mydgv.com", status: "TODO", redAdminNotifyStatus: "FAILED", redAdminNotifyAttempts: 4 },
+    false
+  ),
+  true
+);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "PENDING" }, {}, false), true);
 assert.strictEqual(needsRedAdminNotify({ redAdminNotifyStatus: "PENDING" }, {}, true), true);
 assert.strictEqual(
@@ -537,18 +553,23 @@ assert.strictEqual(
   false
 );
 
-const { activeAdminEmailsFromAccess } = require("../common/roles");
+const { activeAdminEmailsFromAccess, activeCompletionAdminEmailsFromAccess } = require("../common/roles");
+const accessRows = [
+  { PK: "admin@mydgv.com", role: "ADMIN", status: "ACTIVE" },
+  { email: "emp@mydgv.com", role: "EMPLOYEE", status: "ACTIVE" },
+  { email: "mgr@mydgv.com", role: "MANAGER", status: "BLOCKED" },
+  { email: "waiting@mydgv.com", role: "ADMIN", status: "PENDING" },
+  { email: "super@mydgv.com", role: "SUPER_ADMIN", status: "ACTIVE" },
+  { email: "lead@mydgv.com", role: "MANAGER", status: "ACTIVE" },
+  { PK: "no-email-row", role: "ADMIN", status: "ACTIVE" },
+];
 assert.deepStrictEqual(
-  activeAdminEmailsFromAccess([
-    { PK: "admin@mydgv.com", role: "ADMIN", status: "ACTIVE" },
-    { email: "emp@mydgv.com", role: "EMPLOYEE", status: "ACTIVE" },
-    { email: "mgr@mydgv.com", role: "MANAGER", status: "BLOCKED" },
-    { email: "waiting@mydgv.com", role: "ADMIN", status: "PENDING" },
-    { email: "super@mydgv.com", role: "SUPER_ADMIN", status: "ACTIVE" },
-    { email: "lead@mydgv.com", role: "MANAGER", status: "ACTIVE" },
-    { PK: "no-email-row", role: "ADMIN", status: "ACTIVE" },
-  ]),
+  activeAdminEmailsFromAccess(accessRows),
   ["admin@mydgv.com", "super@mydgv.com", "lead@mydgv.com"]
+);
+assert.deepStrictEqual(
+  activeCompletionAdminEmailsFromAccess(accessRows),
+  ["admin@mydgv.com", "super@mydgv.com"]
 );
 
 console.log("escalation tests passed");

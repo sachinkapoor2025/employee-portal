@@ -5,6 +5,7 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
@@ -21,11 +22,26 @@ email.sendEmail = async (payload) => {
   return { ok: true, messageId: "test-ses" };
 };
 
+function summaryEmails() {
+  return emailCalls.filter((call) =>
+    /Excel Task Import Completed/i.test(String(call.subject || ""))
+  );
+}
+
+function assignmentEmails() {
+  return emailCalls.filter((call) =>
+    /new task assigned|excel task assigned|scheduled task assigned/i.test(
+      String(call.subject || "")
+    )
+  );
+}
+
 const {
   META_SK,
   TYPE_TASK_IMPORT,
   TASK_IMPORT_COLUMNS,
   AUDIT_ELIGIBILITY,
+  WAIT_PK,
   buildImportMeta,
   buildS3Key,
   buildHoldS3Key,
@@ -47,6 +63,7 @@ const {
   ASSIGNMENT_PENDING,
   ASSIGNMENT_ASSIGNING,
   ASSIGNMENT_ASSIGNED,
+  ASSIGNMENT_SKIPPED,
 } = require("./taskImportConfirm");
 
 process.env.TASK_IMPORT_MAX_ROWS = "200";
@@ -55,6 +72,8 @@ process.env.TASK_IMPORT_PROCESSING_LEASE_MS = "180000";
 process.env.TASK_SCHEDULED_ASSIGN_LEASE_MS = "180000";
 process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.COMPANY_TIMEZONE = "Asia/Kolkata";
+process.env.TASK_NOTIFY_FROM_EMAIL = "notify@mydgv.com";
+process.env.PORTAL_URL = "https://login.mydgv.com";
 
 const NOW = "2026-09-15T09:40:00.000Z";
 const NOW_MS = Date.parse("2026-09-15T09:00:00+05:30");
@@ -68,6 +87,7 @@ const TESTING_ID = "22222222-aaaa-bbbb-cccc-testing00002";
 const TESTING_DUP_ID = "33333333-aaaa-bbbb-cccc-testing00003";
 
 process.env.WORK_TABLE = WORK_TABLE;
+process.env.USER_ACCESS_TABLE = ACCESS_TABLE;
 
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
 const OTHER_ADMIN = { email: "lead@mydgv.com", groups: ["Admin"], isAdmin: true };
@@ -183,6 +203,18 @@ function evalCondition(item, expr, names, values) {
       i += notExists[0].length;
       const attr = resolveAttrName(notExists[1], names);
       return item[attr] === undefined || item[attr] === null;
+    }
+    const attrType = rest.match(
+      /^attribute_type\(([^,]+),\s*(:[A-Za-z0-9_]+)\)/i
+    );
+    if (attrType) {
+      i += attrType[0].length;
+      const attr = resolveAttrName(attrType[1], names);
+      const expected = values[attrType[2]];
+      if (String(expected).toUpperCase() === "NULL") {
+        return item[attr] === undefined || item[attr] === null;
+      }
+      return true;
     }
     const cmp = rest.match(/^([#A-Za-z0-9_]+)\s*(<>|=|<=|<|>=|>)\s*(:[A-Za-z0-9_]+)/);
     if (!cmp) {
@@ -329,6 +361,13 @@ function createMemoryDdb() {
         found.Item = next;
         return { Attributes: { ...next } };
       }
+      if (command instanceof ScanCommand) {
+        const { TableName } = command.input;
+        const found = items
+          .filter((row) => row.TableName === TableName)
+          .map((row) => ({ ...row.Item }));
+        return { Items: found };
+      }
       throw new Error(`unexpected command ${command.constructor.name}`);
     },
   };
@@ -356,8 +395,10 @@ function decodeCopySourceKey(copySource, bucket) {
   return decoded.join("/");
 }
 
-function createMemoryS3(objects = {}, { failCopyTo } = {}) {
+function createMemoryS3(objects = {}, { failCopyTo, failDelete } = {}) {
   const failTo = failCopyTo instanceof Set ? failCopyTo : new Set(failCopyTo ? [failCopyTo] : []);
+  const failDeleteTo =
+    failDelete instanceof Set ? failDelete : new Set(failDelete ? [failDelete] : []);
   return {
     objects,
     copies: [],
@@ -392,8 +433,17 @@ function createMemoryS3(objects = {}, { failCopyTo } = {}) {
         return {};
       }
       if (command instanceof DeleteObjectCommand) {
-        this.deletes.push(command.input.Key);
-        delete objects[command.input.Key];
+        const key = command.input.Key;
+        this.deletes.push(key);
+        if (
+          failDeleteTo.has(key) ||
+          [...failDeleteTo].some((prefix) => String(key).startsWith(prefix))
+        ) {
+          const err = new Error("Delete failed");
+          err.name = "InternalError";
+          throw err;
+        }
+        delete objects[key];
         return {};
       }
       throw new Error(`unexpected s3 command ${command.constructor.name}`);
@@ -409,6 +459,7 @@ function seedAccess(ddb) {
     { email: "blocked@mydgv.com", status: "BLOCKED", role: "EMPLOYEE" },
     { email: "pending@mydgv.com", status: "PENDING", role: "EMPLOYEE" },
     { email: "super@mydgv.com", status: "ACTIVE", role: "SUPER_ADMIN" },
+    { email: "oldsuper@mydgv.com", status: "BLOCKED", role: "SUPER_ADMIN" },
     { email: "admin@mydgv.com", status: "ACTIVE", role: "ADMIN" },
   ];
   for (const row of rows) {
@@ -462,7 +513,7 @@ function seedMeta(ddb, overrides = {}) {
   return meta;
 }
 
-function readyEnv({ rows, extraProjects, metaOverrides } = {}) {
+function readyEnv({ rows, extraProjects, metaOverrides, s3Options } = {}) {
   const ddb = createMemoryDdb();
   seedProjects(ddb, extraProjects);
   seedAccess(ddb);
@@ -471,9 +522,12 @@ function readyEnv({ rows, extraProjects, metaOverrides } = {}) {
     totalRows: Math.max(0, sheetRows.length - 1),
     ...metaOverrides,
   });
-  const s3 = createMemoryS3({
-    [meta.s3Key]: workbookBuffer({ rows: sheetRows }),
-  });
+  const s3 = createMemoryS3(
+    {
+      [meta.s3Key]: workbookBuffer({ rows: sheetRows }),
+    },
+    s3Options
+  );
   return { ddb, s3, meta };
 }
 
@@ -622,15 +676,39 @@ async function run() {
     );
     assert.ok(!env.s3.objects[buildS3Key(ADMIN.email, BATCH_ID)]);
     assert.strictEqual(createdScheduled.assignmentState, ASSIGNMENT_PENDING);
+    const summaries = summaryEmails();
+    assert.strictEqual(summaries.length, 1);
+    assert.strictEqual(summaries[0].to, "super@mydgv.com");
+    assert.ok(!summaries.some((call) => call.to === "admin@mydgv.com"));
+    assert.ok(!summaries.some((call) => call.to === "oldsuper@mydgv.com"));
+    assert.ok(!summaries.some((call) => call.to === "anita@mydgv.com"));
+    assert.strictEqual(summaries[0].from, "notify@mydgv.com");
+    assert.ok(/Total tasks: 2/.test(summaries[0].text));
+    assert.ok(/Immediate tasks: 1/.test(summaries[0].text));
+    assert.ok(/Scheduled tasks: 1/.test(summaries[0].text));
+    assert.ok(/Processing status: COMPLETED/.test(summaries[0].text));
+    assert.ok(/bulk-tasks\.xlsx/.test(summaries[0].text));
+    assert.ok(!/Homepage banner update/.test(summaries[0].text));
+    assert.ok(!/Leave calendar/.test(summaries[0].text));
+    assert.ok(!summaries[0].html.includes("<script"));
+    assert.ok(summaries[0].html.includes("login.mydgv.com/admin/task-imports/"));
+    assert.strictEqual(meta.summaryEmailStatus, "SENT");
+    const assignedMail = assignmentEmails();
+    assert.ok(assignedMail.some((call) => call.to === "rahul@mydgv.com"));
+    assert.ok(assignedMail.some((call) => call.to === "super@mydgv.com"));
+    assert.ok(!assignedMail.some((call) => /Scheduled task assigned/i.test(call.subject)));
+    assert.ok(!assignedMail.some((call) => call.to === "priya@mydgv.com"));
   });
 
   await test("invalid batch cannot confirm", async () => {
+    emailCalls.length = 0;
     const env = readyEnv();
     seedMeta(env.ddb, { status: "NEEDS_FIX", invalidRows: 1, validRows: 0 });
     const result = await confirm(env);
     assert.strictEqual(result.statusCode, 400);
     assert.strictEqual(result.body.status, "NEEDS_FIX");
     assert.strictEqual(entityTasks(env.ddb).length, 0);
+    assert.strictEqual(summaryEmails().length, 0);
   });
 
   await test("employee is denied", async () => {
@@ -661,6 +739,7 @@ async function run() {
   });
 
   await test("duplicate confirmation reuses existing tasks", async () => {
+    emailCalls.length = 0;
     const env = readyEnv();
     const first = await confirm(env);
     const second = await confirm(env);
@@ -672,6 +751,7 @@ async function run() {
       first.body.tasks.map((row) => row.taskId)
     );
     assert.strictEqual(entityTasks(env.ddb).length, 1);
+    assert.strictEqual(summaryEmails().length, 1);
   });
 
   await test("already COMPLETED confirmation returns existing state", async () => {
@@ -887,7 +967,33 @@ async function run() {
         (item) => item.email === "rahul@mydgv.com" && item.type === "TASK_ASSIGNED"
       )
     );
-    assert.strictEqual(emailCalls.length, 0);
+    assert.ok(
+      notifyItems(env.ddb).some(
+        (item) => item.email === "super@mydgv.com" && item.type === "TASK_ASSIGNED"
+      )
+    );
+    assert.ok(
+      !notifyItems(env.ddb).some((item) => item.email === "admin@mydgv.com")
+    );
+    assert.ok(
+      !notifyItems(env.ddb).some((item) => item.email === "anita@mydgv.com")
+    );
+    assert.ok(
+      !notifyItems(env.ddb).some((item) => item.email === "oldsuper@mydgv.com")
+    );
+    const assignedMail = assignmentEmails();
+    assert.strictEqual(assignedMail.length, 2);
+    assert.ok(assignedMail.some((call) => call.to === "rahul@mydgv.com"));
+    assert.ok(assignedMail.some((call) => call.to === "super@mydgv.com"));
+    assert.ok(assignedMail.every((call) => call.from === "notify@mydgv.com"));
+    assert.ok(!assignedMail.some((call) => call.to === "admin@mydgv.com"));
+    const summaries = summaryEmails();
+    assert.strictEqual(summaries.length, 1);
+    assert.strictEqual(summaries[0].to, "super@mydgv.com");
+    assert.strictEqual(summaries[0].from, "notify@mydgv.com");
+    assert.ok(/Immediate tasks: 1/.test(summaries[0].text));
+    assert.ok(/Scheduled tasks: 0/.test(summaries[0].text));
+    assert.ok(!/Homepage banner update/.test(summaries[0].text));
   });
 
   await test("SCHEDULED task remains unassigned and is not notified before start", async () => {
@@ -901,25 +1007,48 @@ async function run() {
     assert.strictEqual(assignmentItems(env.ddb, taskId).length, 0);
     assert.strictEqual(reminderItems(env.ddb).length, 0);
     assert.strictEqual(notifyItems(env.ddb).length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
     const early = await assignDueScheduledTasks({
       ddb: env.ddb,
       tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
       nowMs: NOW_MS,
     });
     assert.strictEqual(early.processed, 0);
     assert.strictEqual(assignmentItems(env.ddb, taskId).length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
     const late = await assignDueScheduledTasks({
       ddb: env.ddb,
       tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
       nowMs: SCHEDULED_DUE_MS + 5 * 60 * 1000,
     });
     assert.strictEqual(late.processed, 1);
     assert.strictEqual(assignmentItems(env.ddb, taskId).length, 1);
+    assert.strictEqual(assignmentItems(env.ddb, taskId)[0].assignedBy, ADMIN.email);
     const assigned = entityTasks(env.ddb)[0];
     assert.strictEqual(assigned.assignmentState, "ASSIGNED");
     assert.ok(!isPendingScheduledTask(assigned));
-    assert.ok(notifyItems(env.ddb).some((item) => item.type === "TASK_ASSIGNED"));
-    assert.strictEqual(emailCalls.length, 0);
+    assert.ok(
+      notifyItems(env.ddb).some(
+        (item) => item.email === "priya@mydgv.com" && item.type === "TASK_ASSIGNED"
+      )
+    );
+    assert.ok(
+      notifyItems(env.ddb).some(
+        (item) => item.email === "super@mydgv.com" && item.type === "TASK_ASSIGNED"
+      )
+    );
+    const assignedMail = assignmentEmails();
+    assert.strictEqual(assignedMail.length, 2);
+    assert.ok(assignedMail.some((call) => call.to === "priya@mydgv.com"));
+    assert.ok(assignedMail.some((call) => call.to === "super@mydgv.com"));
+    assert.ok(assignedMail.some((call) => /Scheduled task assigned/i.test(call.subject)));
+    assert.ok(assignedMail.every((call) => call.from === "notify@mydgv.com"));
+    const summaries = summaryEmails();
+    assert.strictEqual(summaries.length, 1);
+    assert.ok(/Immediate tasks: 0/.test(summaries[0].text));
+    assert.ok(/Scheduled tasks: 1/.test(summaries[0].text));
   });
 
   await test("import provenance and row idempotency", async () => {
@@ -967,10 +1096,38 @@ async function run() {
     assert.strictEqual(notifyItems(env.ddb).length, beforeNotify);
     assert.strictEqual(reminderItems(env.ddb).length, beforeReminder);
     assert.strictEqual(entityTasks(env.ddb).length, 1);
-    assert.strictEqual(emailCalls.length, 0);
+    assert.strictEqual(assignmentEmails().length, 2);
+    assert.strictEqual(summaryEmails().length, 1);
+  });
+
+  await test("task persist conflict does not mark the row imported", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv();
+    const orig = env.ddb.send.bind(env.ddb);
+    env.ddb.send = async (command) => {
+      if (
+        command instanceof PutCommand &&
+        command.input.Item?.PK === "ENTITY#TASK" &&
+        command.input.ConditionExpression
+      ) {
+        failConditional();
+      }
+      return orig(command);
+    };
+    const result = await confirm(env);
+    assert.notStrictEqual(result.body.status, "COMPLETED");
+    assert.ok(result.body.failureCount >= 1);
+    assert.ok(
+      String(result.body.failures?.[0]?.message || "").includes("could not be saved")
+    );
+    assert.strictEqual(entityTasks(env.ddb).length, 0);
+    const row = rowItems(env.ddb).find((item) => item.rowNumber === 2);
+    assert.notStrictEqual(row?.status, ROW_IMPORTED);
+    assert.strictEqual(summaryEmails().length, 0);
   });
 
   await test("unexpected row creation failure records PARTIAL or FAILED", async () => {
+    emailCalls.length = 0;
     const env = readyEnv({
       rows: [TASK_IMPORT_COLUMNS, VALID_ROW, SCHEDULED_ROW],
     });
@@ -996,6 +1153,8 @@ async function run() {
     const meta = metaItem(env.ddb);
     assert.notStrictEqual(meta.status, "COMPLETED");
     assert.ok(meta.failureCount >= 1);
+    assert.strictEqual(summaryEmails().length, 0);
+    assert.ok(!meta.summaryEmailStatus);
   });
 
   await test("active PROCESSING cannot be concurrently claimed", async () => {
@@ -1120,6 +1279,7 @@ async function run() {
   });
 
   await test("FAILED can safely retry remaining rows", async () => {
+    emailCalls.length = 0;
     const env = readyEnv();
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
@@ -1133,12 +1293,14 @@ async function run() {
     };
     const first = await confirm(env);
     assert.strictEqual(first.body.status, "FAILED");
+    assert.strictEqual(summaryEmails().length, 0);
     env.ddb.send = orig;
     const second = await confirm(env);
     assert.strictEqual(second.statusCode, 200);
     assert.strictEqual(second.body.status, "COMPLETED");
     assert.strictEqual(entityTasks(env.ddb).length, 1);
     assert.strictEqual(metaItem(env.ddb).processingStartedAt, undefined);
+    assert.strictEqual(summaryEmails().length, 1);
   });
 
   await test("existing deterministic task is marked IMPORTED on recovery", async () => {
@@ -1188,7 +1350,7 @@ async function run() {
     assert.strictEqual(assignmentItems(env.ddb, task.taskId).length, 1);
     assert.strictEqual(
       notifyItems(env.ddb).filter((item) => item.type === "TASK_ASSIGNED").length,
-      1
+      2
     );
   });
 
@@ -1238,7 +1400,7 @@ async function run() {
     assert.strictEqual(assigned.assignmentState, ASSIGNMENT_ASSIGNED);
     assert.strictEqual(assigned.assigningStartedAt, undefined);
     const notifyCount = notifyItems(env.ddb).filter((item) => item.type === "TASK_ASSIGNED").length;
-    assert.strictEqual(notifyCount, 1);
+    assert.strictEqual(notifyCount, 2);
     const second = await assignDueScheduledTasks({
       ddb: env.ddb,
       tableName: WORK_TABLE,
@@ -1247,10 +1409,51 @@ async function run() {
     assert.strictEqual(second.processed, 0);
     assert.strictEqual(
       notifyItems(env.ddb).filter((item) => item.type === "TASK_ASSIGNED").length,
-      1
+      2
     );
     assert.strictEqual(assignmentItems(env.ddb, task.taskId).length, 1);
-    assert.strictEqual(emailCalls.length, 0);
+    assert.strictEqual(assignmentEmails().length, 2);
+    assert.strictEqual(summaryEmails().length, 1);
+  });
+
+  await test("scheduled persist conflict remains recoverable", async () => {
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const orig = env.ddb.send.bind(env.ddb);
+    env.ddb.send = async (command) => {
+      if (
+        command instanceof PutCommand &&
+        command.input.Item?.PK &&
+        String(command.input.Item.SK || "").startsWith("ASSIGNMENT#") &&
+        command.input.ConditionExpression
+      ) {
+        failConditional();
+      }
+      return orig(command);
+    };
+    const failed = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(failed.processed, 0);
+    const afterFail = entityTasks(env.ddb)[0];
+    assert.strictEqual(afterFail.assignmentState, ASSIGNMENT_ASSIGNING);
+    assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId).length, 0);
+    env.ddb.send = orig;
+    env.ddb.seed(WORK_TABLE, {
+      ...afterFail,
+      assigningStartedAt: new Date(dueMs - 5 * 60 * 1000).toISOString(),
+    });
+    const recovered = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(recovered.processed, 1);
+    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId).length, 1);
   });
 
   await test("failed scheduled assignment remains recoverable", async () => {
@@ -1289,6 +1492,7 @@ async function run() {
     assert.strictEqual(recovered.processed, 1);
     assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNED);
     assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId).length, 1);
+    assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId)[0].assignedBy, ADMIN.email);
   });
 
   await test("pending scheduled tasks remain excluded from escalation helpers", async () => {
@@ -1399,6 +1603,83 @@ async function run() {
     assert.ok(env.s3.objects[auditKey]);
   });
 
+  await test("COMPLETED confirmation returns 200 when audit promotion throws", async () => {
+    const env = readyEnv();
+    const orig = env.ddb.send.bind(env.ddb);
+    env.ddb.send = async (command) => {
+      if (
+        command instanceof UpdateCommand &&
+        command.input.ExpressionAttributeValues?.[":eligible"] ===
+          AUDIT_ELIGIBILITY.ELIGIBLE
+      ) {
+        throw new Error("simulated audit eligibility update failure");
+      }
+      return orig(command);
+    };
+    const logs = [];
+    const origError = console.error;
+    console.error = (...args) => {
+      logs.push(args.map((item) => String(item)).join(" "));
+    };
+    let result;
+    try {
+      result = await confirm(env);
+    } finally {
+      console.error = origError;
+    }
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    assert.notStrictEqual(result.body.status, "FAILED");
+    assert.strictEqual(metaItem(env.ddb).status, "COMPLETED");
+    assert.strictEqual(entityTasks(env.ddb).length, 1);
+    assert.ok(
+      logs.some((line) => line.includes("TASK_IMPORT_AUDIT_PROMOTE_ERROR"))
+    );
+    assert.ok(
+      logs.some((line) => line.includes("simulated audit eligibility update failure"))
+    );
+    assert.ok(
+      env.ddb.of(WORK_TABLE).some((item) => item.PK === WAIT_PK),
+      "audit failure must remain retryable via WAIT_PK"
+    );
+  });
+
+  await test("temporary audit copy failure keeps COMPLETED and remains retryable", async () => {
+    const env = readyEnv({
+      s3Options: { failCopyTo: "task-imports/audit/" },
+    });
+    const result = await confirm(env);
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    const meta = metaItem(env.ddb);
+    assert.strictEqual(meta.status, "COMPLETED");
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.WAITING_DISTRIBUTION);
+    assert.ok(!env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
+    const tmpKey = buildS3Key(ADMIN.email, BATCH_ID);
+    const holdKey = buildHoldS3Key(ADMIN.email, BATCH_ID);
+    assert.ok(env.s3.objects[meta.s3Key]);
+    assert.ok(meta.s3Key === tmpKey || meta.s3Key === holdKey);
+    assert.ok(env.ddb.of(WORK_TABLE).some((item) => item.PK === WAIT_PK));
+  });
+
+  await test("DeleteObject failure after verified audit copy does not fail confirmation", async () => {
+    const tmpKey = buildS3Key(ADMIN.email, BATCH_ID);
+    const env = readyEnv({
+      s3Options: { failDelete: "task-imports/tmp/" },
+    });
+    const result = await confirm(env);
+    const auditKey = buildAuditS3Key(ADMIN.email, BATCH_ID);
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    assert.strictEqual(result.body.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const meta = metaItem(env.ddb);
+    assert.strictEqual(meta.status, "COMPLETED");
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(env.s3.objects[auditKey], "verified audit object must remain");
+    assert.ok(env.s3.objects[tmpKey], "failed tmp cleanup must not delete the audit copy");
+    assert.ok(!env.s3.deletes.includes(auditKey));
+  });
+
   await test("scheduled assignment failure does not change COMPLETED audit eligibility", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
@@ -1424,6 +1705,244 @@ async function run() {
     assert.strictEqual(metaItem(env.ddb).status, "COMPLETED");
     assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     assert.ok(env.s3.objects[buildAuditS3Key(ADMIN.email, BATCH_ID)]);
+  });
+
+  await test("no active Super Admin does not roll back completed import", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv();
+    const result = await confirm(env, {
+      listAccessRows: async () => [
+        { email: "admin@mydgv.com", status: "ACTIVE", role: "ADMIN" },
+        { email: "anita@mydgv.com", status: "ACTIVE", role: "MANAGER" },
+        { email: "oldsuper@mydgv.com", status: "BLOCKED", role: "SUPER_ADMIN" },
+      ],
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.status, "COMPLETED");
+    assert.strictEqual(entityTasks(env.ddb).length, 1);
+    assert.strictEqual(metaItem(env.ddb).status, "COMPLETED");
+    assert.strictEqual(metaItem(env.ddb).summaryEmailStatus, "SKIPPED");
+    assert.strictEqual(summaryEmails().length, 0);
+  });
+
+  await test("summary email delivery failure does not change COMPLETED status", async () => {
+    emailCalls.length = 0;
+    const origMail = email.sendEmail;
+    email.sendEmail = async (payload) => {
+      emailCalls.push(payload);
+      return { ok: false, error: "MessageRejected" };
+    };
+    try {
+      const env = readyEnv();
+      const result = await confirm(env);
+      assert.strictEqual(result.statusCode, 200);
+      assert.strictEqual(result.body.status, "COMPLETED");
+      assert.strictEqual(metaItem(env.ddb).status, "COMPLETED");
+      assert.strictEqual(metaItem(env.ddb).summaryEmailStatus, "FAILED");
+      assert.strictEqual(entityTasks(env.ddb).length, 1);
+      assert.strictEqual(summaryEmails().length, 1);
+      assert.ok(
+        notifyItems(env.ddb).some(
+          (item) => item.email === "rahul@mydgv.com" && item.type === "TASK_ASSIGNED"
+        )
+      );
+    } finally {
+      email.sendEmail = origMail;
+    }
+  });
+
+  await test("dynamic filename and uploader values are escaped in summary email", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({
+      metaOverrides: {
+        fileName: `<script>alert(1)</script> & tasks.xlsx`,
+        uploadedByName: `Admin "Boss" <evil@x.com>`,
+      },
+    });
+    const result = await confirm(env);
+    assert.strictEqual(result.statusCode, 200);
+    const mail = summaryEmails()[0];
+    assert.ok(mail);
+    assert.ok(!mail.subject.includes("<script>"));
+    assert.ok(!mail.html.includes("<script>"));
+    assert.ok(mail.html.includes("&lt;"));
+    assert.ok(mail.html.includes("&quot;") || mail.html.includes("&amp;"));
+    assert.ok(!mail.html.includes("<evil@x.com>"));
+    assert.ok(/Processing status: COMPLETED/.test(mail.text));
+  });
+
+  await test("assignment email failure does not roll back immediate task", async () => {
+    emailCalls.length = 0;
+    const origMail = email.sendEmail;
+    email.sendEmail = async (payload) => {
+      emailCalls.push(payload);
+      if (/Excel Task Import Completed/i.test(payload.subject)) {
+        return { ok: true, messageId: "test-ses" };
+      }
+      return { ok: false, error: "MessageRejected" };
+    };
+    try {
+      const env = readyEnv();
+      const result = await confirm(env);
+      assert.strictEqual(result.statusCode, 200);
+      assert.strictEqual(result.body.status, "COMPLETED");
+      assert.strictEqual(entityTasks(env.ddb).length, 1);
+      assert.ok(
+        notifyItems(env.ddb).some(
+          (item) => item.email === "rahul@mydgv.com" && item.type === "TASK_ASSIGNED"
+        )
+      );
+      assert.ok(assignmentEmails().length >= 1);
+    } finally {
+      email.sendEmail = origMail;
+    }
+  });
+
+  await test("existing-task reuse does not duplicate assignment notifications", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv();
+    const taskId = importedTaskId(BATCH_ID, 2);
+    env.ddb.seed(WORK_TABLE, {
+      PK: "ENTITY#TASK",
+      SK: `TASK#${taskId}`,
+      taskId,
+      title: "Homepage banner update",
+      assignmentMode: "IMMEDIATE",
+      assignmentState: "ASSIGNED",
+      createdBy: ADMIN.email,
+      createdByName: "admin",
+      importBatchId: BATCH_ID,
+    });
+    seedMeta(env.ddb, {
+      status: "FAILED",
+      failureCount: 1,
+      successCount: 0,
+    });
+    const first = await confirm(env);
+    assert.strictEqual(first.statusCode, 200);
+    const notifyCount = notifyItems(env.ddb).filter((item) => item.type === "TASK_ASSIGNED").length;
+    const mailCount = assignmentEmails().length;
+    assert.ok(notifyCount >= 2);
+    assert.ok(mailCount >= 2);
+    const second = await confirm(env);
+    assert.strictEqual(second.statusCode, 200);
+    assert.strictEqual(entityTasks(env.ddb).length, 1);
+    assert.strictEqual(first.body.tasks[0].taskId, second.body.tasks[0].taskId);
+    assert.strictEqual(
+      notifyItems(env.ddb).filter((item) => item.type === "TASK_ASSIGNED").length,
+      notifyCount
+    );
+    assert.strictEqual(assignmentEmails().length, mailCount);
+  });
+
+  await test("inactive scheduled employee is skipped without reassignment", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    env.ddb.seed(ACCESS_TABLE, {
+      PK: "priya@mydgv.com",
+      SK: "priya@mydgv.com",
+      email: "priya@mydgv.com",
+      status: "BLOCKED",
+      role: "EMPLOYEE",
+    });
+    emailCalls.length = 0;
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const result = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(result.processed, 1);
+    const task = entityTasks(env.ddb)[0];
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_SKIPPED);
+    assert.strictEqual(task.assignmentSkipReason, "EMPLOYEE_INACTIVE");
+    assert.deepStrictEqual(task.assignmentSkippedEmails, ["priya@mydgv.com"]);
+    assert.deepStrictEqual(task.pendingAssignees, ["priya@mydgv.com"]);
+    assert.strictEqual(assignmentItems(env.ddb, task.taskId).length, 0);
+    assert.ok(!task.assignees || task.assignees.length === 0);
+    assert.strictEqual(notifyItems(env.ddb).length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
+    const again = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(again.processed, 0);
+    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_SKIPPED);
+  });
+
+  await test("missing UserAccess record skips scheduled assignment", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    await env.ddb.send(
+      new DeleteCommand({
+        TableName: ACCESS_TABLE,
+        Key: { PK: "priya@mydgv.com", SK: "priya@mydgv.com" },
+      })
+    );
+    emailCalls.length = 0;
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const result = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(result.processed, 1);
+    const task = entityTasks(env.ddb)[0];
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_SKIPPED);
+    assert.strictEqual(task.assignmentSkipReason, "EMPLOYEE_INACTIVE");
+    assert.strictEqual(assignmentItems(env.ddb, task.taskId).length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
+    assert.strictEqual(notifyItems(env.ddb).length, 0);
+  });
+
+  await test("UserAccess lookup error leaves scheduled assignment recoverable", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
+    await confirm(env);
+    const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
+    const orig = env.ddb.send.bind(env.ddb);
+    env.ddb.send = async (command) => {
+      if (command instanceof GetCommand && command.input.TableName === ACCESS_TABLE) {
+        const err = new Error("ProvisionedThroughputExceeded");
+        err.name = "ProvisionedThroughputExceededException";
+        throw err;
+      }
+      return orig(command);
+    };
+    const failed = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(failed.processed, 0);
+    const afterFail = entityTasks(env.ddb)[0];
+    assert.strictEqual(afterFail.assignmentState, ASSIGNMENT_ASSIGNING);
+    assert.notStrictEqual(afterFail.assignmentState, ASSIGNMENT_SKIPPED);
+    assert.ok(!afterFail.assignmentSkipReason);
+    assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId).length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
+    env.ddb.send = orig;
+    env.ddb.seed(WORK_TABLE, {
+      ...afterFail,
+      assigningStartedAt: new Date(dueMs - 5 * 60 * 1000).toISOString(),
+    });
+    const recovered = await assignDueScheduledTasks({
+      ddb: env.ddb,
+      tableName: WORK_TABLE,
+      accessTable: ACCESS_TABLE,
+      nowMs: dueMs,
+    });
+    assert.strictEqual(recovered.processed, 1);
+    assert.strictEqual(entityTasks(env.ddb)[0].assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(assignmentItems(env.ddb, afterFail.taskId).length, 1);
+    assert.ok(assignmentEmails().length >= 1);
   });
 }
 

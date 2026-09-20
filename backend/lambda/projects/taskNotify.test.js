@@ -1,7 +1,10 @@
 const assert = require("assert");
 const fs = require("fs");
 const { dispatchNotification } = require("../common/notify");
-const { activeAdminEmailsFromAccess } = require("../common/roles");
+const {
+  activeAdminEmailsFromAccess,
+  activeCompletionAdminEmailsFromAccess,
+} = require("../common/roles");
 const { needsRedAdminNotify, detectTransitions } = require("./escalation");
 const { zoneNotifyCopy, redAdminNotifyCopy } = require("./zoneNotify");
 const { notifyAdminsTaskEnteredRed } = require("./redAdminNotify");
@@ -17,8 +20,14 @@ function createMemoryDdb() {
     send: async (cmd) => {
       const input = cmd.input;
       if (input.Item) {
+        const key = `${input.Item.PK}|${input.Item.SK}`;
+        if (input.ConditionExpression && items.has(key)) {
+          const err = new Error("The conditional request failed");
+          err.name = "ConditionalCheckFailedException";
+          throw err;
+        }
         puts.push(input.Item);
-        items.set(`${input.Item.PK}|${input.Item.SK}`, input.Item);
+        items.set(key, input.Item);
         return {};
       }
       if (input.Key) {
@@ -105,6 +114,7 @@ async function run() {
     dedupKey: "task-1#doer@mydgv.com#zone_red",
     extra: { taskId: "task-1", zone: redCopy.zone, category: redCopy.category },
     channel: "inapp",
+    inAppSk: "NOTIFY#TASK_RED#task-1#doer@mydgv.com#zone_red#2026-08-25T11:30:00.000Z",
   });
   assert.strictEqual(redCopy.type, "TASK_RED");
   assert.strictEqual(redInApp.status, "SENT");
@@ -113,6 +123,22 @@ async function run() {
   assert.strictEqual(redBell.length, 1);
   assert.strictEqual(redBell[0].type, "TASK_RED");
   assert.strictEqual(reminderItems(redDdb).pop().channel, "inapp");
+
+  const redAgain = await dispatchNotification(redDdb, {
+    email: "doer@mydgv.com",
+    type: redCopy.type,
+    title: redCopy.title,
+    message: redCopy.message,
+    dedupKey: "task-1#doer@mydgv.com#zone_red",
+    extra: { taskId: "task-1", zone: redCopy.zone, category: redCopy.category },
+    channel: "inapp",
+    inAppSk: "NOTIFY#TASK_RED#task-1#doer@mydgv.com#zone_red#2026-08-25T11:30:00.000Z",
+  });
+  assert.strictEqual(redAgain.skipped, true);
+  assert.strictEqual(
+    notifyItems(redDdb).filter((item) => item.type === "TASK_RED").length,
+    1
+  );
 
   const adminEmails = [];
   const adminStatus = await notifyAdminsTaskEnteredRed({
@@ -126,7 +152,19 @@ async function run() {
     },
     assignment: { email: "doer@mydgv.com", status: "IN_PROGRESS" },
     redAt: "2026-08-26T11:30:00.000Z",
-    adminEmails: ["super@mydgv.com", "admin@mydgv.com", "lead@mydgv.com"],
+    listAccessRows: async () => [
+      { PK: "super@mydgv.com", role: "SUPER_ADMIN", status: "ACTIVE" },
+      { email: "admin@mydgv.com", role: "ADMIN", status: "ACTIVE" },
+      { email: "lead@mydgv.com", role: "MANAGER", status: "ACTIVE" },
+      { email: "doer@mydgv.com", role: "EMPLOYEE", status: "ACTIVE" },
+      { email: "blocked-admin@mydgv.com", role: "ADMIN", status: "BLOCKED" },
+    ],
+    adminEmails: [
+      "super@mydgv.com",
+      "admin@mydgv.com",
+      "lead@mydgv.com",
+      "doer@mydgv.com",
+    ],
     getAssigneeProfile: async () => ({ name: "Amit Sharma" }),
     getProjectName: async () => "Client Website",
     sendEmail: async (opts) => {
@@ -138,22 +176,27 @@ async function run() {
   assert.deepStrictEqual(adminEmails, [
     "super@mydgv.com",
     "admin@mydgv.com",
-    "lead@mydgv.com",
   ]);
+  assert.ok(!adminEmails.includes("lead@mydgv.com"));
+  assert.ok(!adminEmails.includes("doer@mydgv.com"));
 
-  const recipients = activeAdminEmailsFromAccess([
+  const accessRows = [
     { PK: "super@mydgv.com", role: "SUPER_ADMIN", status: "ACTIVE" },
     { email: "admin@mydgv.com", role: "ADMIN", status: "ACTIVE" },
     { email: "lead@mydgv.com", role: "MANAGER", status: "ACTIVE" },
     { email: "doer@mydgv.com", role: "EMPLOYEE", status: "ACTIVE" },
     { email: "blocked-admin@mydgv.com", role: "ADMIN", status: "BLOCKED" },
     { email: "pending-mgr@mydgv.com", role: "MANAGER", status: "PENDING" },
-  ]);
-  assert.deepStrictEqual(recipients, [
+  ];
+  const portalAdmins = activeAdminEmailsFromAccess(accessRows);
+  assert.deepStrictEqual(portalAdmins, [
     "super@mydgv.com",
     "admin@mydgv.com",
     "lead@mydgv.com",
   ]);
+  const recipients = activeCompletionAdminEmailsFromAccess(accessRows);
+  assert.deepStrictEqual(recipients, ["super@mydgv.com", "admin@mydgv.com"]);
+  assert.ok(!recipients.includes("lead@mydgv.com"));
   assert.ok(!recipients.includes("doer@mydgv.com"));
 
   const deadline = "2026-08-25T11:30:00.000Z";
@@ -264,22 +307,25 @@ async function run() {
   assert.ok(zoneCall);
   assert.ok(zoneCall.includes('channel: "inapp"'));
   const completedCalls = calls.filter((call) => call.includes('"TASK_COMPLETED"'));
-  assert.ok(completedCalls.length >= 1);
-  for (const call of completedCalls) {
-    assert.ok(
-      call.includes('channel: "inapp"'),
-      "admin-on-behalf TASK_COMPLETED must be in-app only"
-    );
-  }
-  assert.ok(handlerSrc.includes("completedForOther"));
+  assert.strictEqual(
+    completedCalls.length,
+    0,
+    "handler must not send assignee TASK_COMPLETED in-app notifications"
+  );
+  assert.ok(handlerSrc.includes("notifyTaskCompleted"));
+  assert.ok(handlerSrc.includes("completionTransitioned"));
+  assert.ok(!handlerSrc.includes("completedForOther"));
   assert.ok(handlerSrc.includes("notifyAdminsTaskEnteredRed"));
   assert.ok(handlerSrc.includes("claimRedAdminNotify"));
   assert.ok(handlerSrc.includes("finalizeRedAdminNotify"));
   assert.ok(handlerSrc.includes("persistRedAdminRecipient"));
   assert.ok(handlerSrc.includes("existingRecipients"));
-  assert.ok(handlerSrc.includes("listActiveAdminEmails"));
-  assert.ok(handlerSrc.includes("for (const a of pendingAdmin)"));
-  assert.ok(handlerSrc.includes("activeAdminEmailsFromAccess"));
+  assert.ok(handlerSrc.includes("listAccessRows"));
+  assert.ok(handlerSrc.includes("putTaskCopiesSafe"));
+  assert.ok(handlerSrc.includes("assertPersistOk"));
+  assert.ok(handlerSrc.includes("PersistConflictError"));
+  assert.ok(handlerSrc.includes("json(err.statusCode || 409"));
+  assert.ok(handlerSrc.includes("NOTIFY#TASK_RED#"));
 
   console.log("task notify tests passed");
 }

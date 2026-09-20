@@ -699,6 +699,7 @@ function redAdminNotifyStatusOf(task = {}) {
 
 /** Claim TTL: longer than ProjectsFunction timeout (120s), shorter than EventBridge (5m). */
 const RED_ADMIN_CLAIM_STALE_MS = 3 * 60 * 1000;
+const RED_ADMIN_MAX_ATTEMPTS = 5;
 
 function isRedAdminClaimStale(
   claimedAt,
@@ -729,14 +730,16 @@ function canClaimRedAdminStatus(
 
 /**
  * Immediate Red-zone admin email: send on first RED transition, retry FAILED/PENDING
- * (and stale SENDING), never resend after SENT. Independent of recorded zone so
- * email failure cannot block the Red state, and later sweeps cannot duplicate a
- * successful send.
+ * (and stale SENDING) up to MAX_ATTEMPTS, never resend after SENT. Independent of
+ * recorded zone so email failure cannot block the Red state. Successful MessageIds
+ * are never duplicated on later sweeps.
  */
 function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = Date.now()) {
   if (assignment.removed || isComplete(assignment.status) || isCancelled(assignment.status)) {
     return false;
   }
+  const attempts = Number(assignment.redAdminNotifyAttempts || task.redAdminNotifyAttempts || 0);
+  if (attempts >= RED_ADMIN_MAX_ATTEMPTS) return false;
   const assignmentStatus = redAdminNotifyStatusOf(assignment);
   if (assignmentStatus === "SENT") return false;
   if (
@@ -830,6 +833,7 @@ module.exports = {
   canClaimRedAdminStatus,
   isRedAdminClaimStale,
   RED_ADMIN_CLAIM_STALE_MS,
+  RED_ADMIN_MAX_ATTEMPTS,
   employeeMayChangeStatus,
   employeeMayComplete,
   DAY_MS,

@@ -3,7 +3,7 @@ const {
   GetCommand,
   PutCommand,
 } = require("@aws-sdk/lib-dynamodb");
-const { sendEmail } = require("./email");
+const email = require("./email");
 
 const MAX_ATTEMPTS = 5;
 
@@ -114,7 +114,7 @@ async function saveReminder(ddb, item) {
  * Marks SENT only when SES returns a MessageId.
  */
 async function dispatchNotification(ddb, {
-  email,
+  email: toEmail,
   type,
   title,
   subject,
@@ -128,9 +128,11 @@ async function dispatchNotification(ddb, {
   emailEnabled,
   inAppEnabled,
   inAppSk,
+  from,
+  fromName,
 }) {
   const channels = resolveChannels({ channel, emailEnabled, inAppEnabled, type });
-  const normalized = String(email || "").trim().toLowerCase();
+  const normalized = String(toEmail || "").trim().toLowerCase();
   if (!normalized || !type || !dedupKey) {
     return { skipped: true, status: "FAILED", error: "INVALID_NOTIFICATION" };
   }
@@ -179,11 +181,13 @@ async function dispatchNotification(ddb, {
 
   let result = { ok: true, messageId: "" };
   if (channels.emailEnabled) {
-    result = await sendEmail({
+    result = await email.sendEmail({
       to: normalized,
       subject: subject || title,
       text: message,
       html,
+      from,
+      fromName,
     });
     console.log(
       "EMAIL_ATTEMPT",
