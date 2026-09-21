@@ -43,6 +43,25 @@ function clearSessionAndRedirectToLogin() {
   }
 }
 
+async function errorFromResponse(res, fallback = "API request failed") {
+  const text = await res.text();
+  let message = fallback;
+  let code;
+  try {
+    const data = JSON.parse(text);
+    if (typeof data === "string" && data.trim()) message = data;
+    else if (data?.error) message = data.error;
+    else if (data?.message) message = data.message;
+    if (data && typeof data === "object" && data.code) code = data.code;
+  } catch {
+    if (text?.trim()) message = text.trim();
+  }
+  const err = new Error(message);
+  err.status = res.status;
+  if (code) err.code = code;
+  return err;
+}
+
 export const api = async (path, method = "GET", body) => {
   const token = localStorage.getItem("token");
   const headers = { "Content-Type": "application/json" };
@@ -77,28 +96,19 @@ export const api = async (path, method = "GET", body) => {
     throw err;
   }
 
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401) {
     clearSessionAndRedirectToLogin();
     throw new Error("Session expired. Please sign in again.");
   }
 
   if (!res.ok) {
-    const text = await res.text();
-    console.error("API error:", res.status, text);
-    let message = "API request failed";
-    let code;
-    try {
-      const data = JSON.parse(text);
-      if (typeof data === "string" && data.trim()) message = data;
-      else if (data?.error) message = data.error;
-      else if (data?.message) message = data.message;
-      if (data && typeof data === "object" && data.code) code = data.code;
-    } catch {
-      if (text?.trim()) message = text.trim();
-    }
-    const err = new Error(message);
-    err.status = res.status;
-    if (code) err.code = code;
+    const err = await errorFromResponse(
+      res,
+      res.status === 403
+        ? "You do not have permission to access this resource."
+        : "API request failed"
+    );
+    console.error("API error:", res.status, err.message);
     throw err;
   }
 
@@ -275,8 +285,9 @@ export const fetchTaskById = async (taskId) => {
   try {
     return await api(`/tasks/${encodeURIComponent(taskId)}`, "GET");
   } catch (err) {
-    // Older/live API may not expose GET /tasks/{id} yet — fall back to list.
-    const list = await fetchTasks({});
+    if (err?.status === 401 || err?.status === 403) throw err;
+    // Older/live API may not expose GET /tasks/{id} yet — fall back to own tasks.
+    const list = await fetchTasks({ mine: "true" });
     const found = (Array.isArray(list) ? list : []).find(
       (t) => String(t.taskId) === String(taskId)
     );
@@ -546,8 +557,8 @@ export const fetchAnnouncements = async () => {
 
 /**
  * Admin history. Uses apiOptional because GET /admin/announcements is a
- * newer method: API Gateway 403 (missing route) or "Admin required" must
- * not clear the session the way api() does for 401/403.
+ * newer method: missing-route or "Admin required" 403s should not fail
+ * the employee announcement feed.
  */
 export const fetchAnnouncementHistory = async () => {
   try {

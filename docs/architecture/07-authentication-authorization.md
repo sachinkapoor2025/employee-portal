@@ -1,6 +1,6 @@
 # 07 — Authentication and authorization
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Sources:** `backend/template.yaml` Cognito + Api Auth, `frontend/src/services/auth.js`, `frontend/src/App.jsx`, `backend/lambda/common/auth.js`, `backend/lambda/common/roles.js`, `backend/lambda/access/handler.js`
 
 This document lists **controls that exist in source**. It does not claim production compliance or that missing controls are present.
@@ -79,7 +79,9 @@ This is **view-role** based. A user with admin JWT who is in employee view canno
 
 `ConsentGate` is UX, not API authorization.
 
-`api.js` 401/403 → logout. That is **not** equivalent to a backend session store.
+`api.js`: **401** / expired JWT → logout. **403** keeps the session (forbidden ≠ unauthenticated).
+
+SPA path ownership (employee `/work/:taskId` vs admin `/admin/tasks/:taskId`) is in [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md). Employee routes must not call `GET /admin/users`.
 
 ## Backend checks (patterns)
 
@@ -96,8 +98,8 @@ Many list endpoints are **JWT-only** (any authenticated `@mydgv.com` user who pa
 
 ## Admin vs employee boundary
 
-- **Employee:** own attendance, own leave apply, own tasks (`mine=true` by convention), own documents, training list, profile.
-- **Admin group:** user management, task/project create, leave review, announcements/meetings mutate, software CRUD, admin dashboard, unscoped leave `all=true`.
+- **Employee:** own attendance, own leave apply, own tasks on `/work` and `/work/:taskId` (`mine=true` / assignee `GET /tasks/{id}`), own documents, training list, profile. Not the admin user directory.
+- **Admin group:** user management (`GET /admin/users` from `/admin/*` pages), task/project create, leave review, announcements/meetings mutate, software CRUD, admin dashboard, unscoped leave `all=true`.
 - **Red Zone:** employees cannot change assignment status (`employeeMayChangeStatus` false when zone is RED).
 
 ## Known authorization risks (verified in source — not exploit recipes)
@@ -109,6 +111,6 @@ Many list endpoints are **JWT-only** (any authenticated `@mydgv.com` user who pa
 5. **POST `/training/mock-test`** — handler does not read the user (Gateway still requires JWT).
 6. **Admin password reset** returns `temporaryPassword` in the JSON body (`admin/handler.js`).
 7. **API Gateway `DataTraceEnabled: true`** — request/response logging may include tokens/PII (`template.yaml`).
-8. Frontend **403 → session expired** can confuse forbidden vs unauthenticated.
+8. Frontend **403 → session expired** is **fixed in source** (`api.js` logs out on 401 only). Until the frontend is deployed, production SPA may still logout employees who receive `GET /admin/users` 403 from the shared Task Details page.
 
 Items not found: permission matrix table, WAF, API usage plans / rate limits, mTLS, resource-level Cognito groups per API method.

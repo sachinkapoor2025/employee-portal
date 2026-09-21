@@ -1,6 +1,6 @@
 # DGV Employee Portal — Architecture Documentation
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Scope:** Documentation only. This folder does not change application or AWS behavior.
 
 ## Purpose
@@ -44,6 +44,10 @@ The live SPA is intended at `https://login.mydgv.com` (SAM parameter `FrontendDo
 | [08-deployment-and-operations.md](./08-deployment-and-operations.md) | SAM, GitHub Actions, schedules, env, secrets |
 | [09-uml-sequences.md](./09-uml-sequences.md) | Mermaid diagrams of implemented flows |
 | [10-known-gaps.md](./10-known-gaps.md) | Stale docs, placeholders, debt |
+| [11-project-level-access-control-audit.md](./11-project-level-access-control-audit.md) | Phase 1 read-only audit: project membership / ACL (not implemented) |
+| [12-project-acl-requirements.md](./12-project-acl-requirements.md) | Phase 2 requirements, actors, acceptance, open decisions (not implemented) |
+| [13-project-acl-technical-design.md](./13-project-acl-technical-design.md) | Phase 2 data/API/task/migration/UI/impact/stages (not implemented) |
+| [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md) | Employee vs admin SPA paths and which APIs each path may call |
 
 Related but **not** architecture source of truth:
 
@@ -75,8 +79,9 @@ Do not invent AWS resources, APIs, tables, or security controls that are not in 
 3. Open the listed handler and SAM events; confirm Path/Method still match **06**.
 4. Check keys and tables in **05** before adding DynamoDB items.
 5. Check **07** for JWT vs Cognito group vs UserAccess vs resource checks.
-6. If the change is scheduled, email, or file upload, read **08** and the matching sequence in **09**.
-7. Record new gaps in **10** rather than silently updating overview markdown.
+6. Check **14** before adding or sharing employee/admin pages: the SPA path must not call APIs the other role is forbidden to use.
+7. If the change is scheduled, email, or file upload, read **08** and the matching sequence in **09**.
+8. Record new gaps in **10** rather than silently updating overview markdown.
 
 ## Unverified at pack level
 

@@ -1,6 +1,6 @@
 # 04 — Feature → code map
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 
 **Status values**
 
@@ -24,9 +24,9 @@ Authorization column: **Gateway** = Cognito JWT required (SAM default). Extra ch
 | Admin dashboard | `/admin/dashboard` | GET `/admin/dashboard` | ActivityFunction | `activity/handler.js` | ActivityLog, WorkTasks | JWT + `isAdmin` | Implemented |
 | Attendance employee | `/attendance` | GET/POST `/attendance` | AttendanceFunction | `attendance/handler.js` | Attendance | JWT | Implemented |
 | Attendance admin | `/admin/attendance-activity` | GET `/admin/attendance-activity` | AttendanceFunction | same | Attendance | JWT + `isAdmin` | Implemented |
-| My tasks | `/work`, `/work/:taskId` | GET `/tasks`, GET `/tasks/{id}`, PUT `/tasks` | ProjectsFunction | `Work.jsx`, `TaskDetails.jsx`, `escalation.js` | WorkTasks | JWT; detail/update assignee or admin | Implemented |
+| My tasks | `/work`, `/work/:taskId` | GET `/tasks?mine=true`, GET `/tasks/{id}`, PUT `/tasks` (assignee fields). **Not** `GET /admin/users` | ProjectsFunction | `Work.jsx`, `TaskDetails.jsx` (`employeeView`), `escalation.js` | WorkTasks | JWT; detail/update assignee or admin | Implemented |
 | Legacy work list | not used by current Work page (Work uses `/tasks`) | GET `/work` | WorkFunction | `work/handler.js` | WorkTasks | JWT | Implemented API; **legacy** vs decorated `/tasks` |
-| Admin tasks | `/admin/tasks`, `/admin/tasks/:taskId` | `/tasks*` POST/PUT/DELETE, comments, attachments | ProjectsFunction | `ManageTasks.jsx` | WorkTasks + profile S3 attachments | JWT + `isAdmin` for create/archive | Implemented |
+| Admin tasks | `/admin/tasks`, `/admin/tasks/:taskId` | `/tasks*` POST/PUT/DELETE, comments, attachments; detail page may `GET /admin/users` for reassign | ProjectsFunction, AdminFunction | `ManageTasks.jsx`, `TaskDetails.jsx` (admin path) | WorkTasks + profile S3 attachments | JWT + `isAdmin` for create/archive and user directory | Implemented |
 | Projects | `/admin/projects` | GET/POST `/projects`, PATCH/DELETE `/projects/{id}` | ProjectsFunction | `projectManage.js` | WorkTasks | GET: JWT; mutate: `isAdmin` | Implemented (no GET-by-id) |
 | Task import | `/admin/task-imports*` | `/task-imports*` | ProjectsFunction | `taskImport*.js` | WorkTasks + DocumentsBucket | JWT + `isAdmin` | Implemented |
 | Task zones / Red email | task UI | GET decorate + EventBridge | ProjectsFunction | `escalation.js`, `redAdminNotify.js`, `zoneNotify.js` | assignments, NOTIFY, SES | sweep unauthenticated (schedule) | Implemented |
@@ -60,3 +60,5 @@ Authorization column: **Gateway** = Cognito JWT required (SAM default). Extra ch
 | Settings / weekly red-zone digest | none | none in current SAM | — | stale `PROJECT-OVERVIEW.md` | — | — | Not implemented |
 
 Employee search on Manage Users is **client-side filter** (`docs/FEATURE-EMPLOYEE-SEARCH.md`); no extra API.
+
+Employee vs admin SPA path ownership (especially `/work/:taskId` vs `/admin/tasks/:taskId`) is documented in [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md).

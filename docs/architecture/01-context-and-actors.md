@@ -1,6 +1,6 @@
 # 01 — Context and actors
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Sources:** `frontend/src/pages/Login.jsx`, `frontend/src/services/auth.js`, `frontend/src/App.jsx`, `frontend/src/constants/roles.js`, `backend/lambda/common/auth.js`, `backend/lambda/common/roles.js`, `backend/lambda/access/handler.js`, `backend/template.yaml`
 
 ## System purpose
@@ -27,7 +27,7 @@ There is **no** mobile app, desktop Electron app, or public anonymous API in thi
 - Cognito group: `Employee` (unless a group/role mismatch exists).
 - After login, `GET /access` typically returns `access: "USER"`.
 - Frontend view role `localStorage.role = "USER"`.
-- Use employee routes in `App.jsx` (dashboard, attendance, tasks, leave, documents, etc.).
+- Use employee routes in `App.jsx` (dashboard, attendance, tasks, leave, documents, etc.). Employee task detail is **`/work/:taskId`**, not `/admin/tasks/:taskId`. See [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md).
 
 ### Managers, Admins, Super Admins
 

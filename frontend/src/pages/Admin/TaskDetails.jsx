@@ -107,16 +107,27 @@ export default function TaskDetails() {
     category: "",
   });
 
-  const enrichTask = useCallback(async (t, userList) => {
+  const enrichTask = useCallback(async (t, userList, { allowDirectoryLookups = true } = {}) => {
     let assigneeProfile = t.assigneeProfile || null;
     if (t.assignee && !assigneeProfile?.name) {
-      try {
-        const profile = await fetchUserProfile(t.assignee);
-        assigneeProfile = {
-          email: t.assignee,
-          name: profile?.name || "",
-        };
-      } catch {
+      if (allowDirectoryLookups) {
+        try {
+          const profile = await fetchUserProfile(t.assignee);
+          assigneeProfile = {
+            email: t.assignee,
+            name: profile?.name || "",
+          };
+        } catch {
+          const row = userList.find(
+            (x) =>
+              String(x.email).toLowerCase() === String(t.assignee).toLowerCase()
+          );
+          assigneeProfile = {
+            email: t.assignee,
+            name: row?.name || "",
+          };
+        }
+      } else {
         const row = userList.find(
           (x) =>
             String(x.email).toLowerCase() === String(t.assignee).toLowerCase()
@@ -134,13 +145,15 @@ export default function TaskDetails() {
       const fromList = personLabel(userList, t.createdBy);
       if (fromList.name && fromList.name !== t.createdBy.split("@")[0]) {
         createdByName = fromList.name;
-      } else {
+      } else if (allowDirectoryLookups) {
         try {
           const profile = await fetchUserProfile(t.createdBy);
           createdByName = profile?.name || fromList.name;
         } catch {
           createdByName = fromList.name;
         }
+      } else {
+        createdByName = fromList.name;
       }
     }
 
@@ -156,12 +169,20 @@ export default function TaskDetails() {
     setError("");
     setLoading((was) => was || !location.state?.task);
     try {
+      const directoryPromise = employeeView
+        ? Promise.resolve([])
+        : fetchUsers().catch((err) => {
+            if (Number(err?.status) === 403) return [];
+            throw err;
+          });
       const [t, u] = await Promise.all([
         fetchTaskById(taskId),
-        fetchUsers().catch(() => []),
+        directoryPromise,
       ]);
       const userList = Array.isArray(u) ? u : [];
-      const enriched = await enrichTask(t, userList);
+      const enriched = await enrichTask(t, userList, {
+        allowDirectoryLookups: !employeeView,
+      });
       setUsers(userList);
       setTask(enriched);
       setCreatorName(enriched.createdByName || "");
@@ -190,12 +211,17 @@ export default function TaskDetails() {
       setActivity(Array.isArray(a) ? a : []);
     } catch (err) {
       console.error(err);
-      setError(err.message || "Unable to load task details. Please try again.");
-      if (!location.state?.task) setTask(null);
+      const denied = Number(err?.status) === 403;
+      setError(
+        denied
+          ? "You do not have permission to view this task."
+          : err.message || "Unable to load task details. Please try again."
+      );
+      if (denied || !location.state?.task) setTask(null);
     } finally {
       setLoading(false);
     }
-  }, [taskId, location.state?.task, enrichTask]);
+  }, [taskId, location.state?.task, enrichTask, employeeView]);
 
   useEffect(() => {
     load();
@@ -378,9 +404,9 @@ export default function TaskDetails() {
           <Button
             type="button"
             variant="outline"
-            onClick={() => navigate("/admin/tasks")}
+            onClick={() => navigate(employeeView ? "/work" : "/admin/tasks")}
           >
-            Back to Tasks
+            {employeeView ? "Back to My Tasks" : "Back to Tasks"}
           </Button>
         </div>
       </Layout>

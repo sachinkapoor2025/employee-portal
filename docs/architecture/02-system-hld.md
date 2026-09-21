@@ -1,6 +1,6 @@
 # 02 — System high-level design
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Sources:** `backend/template.yaml`, `backend/samconfig.toml`, `.github/workflows/main.yml`, `frontend/src/services/auth.js`, `frontend/src/services/api.js`
 
 ## Summary
@@ -73,7 +73,7 @@ flowchart TB
 5. Lambda reads `event.requestContext.authorizer.claims` via `getUser()`.
 6. Handler reads/writes DynamoDB and/or issues S3 presigned URLs; JSON response with CORS `*`.
 
-Employee dashboard is **not** a dedicated backend resource. `Dashboard.jsx` composes `GET /tasks?mine=true`, `GET /leave`, `GET /announcements`.
+Employee dashboard is **not** a dedicated backend resource. `Dashboard.jsx` composes `GET /tasks?mine=true`, `GET /leave`, `GET /announcements`. Open-task clicks go to **`/work/:taskId`** (employee path), not `/admin/tasks/:taskId`. Path vs API ownership: [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md).
 
 ## Background processing flow
 

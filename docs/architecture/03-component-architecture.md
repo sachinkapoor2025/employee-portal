@@ -1,6 +1,6 @@
 # 03 — Component architecture
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Sources:** `frontend/src/**`, `backend/lambda/**`, `backend/template.yaml`
 
 ## Frontend
@@ -25,6 +25,8 @@
 Admin coming-soon routes: `/admin/reports`, `/admin/admin-management`, `/admin/audit-logs` → `ComingSoon.jsx`.  
 There is **no** `/admin/settings` route.
 
+**Path ownership:** employee features use non-admin routes (`/`, `/work`, `/work/:taskId`, …). Admin features use `/admin/*`. The URL and the APIs that page calls must stay aligned. Shared pages (for example `TaskDetails.jsx` on `/work/:taskId` and `/admin/tasks/:taskId`) must branch admin-only APIs such as `GET /admin/users`. See [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md).
+
 ### Authentication service
 
 `frontend/src/services/auth.js`:
@@ -37,11 +39,12 @@ There is **no** `/admin/settings` route.
 
 `frontend/src/services/api.js`:
 
-- `api()` — JSON + Bearer; expired JWT or **401/403** clears session and redirects to `/login`
-- `apiOptional()` — does not clear session on 403 (used for some fallbacks)
+- `api()` — JSON + Bearer; expired JWT or **401** clears session and redirects to `/login`; **403** keeps the session and throws with `status`
+- `apiOptional()` — does not clear session on 401/403 (used for some fallbacks)
 - Named helpers map 1:1 to backend paths (tasks, leave, documents, meetings, etc.)
+- `fetchUsers()` is `GET /admin/users` — admin directory only; employee `/work/:taskId` must not call it
 
-**LLD note:** copying `api()` into a mobile client would treat resource `403` (e.g. Red Zone) as logout.
+**LLD note:** resource `403` (forbidden) is not the same as unauthenticated. Pages should show access denied and keep the session.
 
 ### Layout and shared UI
 

@@ -1,6 +1,6 @@
 # 06 — API catalog
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 **Sources:** `backend/template.yaml` Events (`Type: Api`), matching Lambda handlers  
 
 **Base path:** `https://{api-id}.execute-api.ap-south-1.amazonaws.com/prod`  
@@ -28,7 +28,7 @@ Errors: 500 `{ error: "Internal server error" }`; 405 method.
 
 | Method | Path | AuthZ | Request | Response |
 |---|---|---|---|---|
-| GET | `/admin/users` | Admin group | — | user list merged with profiles |
+| GET | `/admin/users` | Admin group | — | user list merged with profiles. **Admin SPA paths only.** Employee `/work/:taskId` must not call this (see **14**). |
 | POST | `/admin/users` | Admin group | `{ email, action, role? }` | depends on action |
 
 Verified POST `action` values: `changeRole`, `resetPassword`, `delete`, plus status lifecycle actions used by `updateUserStatus` in `api.js` (handler branches for activate/block — see file). Super Admin required for lifecycle/delete. `resetPassword` returns `{ message, temporaryPassword }`.

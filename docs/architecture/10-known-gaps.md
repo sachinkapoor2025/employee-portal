@@ -1,6 +1,6 @@
 # 10 — Known gaps
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 
 Only items supported by repository inspection. Split into verified gaps, risks that need review, and future considerations (not committed work).
 
@@ -64,6 +64,7 @@ See `07-authentication-authorization.md`:
 - `addTrainingMaterial` without `isAdmin`
 - Temp password in admin API response
 - API Gateway data tracing
+- Until frontend deploy, production SPA may still logout on `GET /admin/users` 403 from the shared Task Details page (fixed in source; see **14**)
 
 ### Deployment / domain uncertainties
 
@@ -74,7 +75,6 @@ See `07-authentication-authorization.md`:
 ### Technical debt
 
 - Dual identity: Cognito groups vs UserAccess roles vs frontend view `role`
-- `api.js` maps all 403 to “session expired”
 - Implicit OAuth for a SPA (tokens in URL hash)
 - `addTraining/app.mjs` hardcodes `region: "ap-south-1"` instead of `AWS_REGION` only
 - Leave approver emails hardcoded in SAM env
@@ -111,4 +111,4 @@ These are **not** implemented. They are implications of the current design for l
 - Pagination before task volume grows
 - Keep one SAM stack vs splitting frontend infra — current CI assumes one stack outputs
 
-When implementing a feature, update **04**, **06**, and this file so they stay aligned with `template.yaml`.
+When implementing a feature, update **04**, **06**, **14** (if employee/admin paths change), and this file so they stay aligned with `template.yaml`.

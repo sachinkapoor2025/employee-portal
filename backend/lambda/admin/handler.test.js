@@ -77,6 +77,20 @@ function useFake(access) {
   return fake;
 }
 
+function employeeGetUsersEvent() {
+  return {
+    httpMethod: "GET",
+    requestContext: {
+      authorizer: {
+        claims: {
+          email: "rahul@mydgv.com",
+          "cognito:groups": ["Employee"],
+        },
+      },
+    },
+  };
+}
+
 (async () => {
   const adminAccess = {
     "admin@mydgv.com": { role: "ADMIN", status: "ACTIVE" },
@@ -85,6 +99,14 @@ function useFake(access) {
     "blocked@mydgv.com": { role: "EMPLOYEE", status: "BLOCKED" },
     "peer@mydgv.com": { role: "EMPLOYEE", status: "ACTIVE" },
   };
+
+  {
+    const fake = useFake(adminAccess);
+    const res = parse(await handler(employeeGetUsersEvent()));
+    assert.strictEqual(res.statusCode, 403, "employee GET /admin/users is denied");
+    assert.strictEqual(res.body.error, "Admin access required");
+    assert.strictEqual(fake.updates.length, 0);
+  }
 
   {
     const fake = useFake(adminAccess);

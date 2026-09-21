@@ -124,6 +124,12 @@ function taskPathMatch(path) {
   return { taskId: decodeURIComponent(m[1]), sub: m[2] || null };
 }
 
+function canViewTask(user, task) {
+  if (!user?.email) return false;
+  if (user.isAdmin) return true;
+  return escalation.taskAssignedTo(task, user.email);
+}
+
 function isOverdue(task) {
   return !!escalation.decorateTask(task, Date.now()).overdue;
 }
@@ -908,7 +914,7 @@ exports.handler = async (event) => {
         if (!task) return json(404, { error: "Task not found" });
         const assignments = await resolveAssignments(task);
         const snap = snapshotTask(task, assignments);
-        if (!user.isAdmin && !escalation.taskAssignedTo(snap, user.email)) {
+        if (!canViewTask(user, snap)) {
           return json(403, { error: "Forbidden" });
         }
 
@@ -937,9 +943,7 @@ exports.handler = async (event) => {
       }
 
       if (!task) return json(404, { error: "Task not found" });
-      const canAccess =
-        user.isAdmin || escalation.taskAssignedTo(task, user.email);
-      if (!canAccess) return json(403, { error: "Forbidden" });
+      if (!canViewTask(user, task)) return json(403, { error: "Forbidden" });
 
       // Comments
       if (sub === "comments" && method === "GET") {
@@ -1792,6 +1796,7 @@ exports.handler = async (event) => {
 
 exports.STATUSES = STATUSES;
 exports.PRIORITIES = PRIORITIES;
+exports.canViewTask = canViewTask;
 exports.collectBlockedNewAssignees = collectBlockedNewAssignees;
 exports.newAssignmentEmails = newAssignmentEmails;
 exports.isBlockedAccessStatus = isBlockedAccessStatus;

@@ -1,6 +1,6 @@
 # 09 — UML and sequence diagrams
 
-**Last verified:** 20 September 2026  
+**Last verified:** 21 September 2026  
 
 Diagrams follow **implemented** code. They omit UI-only placeholders.
 
@@ -115,7 +115,34 @@ sequenceDiagram
 
 ---
 
-## 6. Task status update
+## 6. Employee opens assigned task
+
+Employee and admin keep **separate SPA paths**. The employee path must not call `GET /admin/users`. Full rule: [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md).
+
+```mermaid
+sequenceDiagram
+  participant Dash as Dashboard / notification
+  participant UI as TaskDetails on /work/:taskId
+  participant API as api.js
+  participant P as ProjectsFunction
+  participant Adm as AdminFunction
+  Dash->>UI: navigate /work/{taskId}
+  UI->>API: GET /tasks/{taskId}
+  API->>P: JWT
+  P->>P: canViewTask assignee or Admin
+  alt assigned employee
+    P-->>UI: 200 task + names
+    Note over UI: Do not call GET /admin/users
+  else not assigned
+    P-->>UI: 403 Forbidden
+    Note over API: Keep session; show access denied
+  end
+  Note over Adm: GET /admin/users is admin path only
+```
+
+---
+
+## 7. Task status update
 
 ```mermaid
 sequenceDiagram
@@ -138,7 +165,7 @@ sequenceDiagram
 
 ---
 
-## 7. Task escalation
+## 8. Task escalation
 
 ```mermaid
 sequenceDiagram
@@ -160,7 +187,7 @@ sequenceDiagram
 
 ---
 
-## 8. Leave approval
+## 9. Leave approval
 
 ```mermaid
 sequenceDiagram
@@ -184,7 +211,7 @@ sequenceDiagram
 
 ---
 
-## 9. Document upload (presigned URL)
+## 10. Document upload (presigned URL)
 
 KYC path (`documents/handler.js`). Folder browsers use a similar upload-url then S3 PUT pattern.
 
@@ -204,7 +231,7 @@ sequenceDiagram
 
 ---
 
-## 10. Excel task import
+## 11. Excel task import
 
 ```mermaid
 sequenceDiagram
@@ -227,7 +254,7 @@ sequenceDiagram
 
 ---
 
-## 11. Deployment flow
+## 12. Deployment flow
 
 ```mermaid
 sequenceDiagram
