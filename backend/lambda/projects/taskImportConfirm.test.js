@@ -72,7 +72,7 @@ process.env.TASK_IMPORT_PROCESSING_LEASE_MS = "180000";
 process.env.TASK_SCHEDULED_ASSIGN_LEASE_MS = "180000";
 process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.COMPANY_TIMEZONE = "Asia/Kolkata";
-process.env.TASK_NOTIFY_FROM_EMAIL = "notify@mydgv.com";
+process.env.TASK_NOTIFY_FROM_EMAIL = "noreply@mydgv.com";
 process.env.PORTAL_URL = "https://login.mydgv.com";
 
 const NOW = "2026-09-15T09:40:00.000Z";
@@ -682,7 +682,7 @@ async function run() {
     assert.ok(!summaries.some((call) => call.to === "admin@mydgv.com"));
     assert.ok(!summaries.some((call) => call.to === "oldsuper@mydgv.com"));
     assert.ok(!summaries.some((call) => call.to === "anita@mydgv.com"));
-    assert.strictEqual(summaries[0].from, "notify@mydgv.com");
+    assert.strictEqual(summaries[0].from, "noreply@mydgv.com");
     assert.ok(/Total tasks: 2/.test(summaries[0].text));
     assert.ok(/Immediate tasks: 1/.test(summaries[0].text));
     assert.ok(/Scheduled tasks: 1/.test(summaries[0].text));
@@ -985,12 +985,12 @@ async function run() {
     assert.strictEqual(assignedMail.length, 2);
     assert.ok(assignedMail.some((call) => call.to === "rahul@mydgv.com"));
     assert.ok(assignedMail.some((call) => call.to === "super@mydgv.com"));
-    assert.ok(assignedMail.every((call) => call.from === "notify@mydgv.com"));
+    assert.ok(assignedMail.every((call) => call.from === "noreply@mydgv.com"));
     assert.ok(!assignedMail.some((call) => call.to === "admin@mydgv.com"));
     const summaries = summaryEmails();
     assert.strictEqual(summaries.length, 1);
     assert.strictEqual(summaries[0].to, "super@mydgv.com");
-    assert.strictEqual(summaries[0].from, "notify@mydgv.com");
+    assert.strictEqual(summaries[0].from, "noreply@mydgv.com");
     assert.ok(/Immediate tasks: 1/.test(summaries[0].text));
     assert.ok(/Scheduled tasks: 0/.test(summaries[0].text));
     assert.ok(!/Homepage banner update/.test(summaries[0].text));
@@ -1044,7 +1044,7 @@ async function run() {
     assert.ok(assignedMail.some((call) => call.to === "priya@mydgv.com"));
     assert.ok(assignedMail.some((call) => call.to === "super@mydgv.com"));
     assert.ok(assignedMail.some((call) => /Scheduled task assigned/i.test(call.subject)));
-    assert.ok(assignedMail.every((call) => call.from === "notify@mydgv.com"));
+    assert.ok(assignedMail.every((call) => call.from === "noreply@mydgv.com"));
     const summaries = summaryEmails();
     assert.strictEqual(summaries.length, 1);
     assert.ok(/Immediate tasks: 0/.test(summaries[0].text));

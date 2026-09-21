@@ -1,4 +1,4 @@
-const DEFAULT_FROM = "notify@mydgv.com";
+const DEFAULT_FROM = "noreply@mydgv.com";
 
 function notifyFromAddress() {
   const configured = String(process.env.TASK_NOTIFY_FROM_EMAIL || "").trim();

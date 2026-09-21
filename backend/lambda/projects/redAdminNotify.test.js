@@ -153,7 +153,7 @@ async function run() {
   assert.strictEqual(status, "SENT");
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].to, "admin@mydgv.com");
-  assert.strictEqual(calls[0].from, "notify@mydgv.com");
+  assert.strictEqual(calls[0].from, "noreply@mydgv.com");
   assert.ok(calls[0].subject.includes("Task Entered Red Zone"));
   assert.ok(calls[0].text.includes("Amit Sharma"));
   assert.ok(calls[0].text.includes("amit@mydgv.com"));
@@ -410,7 +410,7 @@ async function run() {
   assert.strictEqual(skipStatus, "SENT");
   assert.deepStrictEqual(skipOne, []);
 
-  process.env.TASK_NOTIFY_FROM_EMAIL = "notify@mydgv.com";
+  process.env.TASK_NOTIFY_FROM_EMAIL = "noreply@mydgv.com";
   const mixedRecipients = [];
   const mixedStatus = await notifyAdminsTaskEnteredRed({
     task: { taskId: "task-7", title: `Alert <script>x</script>` },
@@ -445,7 +445,7 @@ async function run() {
   assert.ok(!mixedRecipients.map((item) => item.to).includes("admin@mydgv.com"));
   assert.ok(!mixedRecipients[0].html.includes("<script>"));
   assert.ok(mixedRecipients[0].html.includes("&lt;script&gt;"));
-  assert.strictEqual(mixedRecipients[0].from, "notify@mydgv.com");
+  assert.strictEqual(mixedRecipients[0].from, "noreply@mydgv.com");
 
   const emptyAccess = await notifyAdminsTaskEnteredRed({
     task: { taskId: "task-8", title: "x" },

@@ -8,10 +8,9 @@ const {
   safeFileName,
 } = require("./taskImportSummary");
 
-process.env.TASK_NOTIFY_FROM_EMAIL = "notify@mydgv.com";
+process.env.TASK_NOTIFY_FROM_EMAIL = "noreply@mydgv.com";
 
-assert.strictEqual(notifyFromAddress(), "notify@mydgv.com");
-assert.notStrictEqual(notifyFromAddress(), "noreply@mydgv.com");
+assert.strictEqual(notifyFromAddress(), "noreply@mydgv.com");
 
 assert.deepStrictEqual(
   countModes([
@@ -65,8 +64,16 @@ const {
 const { notifyFromName, DEFAULT_FROM } = require("./notifyFrom");
 const { isConditionalCheckFailed } = require("./taskNotifyPersist");
 
-assert.strictEqual(DEFAULT_FROM, "notify@mydgv.com");
+assert.strictEqual(DEFAULT_FROM, "noreply@mydgv.com");
 assert.strictEqual(notifyFromName(), "DGV Portal");
+{
+  const previous = process.env.TASK_NOTIFY_FROM_EMAIL;
+  process.env.TASK_NOTIFY_FROM_EMAIL = "  ";
+  assert.strictEqual(notifyFromAddress(), DEFAULT_FROM);
+  process.env.TASK_NOTIFY_FROM_EMAIL = "  custom-sender@mydgv.com  ";
+  assert.strictEqual(notifyFromAddress(), "custom-sender@mydgv.com");
+  process.env.TASK_NOTIFY_FROM_EMAIL = previous;
+}
 assert.strictEqual(typeof isConditionalCheckFailed, "function");
 
 const summarySrc = fs.readFileSync(require.resolve("./taskImportSummary.js"), "utf8");

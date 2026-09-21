@@ -28,7 +28,7 @@ const WORK_TABLE = "work-table";
 const ACCESS_TABLE = "access-table";
 process.env.WORK_TABLE = WORK_TABLE;
 process.env.USER_ACCESS_TABLE = ACCESS_TABLE;
-process.env.TASK_NOTIFY_FROM_EMAIL = "notify@mydgv.com";
+process.env.TASK_NOTIFY_FROM_EMAIL = "noreply@mydgv.com";
 process.env.PORTAL_URL = "https://login.mydgv.com";
 
 function failConditional() {
@@ -316,7 +316,7 @@ async function run() {
   assert.strictEqual(first.status, "SENT");
   const tos = emailCalls.map((call) => call.to).sort();
   assert.deepStrictEqual(tos, ["admin@mydgv.com", "super@mydgv.com"]);
-  assert.ok(emailCalls.every((call) => call.from === "notify@mydgv.com"));
+  assert.ok(emailCalls.every((call) => call.from === "noreply@mydgv.com"));
   assert.ok(emailCalls.every((call) => call.subject.includes("Homepage Update")));
   assert.ok(!emailCalls.some((call) => call.to === "mgr@mydgv.com"));
   assert.ok(!emailCalls.some((call) => call.to === "oldadmin@mydgv.com"));
