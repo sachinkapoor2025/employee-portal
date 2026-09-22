@@ -44,10 +44,11 @@ The live SPA is intended at `https://login.mydgv.com` (SAM parameter `FrontendDo
 | [08-deployment-and-operations.md](./08-deployment-and-operations.md) | SAM, GitHub Actions, schedules, env, secrets |
 | [09-uml-sequences.md](./09-uml-sequences.md) | Mermaid diagrams of implemented flows |
 | [10-known-gaps.md](./10-known-gaps.md) | Stale docs, placeholders, debt |
-| [11-project-level-access-control-audit.md](./11-project-level-access-control-audit.md) | Phase 1 read-only audit: project membership / ACL (not implemented) |
-| [12-project-acl-requirements.md](./12-project-acl-requirements.md) | Phase 2 requirements, actors, acceptance, open decisions (not implemented) |
-| [13-project-acl-technical-design.md](./13-project-acl-technical-design.md) | Phase 2 data/API/task/migration/UI/impact/stages (not implemented) |
+| [11-project-level-access-control-audit.md](./11-project-level-access-control-audit.md) | Phase 1 **historical** audit (pre-ACL). Not live authorization. |
+| [12-project-acl-requirements.md](./12-project-acl-requirements.md) | Phase 2 draft requirements; superseded by Stage 1 policy in 15 |
+| [13-project-acl-technical-design.md](./13-project-acl-technical-design.md) | Phase 2 design draft; not live. Later stages added deletion locks and catalog ConditionChecks |
 | [14-employee-admin-path-separation.md](./14-employee-admin-path-separation.md) | Employee vs admin SPA paths and which APIs each path may call |
+| [15-project-acl-stage1-plan.md](./15-project-acl-stage1-plan.md) | Stage 1 ACL plan; later stages implemented catalog/task/import ACL. Restricted-create flag remains off |
 
 Related but **not** architecture source of truth:
 

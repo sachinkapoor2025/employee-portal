@@ -3,6 +3,8 @@ const { PutCommand } = require("@aws-sdk/lib-dynamodb");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { randomUUID } = require("crypto");
 const taskImportParse = require("./taskImportParse");
+const { normalizeEmail } = require("./escalation");
+const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
 
 const TYPE_TASK_IMPORT = "TASK_IMPORT";
 const META_SK = "META";
@@ -270,10 +272,12 @@ async function handleUploadUrlRequest({
   getSignedUrlFn = getSignedUrl,
   tableName = process.env.WORK_TABLE,
   bucket = process.env.DOCUMENTS_BUCKET,
+  accessTable = process.env.USER_ACCESS_TABLE,
   signedTtl = Number(process.env.TASK_IMPORT_URL_TTL_SECONDS || SIGNED_TTL_SECONDS),
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await requireEligiblePortalAdmin({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
 
   const validation = validateUploadMeta(body);
@@ -289,7 +293,7 @@ async function handleUploadUrlRequest({
 
   const id = batchId || randomUUID();
   const uploadedAt = now || new Date().toISOString();
-  const uploadedBy = String(user.email || "").toLowerCase();
+  const uploadedBy = auth.email;
   const s3Key = buildS3Key(uploadedBy, id);
   const contentType = normalizeContentType(body.contentType);
   const meta = buildImportMeta({

@@ -22,6 +22,7 @@ const { activeAdminEmailsFromAccess, activeCompletionAdminEmailsFromAccess } = r
 const {
   putTaskCopiesSafe,
   putAssignmentSafe,
+  putCreatedTaskRecords,
   assertPersistOk,
   PersistConflictError,
 } = require("./taskNotifyPersist");
@@ -31,6 +32,10 @@ const taskImportConfirm = require("./taskImportConfirm");
 const projectManage = require("./projectManage");
 const taskImportHistory = require("./taskImportHistory");
 const { notifyTaskCompleted } = require("./taskCompleteNotify");
+const taskReadAccess = require("./taskReadAccess");
+const taskMutateAccess = require("./taskMutateAccess");
+const workflowAccess = require("./workflowAccess");
+const { canViewTask } = taskReadAccess;
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -124,12 +129,6 @@ function taskPathMatch(path) {
   return { taskId: decodeURIComponent(m[1]), sub: m[2] || null };
 }
 
-function canViewTask(user, task) {
-  if (!user?.email) return false;
-  if (user.isAdmin) return true;
-  return escalation.taskAssignedTo(task, user.email);
-}
-
 function isOverdue(task) {
   return !!escalation.decorateTask(task, Date.now()).overdue;
 }
@@ -204,10 +203,10 @@ async function loadAssignmentItems(taskId) {
   return listByPrefix(`TASK#${taskId}`, "ASSIGNMENT#");
 }
 
-async function writeAssignment(taskId, assignment, options = {}) {
+function assignmentRecord(taskId, assignment) {
   const email = escalation.normalizeEmail(assignment.email);
   if (!email) return null;
-  const item = {
+  return {
     PK: `TASK#${taskId}`,
     SK: `ASSIGNMENT#${email}`,
     type: "ASSIGNMENT",
@@ -229,12 +228,17 @@ async function writeAssignment(taskId, assignment, options = {}) {
     redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
   };
+}
+
+async function writeAssignment(taskId, assignment, options = {}) {
+  const item = assignmentRecord(taskId, assignment);
+  if (!item) return null;
   void options;
   const result = await putAssignmentSafe(ddb, process.env.WORK_TABLE, item);
   assertPersistOk(result, {
     op: "writeAssignment",
     taskId,
-    email,
+    email: item.email,
     PK: item.PK,
     SK: item.SK,
   });
@@ -278,6 +282,27 @@ function snapshotTask(task, assignments) {
 }
 
 async function persistAssignmentsAndTask(task, assignments, options = {}) {
+  if (options.create) {
+    const assignmentItems = (assignments || [])
+      .map((a) => assignmentRecord(task.taskId, a))
+      .filter(Boolean);
+    const merged = snapshotTask(task, assignments);
+    merged.projectId = String(task.projectId || "").trim();
+    merged.updatedAt = new Date().toISOString();
+    const copies = await putCreatedTaskRecords(
+      ddb,
+      process.env.WORK_TABLE,
+      merged,
+      assignmentItems
+    );
+    assertPersistOk(copies, {
+      op: "persistTaskCreate",
+      taskId: task.taskId,
+      PK: merged.PK,
+      SK: merged.SK,
+    });
+    return merged;
+  }
   for (const a of assignments) {
     await writeAssignment(task.taskId, a, options);
   }
@@ -756,6 +781,40 @@ async function resolveCreatorName(event, user, typed) {
   );
 }
 
+function taskReadAuthArgs(user, task, cache) {
+  return {
+    ddb,
+    tableName: process.env.WORK_TABLE,
+    accessTable: process.env.USER_ACCESS_TABLE,
+    user,
+    task,
+    cache,
+  };
+}
+
+async function denyUnlessTaskReadable(user, task, cache) {
+  const decision = await taskReadAccess.authorizeTaskRead(
+    taskReadAuthArgs(user, task, cache)
+  );
+  return denyAuthz(user, decision);
+}
+
+function denyAuthz(user, decision) {
+  if (!decision?.ok) {
+    return json(500, { error: "Internal server error" });
+  }
+  if (decision.allowed) return null;
+  if (decision.code === taskMutateAccess.CODE_ASSIGNEE_NOT_MEMBER) {
+    return json(400, {
+      error: "Cannot assign a task to a user who is not a project member.",
+    });
+  }
+  if (!escalation.normalizeEmail(user?.email)) {
+    return json(401, { error: "Unauthorized" });
+  }
+  return json(403, { error: "Forbidden" });
+}
+
 async function listByPrefix(pk, prefix) {
   const res = await ddb.send(
     new QueryCommand({
@@ -785,6 +844,7 @@ exports.handler = async (event) => {
   const method = event.httpMethod;
   const body = event.body ? JSON.parse(event.body) : {};
   const taskRoute = taskPathMatch(path);
+  const taskReadCache = taskReadAccess.createCache();
 
   try {
     if (taskImport.isUploadUrlPath(path) && method === "POST") {
@@ -889,15 +949,15 @@ exports.handler = async (event) => {
         if (!objectKey || objectKey.includes("..")) {
           return json(400, { error: "Invalid s3Key" });
         }
-        const email = String(user.email || "").toLowerCase();
-        const ownPrefix = email ? `profiles/${email}/` : "";
-        const taskPrefix = taskId ? `tasks/${taskId}/` : "";
-        const allowed =
-          user.isAdmin ||
-          (task && escalation.taskAssignedTo(task, user.email)) ||
-          (ownPrefix && objectKey.startsWith(ownPrefix)) ||
-          (taskPrefix && objectKey.startsWith(taskPrefix));
-        if (!allowed) return json(403, { error: "Forbidden" });
+        const download = await taskReadAccess.authorizeAttachmentDownload({
+          ...taskReadAuthArgs(user, task, taskReadCache),
+          taskId,
+          objectKey,
+        });
+        if (!download.ok) {
+          return json(500, { error: "Internal server error" });
+        }
+        if (!download.allowed) return json(403, { error: "Forbidden" });
         const bucket = process.env.TASK_ATTACHMENTS_BUCKET;
         if (!bucket) {
           return json(500, { error: "Attachments bucket not configured" });
@@ -914,9 +974,8 @@ exports.handler = async (event) => {
         if (!task) return json(404, { error: "Task not found" });
         const assignments = await resolveAssignments(task);
         const snap = snapshotTask(task, assignments);
-        if (!canViewTask(user, snap)) {
-          return json(403, { error: "Forbidden" });
-        }
+        const denied = await denyUnlessTaskReadable(user, snap, taskReadCache);
+        if (denied) return denied;
 
         const decorated = escalation.decorateTask(snap, Date.now(), user.email);
         const [projectName, assignee, assigneeProfiles, creatorProfile] =
@@ -943,17 +1002,15 @@ exports.handler = async (event) => {
       }
 
       if (!task) return json(404, { error: "Task not found" });
-      if (!canViewTask(user, task)) return json(403, { error: "Forbidden" });
-
-      // Comments
-      if (sub === "comments" && method === "GET") {
-        const items = await listByPrefix(`TASK#${taskId}`, "COMMENT#");
-        return json(200, items);
-      }
 
       if (sub === "comments" && method === "POST") {
         const text = String(body.text || body.comment || "").trim();
         if (!text) return json(400, { error: "Comment text required" });
+        const commentAuth = await taskMutateAccess.authorizeCommentCreate(
+          taskReadAuthArgs(user, task, taskReadCache)
+        );
+        const commentDenied = denyAuthz(user, commentAuth);
+        if (commentDenied) return commentDenied;
         const now = new Date().toISOString();
         const id = randomUUID();
         const item = {
@@ -978,6 +1035,15 @@ exports.handler = async (event) => {
         return json(201, item);
       }
 
+      const denied = await denyUnlessTaskReadable(user, task, taskReadCache);
+      if (denied) return denied;
+
+      // Comments
+      if (sub === "comments" && method === "GET") {
+        const items = await listByPrefix(`TASK#${taskId}`, "COMMENT#");
+        return json(200, items);
+      }
+
       // Activity
       if (sub === "activity" && method === "GET") {
         const items = await listByPrefix(`TASK#${taskId}`, "ACTIVITY#");
@@ -991,9 +1057,6 @@ exports.handler = async (event) => {
       }
 
       if (sub === "attachment-upload-url" && method === "POST") {
-        if (!user.isAdmin && !escalation.taskAssignedTo(task, user.email)) {
-          return json(403, { error: "Forbidden" });
-        }
         const fileName = body.fileName;
         const contentType = body.contentType || "application/octet-stream";
         if (!fileName) return json(400, { error: "fileName required" });
@@ -1020,9 +1083,6 @@ exports.handler = async (event) => {
       }
 
       if (sub === "attachments" && method === "POST") {
-        if (!user.isAdmin && !escalation.taskAssignedTo(task, user.email)) {
-          return json(403, { error: "Forbidden" });
-        }
         const { fileName, contentType, s3Key } = body;
         if (!fileName || !s3Key) {
           return json(400, { error: "fileName and s3Key required" });
@@ -1058,33 +1118,25 @@ exports.handler = async (event) => {
     // ── PROJECTS ──
     if (path.endsWith("/projects") && method === "GET") {
       const listed = await projectManage.handleListProjects({
+        user,
         ddb,
         tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
         status: event.queryStringParameters?.status,
       });
       return json(listed.statusCode, listed.body);
     }
 
     if (path.endsWith("/projects") && method === "POST") {
-      if (!user.isAdmin) return json(403, { error: "Admin required" });
-      const id = randomUUID();
-      const item = {
-        PK: "ENTITY#PROJECT",
-        SK: `PROJECT#${id}`,
-        projectId: id,
-        name: body.name,
-        client: body.client || "",
-        lead: body.lead || user.email,
-        members: body.members || [],
-        status: body.status || "ACTIVE",
-        description: body.description || "",
-        createdAt: new Date().toISOString(),
-        createdBy: user.email,
-      };
-      await ddb.send(
-        new PutCommand({ TableName: process.env.WORK_TABLE, Item: item })
-      );
-      return json(201, item);
+      const created = await projectManage.handleCreateProject({
+        user,
+        body,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+        restrictedCreateEnabled: projectManage.isRestrictedCreateEnabled(),
+      });
+      return json(created.statusCode, created.body);
     }
 
     if (path.endsWith("/projects")) {
@@ -1104,6 +1156,7 @@ exports.handler = async (event) => {
         ddb,
         s3,
         tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
         attachmentsBucket: process.env.TASK_ATTACHMENTS_BUCKET,
         documentsBucket: process.env.DOCUMENTS_BUCKET,
       });
@@ -1116,6 +1169,7 @@ exports.handler = async (event) => {
         body,
         ddb,
         tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
       });
       return json(patched.statusCode, patched.body);
     }
@@ -1125,8 +1179,11 @@ exports.handler = async (event) => {
 
     // ── TASKS LIST / CREATE / UPDATE ──
     if (path.endsWith("/tasks") && method === "GET") {
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
       const {
-        projectId,
+        projectId: projectIdRaw,
         assignee,
         mine,
         zone,
@@ -1134,6 +1191,7 @@ exports.handler = async (event) => {
         search,
         priority,
       } = event.queryStringParameters || {};
+      const projectId = String(projectIdRaw || "").trim();
       let items = [];
 
       if (projectId) {
@@ -1178,6 +1236,15 @@ exports.handler = async (event) => {
       }
       items = resolved;
 
+      const visible = await taskReadAccess.filterVisibleTasks({
+        ...taskReadAuthArgs(user, null, taskReadCache),
+        tasks: items,
+      });
+      if (!visible.ok) {
+        return json(500, { error: "Internal server error" });
+      }
+      items = visible.tasks;
+
       items = items.map((t) =>
         escalation.decorateTask(t, Date.now(), user.email)
       );
@@ -1203,8 +1270,10 @@ exports.handler = async (event) => {
     }
 
     if (path.endsWith("/tasks") && method === "POST") {
-      if (!user.isAdmin) return json(403, { error: "Admin required" });
-      const projectId = body.projectId;
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
+      const projectId = String(body.projectId || "").trim();
       if (!projectId) {
         return json(400, { error: "projectId and title required" });
       }
@@ -1213,6 +1282,17 @@ exports.handler = async (event) => {
       if (!parsed.ok) {
         const first = Object.values(parsed.errors)[0] || "Unable to create task. Please try again.";
         return json(400, { error: first, errors: parsed.errors });
+      }
+
+      const createAuth = await taskMutateAccess.authorizeTaskCreate({
+        ...taskReadAuthArgs(user, { projectId }, taskReadCache),
+        projectId,
+      });
+      if (!createAuth.ok) {
+        return json(500, { error: "Internal server error" });
+      }
+      if (!createAuth.allowed) {
+        return json(403, { error: "Forbidden" });
       }
 
       const id = randomUUID();
@@ -1225,6 +1305,16 @@ exports.handler = async (event) => {
           error: "Cannot assign a task to a deactivated user.",
         });
       }
+      const memberAssign = await taskMutateAccess.assertRestrictedAssigneesAreMembers(
+        {
+          ddb,
+          tableName: process.env.WORK_TABLE,
+          project: createAuth.project,
+          emails,
+        }
+      );
+      const memberDenied = denyAuthz(user, memberAssign);
+      if (memberDenied) return memberDenied;
       const initialStatus = "TODO";
       const createdByName = await resolveCreatorName(
         event,
@@ -1272,7 +1362,7 @@ exports.handler = async (event) => {
         assignments
       );
 
-      await persistAssignmentsAndTask(item, assignments);
+      await persistAssignmentsAndTask(item, assignments, { create: true });
       await appendActivity(
         id,
         "task_created",
@@ -1312,6 +1402,9 @@ exports.handler = async (event) => {
     }
 
     if (path.endsWith("/tasks") && method === "PUT") {
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
       const { taskId, projectId, ...updates } = body;
       if (!taskId) return json(400, { error: "taskId required" });
 
@@ -1320,10 +1413,17 @@ exports.handler = async (event) => {
 
       let assignments = await resolveAssignments(existing);
       const snapExisting = snapshotTask(existing, assignments);
+      const updateAuth = await taskMutateAccess.authorizeTaskUpdate({
+        ...taskReadAuthArgs(user, snapExisting, taskReadCache),
+        task: snapExisting,
+      });
+      const updateDenied = denyAuthz(user, updateAuth);
+      if (updateDenied) return updateDenied;
+      const mayAdminMutate = Boolean(updateAuth.mayAdminMutate);
       const isAssignee = escalation.taskAssignedTo(snapExisting, user.email);
-      if (!user.isAdmin && !isAssignee) return json(403, { error: "Forbidden" });
+      if (!mayAdminMutate && !isAssignee) return json(403, { error: "Forbidden" });
 
-      const allowed = user.isAdmin
+      const allowed = mayAdminMutate
         ? updates
         : {
             status: updates.status,
@@ -1347,6 +1447,7 @@ exports.handler = async (event) => {
       delete allowed.createdByName;
       delete allowed.PK;
       delete allowed.SK;
+      delete allowed.projectId;
       delete allowed.redAdminNotifyStatus;
       delete allowed.redAdminNotifiedAt;
 
@@ -1357,6 +1458,7 @@ exports.handler = async (event) => {
         ...existing,
         ...allowed,
         taskId: existing.taskId,
+        projectId: existing.projectId,
         PK: "ENTITY#TASK",
         SK: `TASK#${taskId}`,
         createdBy: existing.createdBy,
@@ -1435,7 +1537,7 @@ exports.handler = async (event) => {
         const selfAssignment = activeAssignments.find(
           (a) => escalation.normalizeEmail(a.email) === actorEmail
         );
-        const targetEmail = user.isAdmin
+        const targetEmail = mayAdminMutate
           ? requestedEmail ||
             (selfAssignment
               ? actorEmail
@@ -1450,7 +1552,7 @@ exports.handler = async (event) => {
           );
           if (mine) {
             if (
-              !user.isAdmin &&
+              !mayAdminMutate &&
               !escalation.isComplete(mine.status) &&
               !escalation.employeeMayChangeStatus(mine, existing.dueDate, nowMs)
             ) {
@@ -1460,18 +1562,18 @@ exports.handler = async (event) => {
               });
             }
             if (
-              !user.isAdmin &&
+              !mayAdminMutate &&
               escalation.isComplete(mine.status) &&
               allowed.status !== "DONE"
             ) {
               // Employees cannot reopen a completed assignment.
-            } else if (!user.isAdmin && allowed.status === "CANCELLED") {
+            } else if (!mayAdminMutate && allowed.status === "CANCELLED") {
               // Employees cannot cancel tasks.
             } else {
               await applyStatusToAssignment(mine, allowed.status);
             }
           }
-        } else if (user.isAdmin && allowed.status === "CANCELLED") {
+        } else if (mayAdminMutate && allowed.status === "CANCELLED") {
           for (const a of assignments.filter((x) => !x.removed)) {
             await applyStatusToAssignment(a, "CANCELLED");
           }
@@ -1479,7 +1581,7 @@ exports.handler = async (event) => {
       }
 
       if (
-        user.isAdmin &&
+        mayAdminMutate &&
         (updates.assignees !== undefined || updates.assignee !== undefined)
       ) {
         const emails = escalation.normalizeEmailList(
@@ -1495,6 +1597,16 @@ exports.handler = async (event) => {
             error: "Cannot assign a task to a deactivated user.",
           });
         }
+        const memberAssign = await taskMutateAccess.assertRestrictedAssigneesAreMembers(
+          {
+            ddb,
+            tableName: process.env.WORK_TABLE,
+            project: updateAuth.project,
+            emails,
+          }
+        );
+        const memberDenied = denyAuthz(user, memberAssign);
+        if (memberDenied) return memberDenied;
         const current = new Set(
           assignments
             .filter((a) => !a.removed)
@@ -1587,7 +1699,7 @@ exports.handler = async (event) => {
       }
 
       if (
-        user.isAdmin &&
+        mayAdminMutate &&
         allowed.dueDate !== undefined &&
         allowed.dueDate !== existing.dueDate
       ) {
@@ -1711,11 +1823,24 @@ exports.handler = async (event) => {
 
     // Soft-delete / archive via PUT preferred; hard delete for admin
     if (path.endsWith("/tasks") && method === "DELETE") {
-      if (!user.isAdmin) return json(403, { error: "Admin required" });
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
       const taskId = body.taskId || event.queryStringParameters?.taskId;
       if (!taskId) return json(400, { error: "taskId required" });
       const existing = await getTask(taskId);
       if (!existing) return json(404, { error: "Task not found" });
+
+      const deleteAuth = await taskMutateAccess.authorizeTaskDelete({
+        ...taskReadAuthArgs(user, existing, taskReadCache),
+        task: existing,
+      });
+      if (!deleteAuth.ok) {
+        return json(500, { error: "Internal server error" });
+      }
+      if (!deleteAuth.allowed) {
+        return json(403, { error: "Forbidden" });
+      }
 
       const merged = {
         ...existing,
@@ -1736,11 +1861,20 @@ exports.handler = async (event) => {
 
     // ── TIME ENTRIES ──
     if (path.endsWith("/time-entries") && method === "POST") {
-      if (!user.email) return json(401, { error: "Unauthorized" });
-      const { taskId, minutes, note, projectId } = body;
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
+      const { taskId, minutes, note } = body;
       if (!taskId || !minutes) {
         return json(400, { error: "taskId and minutes required" });
       }
+      const task = await getTask(taskId);
+      if (!task) return json(404, { error: "Task not found" });
+      const timeAuth = await taskReadAccess.authorizeTaskRead(
+        taskReadAuthArgs(user, task, taskReadCache)
+      );
+      const timeDenied = denyAuthz(user, timeAuth);
+      if (timeDenied) return timeDenied;
 
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -1748,8 +1882,8 @@ exports.handler = async (event) => {
         PK: `USER#${user.email}`,
         SK: `TIME#${now}#${id}`,
         timeId: id,
-        taskId,
-        projectId: projectId || null,
+        taskId: task.taskId,
+        projectId: task.projectId || null,
         email: user.email,
         minutes: Number(minutes),
         note: note || "",
@@ -1764,10 +1898,19 @@ exports.handler = async (event) => {
     }
 
     if (path.endsWith("/time-entries") && method === "GET") {
-      const email =
-        user.isAdmin && event.queryStringParameters?.email
-          ? event.queryStringParameters.email
-          : user.email;
+      if (!escalation.normalizeEmail(user.email)) {
+        return json(401, { error: "Unauthorized" });
+      }
+      const lookup = await workflowAccess.resolveTimeEntryQueryEmail({
+        user,
+        requestedEmail: event.queryStringParameters?.email,
+        ddb,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      if (!lookup.ok) {
+        return json(lookup.statusCode, lookup.body);
+      }
+      const email = lookup.email;
 
       const res = await ddb.send(
         new QueryCommand({
@@ -1781,7 +1924,23 @@ exports.handler = async (event) => {
         })
       );
 
-      return json(200, res.Items || []);
+      const items = res.Items || [];
+      const visible = [];
+      for (const entry of items) {
+        const entryTaskId = String(entry.taskId || "").trim();
+        if (!entryTaskId) continue;
+        const task = await getTask(entryTaskId);
+        if (!task) continue;
+        const decision = await taskReadAccess.authorizeTaskRead(
+          taskReadAuthArgs(user, task, taskReadCache)
+        );
+        if (!decision.ok) {
+          return json(500, { error: "Internal server error" });
+        }
+        if (decision.allowed) visible.push(entry);
+      }
+
+      return json(200, visible);
     }
 
     return json(405, { error: "Method not allowed" });

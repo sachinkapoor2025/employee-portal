@@ -1,4 +1,5 @@
 const { GetCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
+const { adminNotifyRecipientsForTask } = require("./workflowAccess");
 const { dispatchNotification } = require("../common/notify");
 const { activeSuperAdminEmailsFromAccess } = require("../common/roles");
 const { notifyFromAddress, notifyFromName } = require("./notifyFrom");
@@ -229,6 +230,7 @@ async function sendChannel(ddb, payload) {
 async function notifyExcelAssignment({
   ddb,
   accessTable,
+  tableName = process.env.WORK_TABLE,
   task = {},
   assigneeEmails = [],
   kind = "immediate",
@@ -260,6 +262,13 @@ async function notifyExcelAssignment({
     );
     console.error(err);
   }
+  const adminRecipients = await adminNotifyRecipientsForTask({
+    ddb,
+    tableName,
+    projectId: task.projectId,
+    fallbackEmails: superAdmins,
+  });
+  const adminEmails = adminRecipients.ok ? adminRecipients.emails : [];
 
   const from = notifyFromAddress();
   const fromName = notifyFromName();
@@ -312,7 +321,7 @@ async function notifyExcelAssignment({
       kind,
       taskId,
     });
-    for (const adminEmail of superAdmins) {
+    for (const adminEmail of adminEmails) {
       if (adminEmail === assignee) continue;
       results.push(
         await sendChannel(ddb, {

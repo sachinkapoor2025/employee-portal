@@ -585,6 +585,7 @@ async function run() {
 
   await test("nonexistent batch returns 404", async () => {
     const ddb = createMemoryDdb();
+    seedAccess(ddb);
     const result = await preview({
       ddb,
       s3: createMemoryS3({}),
@@ -607,6 +608,7 @@ async function run() {
 
   await test("missing S3 object returns 404", async () => {
     const ddb = createMemoryDdb();
+    seedAccess(ddb);
     seedMeta(ddb);
     const result = await preview({ ddb, s3: createMemoryS3({}) });
     assert.strictEqual(result.statusCode, 404);
@@ -636,6 +638,7 @@ async function run() {
 
   await test("invalid batchId is rejected", async () => {
     const ddb = createMemoryDdb();
+    seedAccess(ddb);
     const result = await preview({
       ddb,
       s3: createMemoryS3({}),

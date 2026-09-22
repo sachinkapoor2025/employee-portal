@@ -115,6 +115,20 @@ async function deleteManagedObject(s3, bucket, key, batchId) {
   }
 }
 
+async function cleanupManagedSource(s3, bucket, key, batchId) {
+  if (!key) return false;
+  try {
+    return await deleteManagedObject(s3, bucket, key, batchId);
+  } catch (err) {
+    console.error(
+      "TASK_IMPORT_AUDIT_CLEANUP_ERROR",
+      JSON.stringify({ batchId: batchId || "" })
+    );
+    console.error(err);
+    return false;
+  }
+}
+
 function evaluateBatchDistribution(_ddb, _tableName, meta) {
   const status = String(meta?.status || "").toUpperCase();
   const failureCount = Number(meta?.failureCount || 0);
@@ -200,11 +214,6 @@ async function ensureCopied(s3, bucket, fromKey, toKey, batchId) {
   return Boolean(copied);
 }
 
-async function cleanupManagedSource(s3, bucket, key, batchId) {
-  if (!key) return;
-  await deleteManagedObject(s3, bucket, key, batchId);
-}
-
 async function parkForAuditRetry({
   ddb,
   s3,
@@ -255,77 +264,119 @@ async function promoteImportAudit({
   nowMs = Date.now(),
 } = {}) {
   if (!ddb || !tableName || !batchId) return { ok: false, reason: "missing-args" };
-  const meta = await getMeta(ddb, tableName, batchId);
-  if (!meta || meta.type !== TYPE_TASK_IMPORT) {
-    return { ok: false, reason: "missing-meta" };
-  }
-  const nowIso = now || new Date().toISOString();
-  const sourceKey = meta.s3Key || "";
-  const parsed = parseImportS3Key(sourceKey, meta.batchId);
-  const alreadyEligible =
-    String(meta.auditEligibility || "").toUpperCase() === AUDIT_ELIGIBILITY.ELIGIBLE &&
-    isAuditImportKey(sourceKey, meta.batchId);
-  if (alreadyEligible && s3 && bucket && (await objectExists(s3, bucket, sourceKey))) {
-    await clearWaitItem(ddb, tableName, meta.batchId);
-    return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
-  }
+  try {
+    const meta = await getMeta(ddb, tableName, batchId);
+    if (!meta || meta.type !== TYPE_TASK_IMPORT) {
+      return { ok: false, reason: "missing-meta" };
+    }
+    const nowIso = now || new Date().toISOString();
+    const sourceKey = meta.s3Key || "";
+    const parsed = parseImportS3Key(sourceKey, meta.batchId);
+    const alreadyEligible =
+      String(meta.auditEligibility || "").toUpperCase() === AUDIT_ELIGIBILITY.ELIGIBLE &&
+      isAuditImportKey(sourceKey, meta.batchId);
+    if (alreadyEligible && s3 && bucket && (await objectExists(s3, bucket, sourceKey))) {
+      await clearWaitItem(ddb, tableName, meta.batchId);
+      return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
+    }
 
-  const distribution = await evaluateBatchDistribution(ddb, tableName, meta);
+    const distribution = await evaluateBatchDistribution(ddb, tableName, meta);
 
-  if (String(meta.status || "").toUpperCase() !== IMPORT_STATUSES.COMPLETED) {
+    if (String(meta.status || "").toUpperCase() !== IMPORT_STATUSES.COMPLETED) {
+      await saveMeta(ddb, tableName, {
+        ...meta,
+        auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
+        updatedAt: nowIso,
+      });
+      await clearWaitItem(ddb, tableName, meta.batchId);
+      return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE };
+    }
+
+    if (distribution.eligible) {
+      if (!bucket || !s3 || !parsed) {
+        return { ok: false, reason: "missing-source" };
+      }
+      const auditKey = buildAuditS3Key(meta.uploadedBy, meta.batchId);
+      let copied = false;
+      try {
+        copied = await ensureCopied(s3, bucket, sourceKey, auditKey, meta.batchId);
+      } catch {
+        copied = false;
+      }
+      if (!copied) {
+        return parkForAuditRetry({
+          ddb,
+          s3,
+          tableName,
+          bucket,
+          meta,
+          sourceKey,
+          parsed,
+          nowIso,
+          nowMs,
+        });
+      }
+      const claimed = await markEligible(ddb, tableName, meta, auditKey, nowIso);
+      if (
+        claimed ||
+        String(meta.auditEligibility || "").toUpperCase() === AUDIT_ELIGIBILITY.ELIGIBLE
+      ) {
+        await clearWaitItem(ddb, tableName, meta.batchId);
+        if (sourceKey !== auditKey) {
+          await cleanupManagedSource(s3, bucket, sourceKey, meta.batchId);
+        }
+      }
+      return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
+    }
+
     await saveMeta(ddb, tableName, {
       ...meta,
       auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
       updatedAt: nowIso,
     });
     await clearWaitItem(ddb, tableName, meta.batchId);
-    return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE };
-  }
-
-  if (distribution.eligible) {
-    if (!bucket || !s3 || !parsed) {
-      return { ok: false, reason: "missing-source" };
-    }
-    const auditKey = buildAuditS3Key(meta.uploadedBy, meta.batchId);
-    let copied = false;
+    return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE, reason: distribution.reason };
+  } catch (err) {
+    console.error(
+      "TASK_IMPORT_AUDIT_PROMOTE_ERROR",
+      JSON.stringify({ batchId: batchId || "" })
+    );
+    console.error(err);
     try {
-      copied = await ensureCopied(s3, bucket, sourceKey, auditKey, meta.batchId);
-    } catch {
-      copied = false;
-    }
-    if (!copied) {
-      return parkForAuditRetry({
-        ddb,
-        s3,
-        tableName,
-        bucket,
-        meta,
-        sourceKey,
-        parsed,
-        nowIso,
-        nowMs,
-      });
-    }
-    const claimed = await markEligible(ddb, tableName, meta, auditKey, nowIso);
-    if (
-      claimed ||
-      String(meta.auditEligibility || "").toUpperCase() === AUDIT_ELIGIBILITY.ELIGIBLE
-    ) {
-      await clearWaitItem(ddb, tableName, meta.batchId);
-      if (sourceKey !== auditKey) {
-        await cleanupManagedSource(s3, bucket, sourceKey, meta.batchId);
+      const latest = await getMeta(ddb, tableName, batchId);
+      if (!latest || latest.type !== TYPE_TASK_IMPORT) {
+        return { ok: false, reason: "promote-error" };
       }
+      const eligibility = String(latest.auditEligibility || "").toUpperCase();
+      if (
+        eligibility === AUDIT_ELIGIBILITY.ELIGIBLE &&
+        isAuditImportKey(latest.s3Key, latest.batchId)
+      ) {
+        return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
+      }
+      if (String(latest.status || "").toUpperCase() === IMPORT_STATUSES.COMPLETED) {
+        const sourceKey = latest.s3Key || "";
+        return await parkForAuditRetry({
+          ddb,
+          s3,
+          tableName,
+          bucket,
+          meta: latest,
+          sourceKey,
+          parsed: parseImportS3Key(sourceKey, latest.batchId),
+          nowIso: now || new Date().toISOString(),
+          nowMs,
+        });
+      }
+    } catch (parkErr) {
+      console.error(
+        "TASK_IMPORT_AUDIT_PARK_ERROR",
+        JSON.stringify({ batchId: batchId || "" })
+      );
+      console.error(parkErr);
     }
-    return { ok: true, eligibility: AUDIT_ELIGIBILITY.ELIGIBLE };
+    return { ok: false, reason: "promote-error" };
   }
-
-  await saveMeta(ddb, tableName, {
-    ...meta,
-    auditEligibility: AUDIT_ELIGIBILITY.INELIGIBLE,
-    updatedAt: nowIso,
-  });
-  await clearWaitItem(ddb, tableName, meta.batchId);
-  return { ok: true, eligibility: AUDIT_ELIGIBILITY.INELIGIBLE, reason: distribution.reason };
 }
 
 async function cleanupNonEligibleOriginal({

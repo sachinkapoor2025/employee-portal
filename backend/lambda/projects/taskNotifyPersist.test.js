@@ -1,10 +1,12 @@
 const assert = require("assert");
+const { TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   TASK_COMPLETION_EMAIL_ATTRS,
   ASSIGNMENT_RED_NOTIFY_ATTRS,
   overlayStoredAttrs,
   putTaskCopiesSafe,
   putAssignmentSafe,
+  putCreatedTaskRecords,
   assertPersistOk,
   PersistConflictError,
 } = require("./taskNotifyPersist");
@@ -27,6 +29,60 @@ function createMemoryDdb() {
     },
     send: async (cmd) => {
       const input = cmd.input;
+      if (cmd instanceof TransactWriteCommand || input.TransactItems) {
+        const ops = input.TransactItems || [];
+        for (const op of ops) {
+          if (op.ConditionCheck) {
+            const { Key, ConditionExpression, ExpressionAttributeValues = {} } =
+              op.ConditionCheck;
+            const existing = items.get(`${Key.PK}|${Key.SK}`);
+            const expr = String(ConditionExpression || "");
+            if (expr.includes("attribute_exists(PK)") && !existing) {
+              const err = new Error("canceled");
+              err.name = "TransactionCanceledException";
+              throw err;
+            }
+            const deleting = String(existing?.deletionStatus || "").toUpperCase();
+            if (
+              expr.includes("deletionStatus <> :deleting") &&
+              deleting ===
+                String(
+                  ExpressionAttributeValues[":deleting"] || "DELETING"
+                ).toUpperCase()
+            ) {
+              const err = new Error("canceled");
+              err.name = "TransactionCanceledException";
+              throw err;
+            }
+            if (
+              expr.includes("attribute_not_exists(deletionLockId)") &&
+              existing?.deletionLockId
+            ) {
+              const err = new Error("canceled");
+              err.name = "TransactionCanceledException";
+              throw err;
+            }
+          }
+          if (op.Put) {
+            const item = op.Put.Item;
+            const existing = items.get(`${item.PK}|${item.SK}`);
+            const expr = String(op.Put.ConditionExpression || "");
+            if (expr.includes("attribute_not_exists(PK)") && existing) {
+              const err = new Error("canceled");
+              err.name = "TransactionCanceledException";
+              throw err;
+            }
+          }
+        }
+        for (const op of ops) {
+          if (op.Put) {
+            const item = op.Put.Item;
+            items.set(`${item.PK}|${item.SK}`, { ...item });
+            puts.push(item);
+          }
+        }
+        return {};
+      }
       if (input.Key && !input.Item) {
         return { Item: items.get(`${input.Key.PK}|${input.Key.SK}`) };
       }
@@ -302,6 +358,41 @@ async function run() {
   assert.strictEqual(apiResult(twoConflicts, "archive").statusCode, 409);
   assert.strictEqual(apiResult(twoConflicts, "writeAssignment").statusCode, 409);
   assert.strictEqual(apiResult(twoConflicts, "importTask").statusCode, 409);
+
+  const createDdb = createMemoryDdb();
+  createDdb.items.set("ENTITY#PROJECT|PROJECT#p-live", {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#p-live",
+    projectId: "p-live",
+  });
+  const createdTask = await putCreatedTaskRecords(createDdb, tableName, {
+    PK: "ENTITY#TASK",
+    SK: "TASK#new-1",
+    taskId: "new-1",
+    title: "Created",
+    projectId: "p-live",
+  });
+  assert.strictEqual(createdTask.ok, true);
+  assert.ok(createDdb.items.get("ENTITY#TASK|TASK#new-1"));
+  assert.ok(createDdb.items.get("PROJECT#p-live|TASK#new-1"));
+
+  const lockedDdb = createMemoryDdb();
+  lockedDdb.items.set("ENTITY#PROJECT|PROJECT#p-lock", {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#p-lock",
+    projectId: "p-lock",
+    deletionLockId: "lock-1",
+  });
+  const blocked = await putCreatedTaskRecords(lockedDdb, tableName, {
+    PK: "ENTITY#TASK",
+    SK: "TASK#blocked",
+    taskId: "blocked",
+    title: "Blocked",
+    projectId: "p-lock",
+  });
+  assert.strictEqual(blocked.ok, false);
+  assert.ok(!lockedDdb.items.get("ENTITY#TASK|TASK#blocked"));
+  assert.ok(!lockedDdb.items.get("PROJECT#p-lock|TASK#blocked"));
 
   const assignFail = createMemoryDdb();
   assignFail.items.set("TASK#t3|ASSIGNMENT#a@mydgv.com", {

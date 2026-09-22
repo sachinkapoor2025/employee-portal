@@ -105,28 +105,42 @@ Profile GET 400 `{ message: "Email is required" }`; 500 `{ message: "Failed to f
 | Method | Path | AuthZ | Request | Response |
 |---|---|---|---|---|
 | GET | `/projects` | JWT | `?status=ACTIVE\|ARCHIVED\|ALL` | Array of projects; 400 invalid status |
-| POST | `/projects` | Admin group | `{ name, client, lead, members, status, description }` | 201 item |
-| PATCH | `/projects/{projectId}` | Admin group (handler) | body fields | update |
-| DELETE | `/projects/{projectId}` | Admin group | — | archive/delete payload |
-| GET | `/tasks` | JWT | `projectId, assignee, mine, zone, q/search, priority` | `{ tasks, zoneCounts }` — **unscoped if mine omitted** |
-| POST | `/tasks` | Admin group | `projectId`, title, dueDate, assignees, … | 201 decorated |
-| PUT | `/tasks` | assignee or Admin | `{ taskId, status, ... }` employee status-only | 200 decorated; 403 Red Zone |
-| DELETE | `/tasks` | Admin group | `{ taskId }` or query | `{ message, task }` archived |
-| GET | `/tasks/{taskId}` | assignee or Admin | — | detail + `projectName` |
+| POST | `/projects` | ACTIVE UserAccess ADMIN/SUPER_ADMIN | `{ name, client, lead, members, status, description }` | 201 item |
+| PATCH | `/projects/{projectId}` | ACTIVE UserAccess ADMIN/SUPER_ADMIN | body fields | update |
+| DELETE | `/projects/{projectId}` | ACTIVE UserAccess ADMIN or SUPER_ADMIN | `{ confirmName }` (or name/query alias) | 200 empty delete; 409 `PROJECT_HAS_TASKS`; 401/403/404/500 |
+| GET | `/tasks` | JWT + task READ (OPEN catalog: ACTIVE ADMIN/SUPER_ADMIN; assignee preserved) | `projectId, assignee, mine, zone, q/search, priority` | `{ tasks, zoneCounts }` |
+| POST | `/tasks` | OPEN: ACTIVE UserAccess ADMIN/SUPER_ADMIN; RESTRICTED: Project Admin | `projectId`, title, dueDate, assignees, … | 201 decorated |
+| PUT | `/tasks` | assignee or project-scoped admin (not Cognito `isAdmin` alone) | `{ taskId, status, ... }` employee status-only | 200 decorated; 403 Red Zone |
+| DELETE | `/tasks` | OPEN: ACTIVE UserAccess ADMIN/SUPER_ADMIN; RESTRICTED: Project Admin | `{ taskId }` or query | `{ message, task }` archived |
+| GET | `/tasks/{taskId}` | task READ | — | detail + `projectName` |
 | GET/POST | `/tasks/{taskId}/comments` | access as task | POST `{ text }` | list / 201 |
 | GET | `/tasks/{taskId}/activity` | access as task | — | list |
 | GET/POST | `/tasks/{taskId}/attachments` | access as task | register after upload | |
 | POST | `/tasks/{taskId}/attachment-upload-url` | access as task | `{ fileName, contentType, fileSize }` | `{ uploadUrl, s3Key }` |
 | POST | `/tasks/{taskId}/attachment-download-url` | access as task | `{ s3Key or attachmentId }` | `{ downloadUrl }` |
-| GET/POST | `/time-entries` | JWT; GET admin may pass email | POST log body | |
-| POST | `/task-imports/upload-url` | Admin group | `{ fileName, contentType, fileSize }` | presign + batch id |
-| POST | `/task-imports/{batchId}/preview` | Admin group | — | preview |
-| POST | `/task-imports/{batchId}/confirm` | Admin group | — | confirm |
-| GET | `/task-imports` | Admin group | list query | history |
-| GET | `/task-imports/{batchId}` | Admin group | — | detail |
-| GET | `/task-imports/{batchId}/download-url` | Admin group | — | signed GET |
+| GET/POST | `/time-entries` | JWT; GET `?email=` requires ACTIVE UserAccess ADMIN/SUPER_ADMIN; task READ still applies | POST log body | |
+| POST | `/task-imports/upload-url` | ACTIVE UserAccess ADMIN/SUPER_ADMIN + project-scoped create | `{ fileName, contentType, fileSize }` | presign + batch id |
+| POST | `/task-imports/{batchId}/preview` | same as upload | — | preview |
+| POST | `/task-imports/{batchId}/confirm` | same as upload | — | confirm |
+| GET | `/task-imports` | ACTIVE UserAccess ADMIN/SUPER_ADMIN; batches filtered by project-scoped import view. `totalCount` is the exact visible completed-batch count observed while paging (not an unfiltered table count, not a cheap snapshot). | list query | history |
+| GET | `/task-imports/{batchId}` | same; unauthorized/missing 404. Unpreviewed or completed batches with **no ROW records** are owner-only (other portal admins 404). Batches with rows use project ACL. | — | detail |
+| GET | `/task-imports/{batchId}/download-url` | same | — | signed GET |
 
 No GET `/projects/{id}` in SAM.
+
+PATCH `/projects/{projectId}` (Stage 3F/3G): same UserAccess ADMIN/SUPER_ADMIN rule as DELETE for catalog fields (name, client, description, status, archive). Cognito `isAdmin` is not sufficient. Project Admin is not required. OPEN and RESTRICTED. Missing/DELETING catalog remains **404**. Put is conditioned so a PATCH cannot overwrite a `DELETING` tombstone. If the condition fails and the project is still live, respond **409**.
+
+DELETE `/projects/{projectId}` (Stage 3E):
+
+- Caller email is normalized (trim + lowercase). UserAccess is loaded by that email.
+- Authorization requires **ACTIVE** UserAccess role **ADMIN** or **SUPER_ADMIN**.
+- **Cognito `isAdmin` alone is not sufficient.** Project Admin membership is **not** required. Regular membership is **not** required. The same rule applies to **OPEN** and **RESTRICTED** projects.
+- Name confirmation remains required. **DELETING** retries use the same authorization and still require name confirmation.
+- DELETE acquires a catalog `deletionLockId`/`deletionLockAt` (stale locks older than `TASK_IMPORT_PROCESSING_LEASE_MS`, default 180s, may be recovered; fresh locks are not stolen). Task listing happens **after** the lock. If any project-side task copy or matching canonical task exists, the request releases **its** lock and responds **409** `{ code: "PROJECT_HAS_TASKS" }` without marking `DELETING`.
+- Empty projects convert the held lock to `deletionStatus=DELETING`, then dual-record ACL cleanup, then catalog delete. Cleanup failure is **500**, not success.
+- Task create (POST `/tasks`, import confirm, workflow persist) TransactWrites canonical + project copies only if the catalog exists, is not `DELETING`, and has no `deletionLockId`.
+- Missing catalog: **404**; do **not** treat as OPEN or repair ACL. Orphan ACL repair is a separate operational concern.
+- Missing/PENDING/BLOCKED/inactive UserAccess, MANAGER, EMPLOYEE → **403** `{ error: "Admin required" }`. Lookup failure → **500**. Missing email → **401**.
 
 ---
 

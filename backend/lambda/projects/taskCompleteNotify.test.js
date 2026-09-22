@@ -262,6 +262,13 @@ function seedTask(ddb, overrides = {}) {
     completedDate: "2026-09-20T12:00:00.000Z",
     ...overrides,
   };
+  ddb.seed(WORK_TABLE, {
+    PK: "ENTITY#PROJECT",
+    SK: `PROJECT#${task.projectId}`,
+    projectId: task.projectId,
+    name: "DGV Employee Portal",
+    accessMode: "OPEN",
+  });
   ddb.seed(WORK_TABLE, task);
   return task;
 }
@@ -430,7 +437,7 @@ async function run() {
     ddb: staleDdb,
     tableName: WORK_TABLE,
     accessTable: ACCESS_TABLE,
-    task: { taskId: "task-1", status: "DONE", title: "Homepage Update" },
+    task: { taskId: "task-1", status: "DONE", title: "Homepage Update", projectId: "proj-1" },
     nowMs: Date.parse("2026-09-20T12:00:00.000Z"),
   });
   assert.strictEqual(stale.status, "SENT");
@@ -484,13 +491,13 @@ async function run() {
       ddb: raceDdb,
       tableName: WORK_TABLE,
       accessTable: ACCESS_TABLE,
-      task: { taskId: "task-1", status: "DONE", title: "Homepage Update" },
+      task: { taskId: "task-1", status: "DONE", title: "Homepage Update", projectId: "proj-1" },
     }),
     notifyTaskCompleted({
       ddb: raceDdb,
       tableName: WORK_TABLE,
       accessTable: ACCESS_TABLE,
-      task: { taskId: "task-1", status: "DONE", title: "Homepage Update" },
+      task: { taskId: "task-1", status: "DONE", title: "Homepage Update", projectId: "proj-1" },
     }),
   ]);
   const claimedSends = [left, right].filter((row) => !row.skipped);

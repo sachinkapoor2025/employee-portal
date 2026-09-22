@@ -1,13 +1,17 @@
 import {
   archiveProjectConfirmCopy,
+  buildCreateProjectPayload,
   deleteProjectConfirmCopy,
   deleteProjectErrorCopy,
   deleteProjectResultCopy,
   emptyProjectsCopy,
   isDeletedProjectAction,
+  canShowManageAccess,
+  projectAccessModeLabel,
   projectNamesMatch,
   projectStatusLabel,
   restoreProjectConfirmCopy,
+  uniqueMemberEmails,
   unexpectedDeleteActionCopy,
 } from "./workProjectManage";
 
@@ -84,4 +88,47 @@ test("empty state and status labels", () => {
   expect(emptyProjectsCopy("ARCHIVED")).toBe("No archived projects.");
   expect(projectStatusLabel("ACTIVE")).toBe("Active");
   expect(projectStatusLabel("ARCHIVED")).toBe("Archived");
+});
+
+test("create payload omits restricted fields unless enabled", () => {
+  expect(
+    buildCreateProjectPayload({
+      name: " Portal ",
+      client: "DGV",
+      description: "Work",
+      restricted: false,
+      memberEmails: ["rahul@mydgv.com"],
+    })
+  ).toEqual({ name: "Portal", client: "DGV", description: "Work" });
+  expect(
+    uniqueMemberEmails([
+      { email: "  Rahul@MyDGV.com " },
+      "rahul@mydgv.com",
+      "",
+      { email: "ria@mydgv.com" },
+    ])
+  ).toEqual(["rahul@mydgv.com", "ria@mydgv.com"]);
+  expect(
+    buildCreateProjectPayload({
+      name: "Secret",
+      restricted: true,
+      memberEmails: ["  Rahul@MyDGV.com ", "rahul@mydgv.com", ""],
+    })
+  ).toEqual({
+    name: "Secret",
+    client: "",
+    description: "",
+    accessMode: "RESTRICTED",
+    members: [{ email: "rahul@mydgv.com" }],
+  });
+  expect(projectAccessModeLabel("RESTRICTED")).toBe("Restricted");
+  expect(projectAccessModeLabel("OPEN")).toBe("Open");
+  expect(projectAccessModeLabel("")).toBe("Open");
+});
+
+test("Manage Access is only for Restricted Project Admins", () => {
+  expect(canShowManageAccess({ accessMode: "OPEN", canManageAccess: true })).toBe(false);
+  expect(canShowManageAccess({ accessMode: "RESTRICTED" })).toBe(false);
+  expect(canShowManageAccess({ accessMode: "RESTRICTED", canManageAccess: false })).toBe(false);
+  expect(canShowManageAccess({ accessMode: "RESTRICTED", canManageAccess: true })).toBe(true);
 });

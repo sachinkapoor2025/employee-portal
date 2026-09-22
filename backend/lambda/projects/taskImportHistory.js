@@ -11,6 +11,11 @@ const {
 } = require("./taskImport");
 const { canDownloadAuditOriginal, objectExists } = require("./taskImportAudit");
 const { BATCH_ID_RE, queryAll } = require("./taskImportPreview");
+const { normalizeEmail } = require("./escalation");
+const {
+  authorizeImportOperator,
+  authorizeImportBatchView,
+} = require("./workflowAccess");
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 20;
@@ -160,7 +165,16 @@ function isCompletedStatus(status) {
   return String(status || "").toUpperCase() === IMPORT_STATUSES.COMPLETED;
 }
 
-async function countCompletedImportHistory(ddb, tableName) {
+/**
+ * Exact count of completed history items that pass the same view gate as
+ * listed rows, observed while paging DynamoDB. Not a cheap consistent snapshot.
+ */
+async function countVisibleCompletedImportHistory({
+  user,
+  ddb,
+  tableName,
+  accessTable,
+}) {
   let count = 0;
   let lastKey;
   do {
@@ -174,25 +188,70 @@ async function countCompletedImportHistory(ddb, tableName) {
           ":pk": HISTORY_PK,
           ":completed": IMPORT_STATUSES.COMPLETED,
         },
-        Select: "COUNT",
         ExclusiveStartKey: lastKey,
       })
     );
-    count += Number(res.Count || 0);
+    const historyItems = res.Items || [];
+    const hydrated = await mapLimited(historyItems, TASK_LOOKUP_CONCURRENCY, (item) =>
+      hydrateHistoryItem(ddb, tableName, item)
+    );
+    for (let i = 0; i < historyItems.length; i += 1) {
+      const item = hydrated[i];
+      if (!isCompletedStatus(item?.status)) continue;
+      const view = await gateImportBatch({
+        user,
+        ddb,
+        tableName,
+        accessTable,
+        batchId: item.batchId,
+      });
+      if (!view.ok) {
+        return { ok: false, statusCode: 500, body: { error: "Internal server error" } };
+      }
+      if (view.allowed) count += 1;
+    }
     lastKey = res.LastEvaluatedKey;
   } while (lastKey);
-  return count;
+  return { ok: true, count };
+}
+
+async function loadImportRows(ddb, tableName, batchId) {
+  return queryAll(ddb, {
+    TableName: tableName,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+    ExpressionAttributeValues: {
+      ":pk": importPk(batchId),
+      ":sk": "ROW#",
+    },
+  });
+}
+
+async function gateImportBatch({ user, ddb, tableName, accessTable, batchId }) {
+  const [rows, meta] = await Promise.all([
+    loadImportRows(ddb, tableName, batchId),
+    getMeta(ddb, tableName, batchId),
+  ]);
+  return authorizeImportBatchView({
+    user,
+    ddb,
+    tableName,
+    accessTable,
+    rows,
+    meta,
+  });
 }
 
 async function handleListTaskImports({
   user,
   ddb,
   tableName = process.env.WORK_TABLE,
+  accessTable = process.env.USER_ACCESS_TABLE,
   limit,
   nextToken,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await authorizeImportOperator({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
   if (!tableName) {
     return { statusCode: 500, body: { error: "Work table not configured" } };
@@ -237,6 +296,17 @@ async function handleListTaskImports({
     for (let i = 0; i < historyItems.length; i += 1) {
       const item = hydrated[i];
       if (!isCompletedStatus(item?.status)) continue;
+      const view = await gateImportBatch({
+        user,
+        ddb,
+        tableName,
+        accessTable,
+        batchId: item.batchId,
+      });
+      if (!view.ok) {
+        return { statusCode: 500, body: { error: "Internal server error" } };
+      }
+      if (!view.allowed) continue;
       page.push(item);
       lastIncludedHistoryKey = { PK: historyItems[i].PK, SK: historyItems[i].SK };
       if (page.length >= size) {
@@ -257,13 +327,21 @@ async function handleListTaskImports({
     encodedNext = encodeToken(lastEvaluatedKey);
   }
 
-  const totalCount = await countCompletedImportHistory(ddb, tableName);
+  const counted = await countVisibleCompletedImportHistory({
+    user,
+    ddb,
+    tableName,
+    accessTable,
+  });
+  if (!counted.ok) {
+    return { statusCode: counted.statusCode, body: counted.body };
+  }
   return {
     statusCode: 200,
     body: {
       items: page.map(publicSummary),
       nextToken: encodedNext,
-      totalCount,
+      totalCount: counted.count,
     },
   };
 }
@@ -271,7 +349,7 @@ async function handleListTaskImports({
 function emailsFromAssignments(items) {
   return (items || [])
     .filter((item) => item && !item.removed)
-    .map((item) => String(item.email || "").toLowerCase())
+    .map((item) => normalizeEmail(item.email))
     .filter(Boolean);
 }
 
@@ -298,9 +376,13 @@ function assignmentFromTask(task, assignedEmails) {
     scheduled &&
     (state === ASSIGNMENT_PENDING || state === ASSIGNMENT_ASSIGNING)
   ) {
-    const emails = (task.pendingAssignees || [])
-      .map((email) => String(email || "").toLowerCase())
-      .filter(Boolean);
+    const emails = [
+      ...new Set(
+        (task.pendingAssignees || [])
+          .map((email) => normalizeEmail(email))
+          .filter(Boolean)
+      ),
+    ];
     return { state, scheduled: true, emails };
   }
   return {
@@ -368,9 +450,11 @@ async function handleGetTaskImport({
   s3,
   tableName = process.env.WORK_TABLE,
   bucket = process.env.DOCUMENTS_BUCKET,
+  accessTable = process.env.USER_ACCESS_TABLE,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await authorizeImportOperator({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
   const id = String(batchId || "").trim();
   if (!id || !BATCH_ID_RE.test(id)) {
@@ -381,6 +465,19 @@ async function handleGetTaskImport({
   }
   const meta = await getMeta(ddb, tableName, id);
   if (!meta || meta.type !== TYPE_TASK_IMPORT) {
+    return { statusCode: 404, body: { error: "Import batch not found" } };
+  }
+  const view = await gateImportBatch({
+    user,
+    ddb,
+    tableName,
+    accessTable,
+    batchId: id,
+  });
+  if (!view.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  if (!view.allowed) {
     return { statusCode: 404, body: { error: "Import batch not found" } };
   }
 
@@ -424,10 +521,12 @@ async function handleGetTaskImportDownloadUrl({
   getSignedUrlFn = getSignedUrl,
   tableName = process.env.WORK_TABLE,
   bucket = process.env.DOCUMENTS_BUCKET,
+  accessTable = process.env.USER_ACCESS_TABLE,
   signedTtl = DOWNLOAD_TTL_SECONDS,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await authorizeImportOperator({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
   const id = String(batchId || "").trim();
   if (!id || !BATCH_ID_RE.test(id)) {
@@ -441,6 +540,19 @@ async function handleGetTaskImportDownloadUrl({
   }
   const meta = await getMeta(ddb, tableName, id);
   if (!meta || meta.type !== TYPE_TASK_IMPORT) {
+    return { statusCode: 404, body: { error: "Import batch not found" } };
+  }
+  const view = await gateImportBatch({
+    user,
+    ddb,
+    tableName,
+    accessTable,
+    batchId: id,
+  });
+  if (!view.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  if (!view.allowed) {
     return { statusCode: 404, body: { error: "Import batch not found" } };
   }
   const s3Key = meta.s3Key || "";

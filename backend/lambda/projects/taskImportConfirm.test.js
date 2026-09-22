@@ -6,6 +6,7 @@ const {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
@@ -159,6 +160,30 @@ function failConditional() {
   throw err;
 }
 
+function isEntityTaskWrite(command) {
+  if (command instanceof PutCommand && command.input.Item?.PK === "ENTITY#TASK") {
+    return true;
+  }
+  if (command instanceof TransactWriteCommand) {
+    return (command.input.TransactItems || []).some(
+      (op) => op.Put?.Item?.PK === "ENTITY#TASK"
+    );
+  }
+  return false;
+}
+
+function entityTaskWriteHasCondition(command) {
+  if (command instanceof PutCommand) {
+    return Boolean(command.input.ConditionExpression);
+  }
+  if (command instanceof TransactWriteCommand) {
+    return (command.input.TransactItems || []).some(
+      (op) => op.Put?.Item?.PK === "ENTITY#TASK" && op.Put.ConditionExpression
+    );
+  }
+  return false;
+}
+
 function evalCondition(item, expr, names, values) {
   if (!expr) return true;
   const s = String(expr);
@@ -203,6 +228,12 @@ function evalCondition(item, expr, names, values) {
       i += notExists[0].length;
       const attr = resolveAttrName(notExists[1], names);
       return item[attr] === undefined || item[attr] === null;
+    }
+    const exists = rest.match(/^attribute_exists\(([^)]+)\)/i);
+    if (exists) {
+      i += exists[0].length;
+      const attr = resolveAttrName(exists[1], names);
+      return item[attr] !== undefined && item[attr] !== null;
     }
     const attrType = rest.match(
       /^attribute_type\(([^,]+),\s*(:[A-Za-z0-9_]+)\)/i
@@ -360,6 +391,59 @@ function createMemoryDdb() {
         );
         found.Item = next;
         return { Attributes: { ...next } };
+      }
+      if (command instanceof TransactWriteCommand) {
+        const ops = command.input.TransactItems || [];
+        for (const op of ops) {
+          if (op.ConditionCheck) {
+            const { TableName, Key, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues } =
+              op.ConditionCheck;
+            const found = items.find(
+              (row) =>
+                row.TableName === TableName &&
+                row.Item.PK === Key.PK &&
+                row.Item.SK === Key.SK
+            );
+            if (
+              !evalCondition(
+                found ? found.Item : {},
+                ConditionExpression,
+                ExpressionAttributeNames || {},
+                ExpressionAttributeValues || {}
+              )
+            ) {
+              const err = new Error("Transaction cancelled");
+              err.name = "TransactionCanceledException";
+              err.CancellationReasons = [{ Code: "ConditionalCheckFailed" }];
+              throw err;
+            }
+          }
+          if (op.Put && op.Put.ConditionExpression) {
+            const found = items.find(
+              (row) =>
+                row.TableName === op.Put.TableName &&
+                row.Item.PK === op.Put.Item.PK &&
+                row.Item.SK === op.Put.Item.SK
+            );
+            if (
+              !evalCondition(
+                found ? found.Item : {},
+                op.Put.ConditionExpression,
+                op.Put.ExpressionAttributeNames || {},
+                op.Put.ExpressionAttributeValues || {}
+              )
+            ) {
+              const err = new Error("Transaction cancelled");
+              err.name = "TransactionCanceledException";
+              err.CancellationReasons = [{ Code: "ConditionalCheckFailed" }];
+              throw err;
+            }
+          }
+        }
+        for (const op of ops) {
+          if (op.Put) this.seed(op.Put.TableName, op.Put.Item);
+        }
+        return {};
       }
       if (command instanceof ScanCommand) {
         const { TableName } = command.input;
@@ -1105,11 +1189,7 @@ async function run() {
     const env = readyEnv();
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
-      if (
-        command instanceof PutCommand &&
-        command.input.Item?.PK === "ENTITY#TASK" &&
-        command.input.ConditionExpression
-      ) {
+      if (isEntityTaskWrite(command) && entityTaskWriteHasCondition(command)) {
         failConditional();
       }
       return orig(command);
@@ -1134,10 +1214,7 @@ async function run() {
     const orig = env.ddb.send.bind(env.ddb);
     let taskPuts = 0;
     env.ddb.send = async (command) => {
-      if (
-        command instanceof PutCommand &&
-        command.input.Item?.PK === "ENTITY#TASK"
-      ) {
+      if (isEntityTaskWrite(command)) {
         taskPuts += 1;
         if (taskPuts === 2) {
           throw new Error("simulated dynamo failure");
@@ -1255,10 +1332,7 @@ async function run() {
     const orig = env.ddb.send.bind(env.ddb);
     let taskPuts = 0;
     env.ddb.send = async (command) => {
-      if (
-        command instanceof PutCommand &&
-        command.input.Item?.PK === "ENTITY#TASK"
-      ) {
+      if (isEntityTaskWrite(command)) {
         taskPuts += 1;
         if (taskPuts === 2) throw new Error("simulated dynamo failure");
       }
@@ -1283,10 +1357,7 @@ async function run() {
     const env = readyEnv();
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
-      if (
-        command instanceof PutCommand &&
-        command.input.Item?.PK === "ENTITY#TASK"
-      ) {
+      if (isEntityTaskWrite(command)) {
         throw new Error("simulated dynamo failure");
       }
       return orig(command);

@@ -1,5 +1,6 @@
 const { ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { dispatchNotification } = require("../common/notify");
+const { adminNotifyRecipientsForTask } = require("./workflowAccess");
 const { activeCompletionAdminEmailsFromAccess } = require("../common/roles");
 const { isConditionalCheckFailed } = require("./taskNotifyPersist");
 const { notifyFromAddress, notifyFromName } = require("./notifyFrom");
@@ -221,6 +222,16 @@ async function notifyTaskCompleted({
         ? await listAccessRows()
         : await scanAccessRows(ddb, accessTable);
     recipients = activeCompletionAdminEmailsFromAccess(rows);
+    const scoped = await adminNotifyRecipientsForTask({
+      ddb,
+      tableName,
+      projectId: task.projectId,
+      fallbackEmails: recipients,
+    });
+    if (!scoped.ok) {
+      throw new Error("RESTRICTED_RECIPIENT_LOOKUP_FAILED");
+    }
+    recipients = scoped.emails;
   } catch (err) {
     console.error(
       "TASK_COMPLETED_EMAIL_RECIPIENT_ERROR",

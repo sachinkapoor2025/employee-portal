@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import Modal, { confirmDiscardIfDirty } from "./ui/Modal";
+import ProjectMemberPicker from "./ProjectMemberPicker";
+import { fetchUsers } from "../services/api";
 import { formInput, formLabel } from "../theme";
+import { buildCreateProjectPayload } from "../utils/workProjectManage";
 
 const EMPTY_FORM = { name: "", client: "", description: "" };
 
@@ -56,6 +59,11 @@ export default function CreateProjectModal({
 }) {
   const isEdit = mode === "edit";
   const [form, setForm] = useState(EMPTY_FORM);
+  const [restricted, setRestricted] = useState(false);
+  const [memberEmails, setMemberEmails] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -65,13 +73,40 @@ export default function CreateProjectModal({
       client: initial?.client || "",
       description: initial?.description || "",
     });
+    setRestricted(false);
+    setMemberEmails([]);
+    setUsersError("");
     setError("");
   }, [open, initial?.name, initial?.client, initial?.description]);
+
+  useEffect(() => {
+    if (!open || isEdit || !restricted) return undefined;
+    let cancelled = false;
+    setUsersLoading(true);
+    setUsersError("");
+    fetchUsers()
+      .then((list) => {
+        if (cancelled) return;
+        setUsers(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setUsers([]);
+        setUsersError(err?.message || "Unable to load employees.");
+      })
+      .finally(() => {
+        if (!cancelled) setUsersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isEdit, restricted]);
 
   const dirty = Boolean(
     String(form.name || "").trim() !== String(initial?.name || "").trim() ||
       String(form.client || "") !== String(initial?.client || "") ||
-      String(form.description || "") !== String(initial?.description || "")
+      String(form.description || "") !== String(initial?.description || "") ||
+      (!isEdit && (restricted || memberEmails.length > 0))
   );
 
   const close = () => {
@@ -100,13 +135,26 @@ export default function CreateProjectModal({
       setError("A project with this name already exists.");
       return;
     }
+    if (!isEdit && restricted && memberEmails.length < 1) {
+      setError("Select at least one employee for a Restricted Project.");
+      return;
+    }
     setError("");
     try {
-      await onSubmit?.({
-        name,
-        client: String(form.client || ""),
-        description: String(form.description || ""),
-      });
+      const payload = isEdit
+        ? {
+            name,
+            client: String(form.client || ""),
+            description: String(form.description || ""),
+          }
+        : buildCreateProjectPayload({
+            name,
+            client: form.client,
+            description: form.description,
+            restricted,
+            memberEmails,
+          });
+      await onSubmit?.(payload);
     } catch (err) {
       setError(err?.message || "Unable to save project.");
     }
@@ -170,6 +218,41 @@ export default function CreateProjectModal({
         value={form.description}
         onChange={(v) => setForm({ ...form, description: v })}
       />
+      {!isEdit ? (
+        <>
+          <label
+            style={{
+              ...formLabel,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: restricted ? 12 : 0,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={restricted}
+              disabled={saving}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setRestricted(on);
+                if (!on) setMemberEmails([]);
+              }}
+            />
+            Restricted Project
+          </label>
+          {restricted ? (
+            <ProjectMemberPicker
+              users={users}
+              loading={usersLoading}
+              loadError={usersError}
+              selectedEmails={memberEmails}
+              disabled={saving}
+              onChange={setMemberEmails}
+            />
+          ) : null}
+        </>
+      ) : null}
     </Modal>
   );
 }

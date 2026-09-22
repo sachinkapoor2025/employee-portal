@@ -7,7 +7,7 @@ const {
 } = require("@aws-sdk/lib-dynamodb");
 const escalation = require("./escalation");
 const { isConditionalCheckFailed } = require("./redAdminNotify");
-const { putTaskCopiesSafe, putAssignmentSafe, assertPersistOk } = require("./taskNotifyPersist");
+const { putTaskCopiesSafe, putAssignmentSafe, putCreatedTaskRecords, assertPersistOk } = require("./taskNotifyPersist");
 const {
   AUDIT_ELIGIBILITY,
   IMPORT_STATUSES,
@@ -41,6 +41,8 @@ const {
   isActiveAccess,
   notifyExcelAssignment,
 } = require("./taskImportAssignNotify");
+const { authorizeImportRowCreate, filterScheduledAssignees, authorizeImportOperator } = require("./workflowAccess");
+const { createCache } = require("./taskReadAccess");
 
 const ROW_IMPORTED = "IMPORTED";
 const ASSIGNMENT_PENDING = "PENDING";
@@ -177,10 +179,10 @@ async function putTaskCopies(ddb, tableName, task) {
   return result;
 }
 
-async function writeAssignment(ddb, tableName, taskId, assignment) {
+function assignmentRecord(taskId, assignment) {
   const email = escalation.normalizeEmail(assignment.email);
   if (!email) return null;
-  const item = {
+  return {
     PK: `TASK#${taskId}`,
     SK: `ASSIGNMENT#${email}`,
     type: "ASSIGNMENT",
@@ -202,23 +204,53 @@ async function writeAssignment(ddb, tableName, taskId, assignment) {
     redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
   };
+}
+
+async function writeAssignment(ddb, tableName, taskId, assignment) {
+  const item = assignmentRecord(taskId, assignment);
+  if (!item) return null;
   const result = await putAssignmentSafe(ddb, tableName, item);
   assertPersistOk(result, {
     op: "writeAssignment",
     taskId,
-    email,
+    email: item.email,
     PK: item.PK,
     SK: item.SK,
   });
   return result.item;
 }
 
-async function persistAssignmentsAndTask(ddb, tableName, task, assignments) {
-  for (const assignment of assignments) {
+async function persistAssignmentsAndTask(
+  ddb,
+  tableName,
+  task,
+  assignments,
+  options = {}
+) {
+  const merged = snapshotTask(task, assignments);
+  merged.projectId = String(task.projectId || "").trim();
+  merged.updatedAt = new Date().toISOString();
+  if (options.create) {
+    const assignmentItems = (assignments || [])
+      .map((assignment) => assignmentRecord(task.taskId, assignment))
+      .filter(Boolean);
+    const result = await putCreatedTaskRecords(
+      ddb,
+      tableName,
+      merged,
+      assignmentItems
+    );
+    assertPersistOk(result, {
+      op: "persistTaskCreate",
+      taskId: task.taskId,
+      PK: merged.PK,
+      SK: merged.SK,
+    });
+    return merged;
+  }
+  for (const assignment of assignments || []) {
     await writeAssignment(ddb, tableName, task.taskId, assignment);
   }
-  const merged = snapshotTask(task, assignments);
-  merged.updatedAt = new Date().toISOString();
   await putTaskCopies(ddb, tableName, merged);
   return merged;
 }
@@ -259,6 +291,7 @@ async function notifyAssigned(ddb, email, title, taskId, extra = {}) {
       importBatchId: extra.importBatchId,
       createdBy: extra.createdBy,
       createdByName: extra.createdByName,
+      projectId: extra.projectId,
     },
   });
 }
@@ -346,7 +379,9 @@ async function createImmediateTask({
       importBatchId: batchId,
       createdBy: user.email,
       createdByName,
+      projectId: existing?.projectId || row.projectId,
     },
+    tableName,
   };
   if (existing) {
     await notifyExcelAssignment(notifyOpts);
@@ -371,7 +406,9 @@ async function createImmediateTask({
     },
     assignments
   );
-  await persistAssignmentsAndTask(ddb, tableName, item, assignments);
+  await persistAssignmentsAndTask(ddb, tableName, item, assignments, {
+    create: true,
+  });
   await appendActivity(
     ddb,
     tableName,
@@ -444,9 +481,20 @@ async function createScheduledTask({
     status: "TODO",
     assignmentState: ASSIGNMENT_PENDING,
     scheduledAssignAt: row.values.startDateTime,
-    pendingAssignees: emails,
+    pendingAssignees: [
+      ...new Set(
+        emails.map((email) => escalation.normalizeEmail(email)).filter(Boolean)
+      ),
+    ],
   };
-  await putTaskCopies(ddb, tableName, item);
+  item.projectId = String(item.projectId || "").trim();
+  const created = await putCreatedTaskRecords(ddb, tableName, item, []);
+  assertPersistOk(created, {
+    op: "putTaskCopiesCreate",
+    taskId,
+    PK: item.PK,
+    SK: item.SK,
+  });
   await appendActivity(
     ddb,
     tableName,
@@ -630,8 +678,12 @@ async function handleConfirmRequest({
   loadUserAccess,
   listAccessRows,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await authorizeImportOperator({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
+  }
+  if (!escalation.normalizeEmail(user.email)) {
+    return { statusCode: 401, body: { error: "Unauthorized" } };
   }
   const idCheck = validateBatchId(batchId);
   if (idCheck.error) {
@@ -770,6 +822,7 @@ async function handleConfirmRequest({
     nowMs: clockMs,
     listProjects,
     loadUserAccess,
+    user,
   });
 
   if (
@@ -817,11 +870,36 @@ async function handleConfirmRequest({
     user.createdByName || escalation.displayNameFromEmail(user.email);
   const tasks = [];
   const failures = [];
+  const importCache = createCache();
   for (const row of resolved.rows) {
     try {
       const stored = storedByNumber.get(row.rowNumber);
       if (stored?.status === ROW_IMPORTED && stored.taskId) {
         tasks.push(rowResultFromImported(stored));
+        continue;
+      }
+      const emails = (row.resolvedAssignees || []).map((item) => item.email);
+      const rowAuth = await authorizeImportRowCreate({
+        ddb,
+        tableName,
+        accessTable,
+        user,
+        projectId: row.projectId,
+        emails,
+        cache: importCache,
+      });
+      if (!rowAuth.ok) {
+        failures.push({
+          rowNumber: row.rowNumber,
+          message: "Unable to import this row.",
+        });
+        continue;
+      }
+      if (!rowAuth.allowed) {
+        failures.push({
+          rowNumber: row.rowNumber,
+          message: "Cannot import tasks into this project.",
+        });
         continue;
       }
       const mode = String(row.values.assignmentMode || "").toUpperCase();
@@ -995,9 +1073,13 @@ async function activateScheduledTask(
   nowIso,
   { accessTable, listAccessRows, loadUserAccess } = {}
 ) {
-  const emails = (task.pendingAssignees || task.assignees || [])
-    .map((email) => escalation.normalizeEmail(email))
-    .filter(Boolean);
+  const emails = [
+    ...new Set(
+      (task.pendingAssignees || task.assignees || [])
+        .map((email) => escalation.normalizeEmail(email))
+        .filter(Boolean)
+    ),
+  ];
   const active = [];
   const skipped = [];
   for (const email of emails) {
@@ -1007,20 +1089,38 @@ async function activateScheduledTask(
     if (isActiveAccess(access)) active.push(email);
     else skipped.push(email);
   }
+  const membership = await filterScheduledAssignees({
+    ddb,
+    tableName,
+    task,
+    emails: active,
+  });
+  if (!membership.ok) {
+    const err = new Error("SCHEDULED_ACL_LOOKUP_FAILED");
+    err.code = "SCHEDULED_ACL_LOOKUP_FAILED";
+    throw err;
+  }
+  skipped.push(...membership.skipped);
+  const memberActive = membership.active;
   const assignedBy =
     escalation.normalizeEmail(task.createdBy) ||
     escalation.normalizeEmail(task.assignedBy) ||
     "";
-  if (!active.length) {
-    return skipInactiveScheduledAssignment(
+  if (!memberActive.length) {
+    const skippedTask = await skipInactiveScheduledAssignment(
       ddb,
       tableName,
       task,
       skipped.length ? skipped : emails,
       nowIso
     );
+    if (membership.skipped.length) {
+      skippedTask.assignmentSkipReason = "NOT_PROJECT_MEMBER";
+      await putTaskCopies(ddb, tableName, skippedTask);
+    }
+    return skippedTask;
   }
-  const assignments = active.map((email) => ({
+  const assignments = memberActive.map((email) => ({
     email,
     status: "TODO",
     assignedAt: nowIso,
@@ -1059,13 +1159,13 @@ async function activateScheduledTask(
       }
     );
   }
-  if (active.length) {
+  if (memberActive.length) {
     await appendActivity(
       ddb,
       tableName,
       task.taskId,
       "task_assigned",
-      `Assigned to ${active.join(", ")}`,
+      `Assigned to ${memberActive.join(", ")}`,
       assignedBy,
       {
         timestamp: nowIso,
@@ -1074,16 +1174,18 @@ async function activateScheduledTask(
     );
     await notifyExcelAssignment({
       ddb,
+      tableName,
       accessTable,
       listAccessRows,
       kind: "scheduled",
-      assigneeEmails: active,
+      assigneeEmails: memberActive,
       task: {
         taskId: task.taskId,
         title: task.title,
         importBatchId: task.importBatchId,
         createdBy: assignedBy,
         createdByName: task.createdByName,
+        projectId: task.projectId,
       },
     });
   }

@@ -16,17 +16,19 @@ function parseGroups(claims) {
 
 exports.isAllowedEmail = (email) => {
   if (!email || typeof email !== "string") return false;
-  return email.toLowerCase().endsWith(ALLOWED_DOMAIN);
+  return email.trim().toLowerCase().endsWith(ALLOWED_DOMAIN);
 };
 
 exports.getUser = (event) => {
   const claims = event.requestContext?.authorizer?.claims || {};
-  const email = (
+  const email = String(
     claims.email ||
-    claims["cognito:username"] ||
-    claims.username ||
-    ""
-  ).toLowerCase();
+      claims["cognito:username"] ||
+      claims.username ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
   const groups = parseGroups(claims);
 
   return {

@@ -1,4 +1,4 @@
-const { GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { GetCommand, PutCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
 
 const TASK_COMPLETION_EMAIL_ATTRS = [
   "completionEmailStatus",
@@ -186,6 +186,98 @@ function assertPersistOk(result, extra = {}) {
   throw new PersistConflictError(reason, extra);
 }
 
+const CATALOG_PK = "ENTITY#PROJECT";
+const DELETION_DELETING = "DELETING";
+const CATALOG_LIVE_CREATE_CONDITION =
+  "attribute_exists(PK) AND (attribute_not_exists(deletionStatus) OR deletionStatus <> :deleting) AND attribute_not_exists(deletionLockId)";
+
+function isTransactionCanceled(err) {
+  const name = String(err?.name || "");
+  if (name === "TransactionCanceledException") return true;
+  const reasons = err?.CancellationReasons || err?.cancellationReasons || [];
+  return reasons.some(
+    (row) => String(row?.Code || row?.code || "") === "ConditionalCheckFailed"
+  );
+}
+
+function catalogCreateConditionCheck(tableName, projectId) {
+  return {
+    ConditionCheck: {
+      TableName: tableName,
+      Key: { PK: CATALOG_PK, SK: `PROJECT#${projectId}` },
+      ConditionExpression: CATALOG_LIVE_CREATE_CONDITION,
+      ExpressionAttributeValues: { ":deleting": DELETION_DELETING },
+    },
+  };
+}
+
+function assignmentPutItem(taskId, assignment) {
+  if (!assignment || !assignment.PK || !assignment.SK) return null;
+  return assignment;
+}
+
+/**
+ * Create canonical + project-side task copies (and optional assignments)
+ * only when the catalog exists, is not DELETING, and has no deletion lock.
+ */
+async function putCreatedTaskRecords(ddb, tableName, task, assignmentItems = []) {
+  const projectId = String(task?.projectId || "").trim();
+  if (!ddb || !tableName || !task || !task.PK || !task.SK || !projectId) {
+    return { ok: false, reason: "INVALID_ITEM" };
+  }
+  const canonical = { ...task, projectId };
+  const projectCopy = {
+    ...canonical,
+    PK: `PROJECT#${projectId}`,
+    SK: `TASK#${task.taskId}`,
+  };
+  const puts = [
+    catalogCreateConditionCheck(tableName, projectId),
+    {
+      Put: {
+        TableName: tableName,
+        Item: canonical,
+        ConditionExpression: "attribute_not_exists(PK)",
+      },
+    },
+    {
+      Put: {
+        TableName: tableName,
+        Item: projectCopy,
+        ConditionExpression: "attribute_not_exists(PK)",
+      },
+    },
+  ];
+  for (const item of assignmentItems || []) {
+    const row = assignmentPutItem(task.taskId, item);
+    if (!row) continue;
+    puts.push({
+      Put: {
+        TableName: tableName,
+        Item: row,
+        ConditionExpression: "attribute_not_exists(PK)",
+      },
+    });
+  }
+  try {
+    await ddb.send(new TransactWriteCommand({ TransactItems: puts }));
+    return { ok: true, created: true, item: canonical };
+  } catch (err) {
+    if (isConditionalCheckFailed(err) || isTransactionCanceled(err)) {
+      console.error(
+        "TASK_NOTIFY_PERSIST_CONFLICT",
+        JSON.stringify({
+          PK: task.PK,
+          SK: task.SK,
+          reason: "CATALOG_NOT_WRITABLE",
+        })
+      );
+      return { ok: false, reason: "CATALOG_NOT_WRITABLE" };
+    }
+    throw err;
+  }
+}
+
 async function putTaskCopiesSafe(ddb, tableName, task) {
   if (!ddb || !tableName || !task || !task.PK || !task.SK) {
     return { ok: false, reason: "INVALID_ITEM" };
@@ -242,6 +334,7 @@ module.exports = {
   ASSIGNMENT_RED_NOTIFY_ATTRS,
   TASK_NOTIFY_ATTRS,
   overlayStoredAttrs,
+  putCreatedTaskRecords,
   putTaskCopiesSafe,
   putAssignmentSafe,
   assertPersistOk,

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Modal from "../../components/ui/Modal";
 import CreateProjectModal from "../../components/CreateProjectModal";
+import ProjectAccessModal from "../../components/ProjectAccessModal";
 import {
   createProject,
   deleteProject,
@@ -26,6 +27,9 @@ import {
   emptyProjectsCopy,
   isDeletedProjectAction,
   projectNamesMatch,
+  isRestrictedAccessMode,
+  canShowManageAccess,
+  projectAccessModeLabel,
   projectStatusLabel,
   restoreProjectConfirmCopy,
   unexpectedDeleteActionCopy,
@@ -62,6 +66,7 @@ export default function ManageProjects() {
   const [formMode, setFormMode] = useState("create");
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [accessProject, setAccessProject] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -114,6 +119,14 @@ export default function ManageProjects() {
     setFormMode("edit");
     setEditing(project);
     setShowForm(true);
+  };
+
+  const openAccess = (project) => {
+    if (!canShowManageAccess(project)) return;
+    setMessage("");
+    setError("");
+    setActionMenuId("");
+    setAccessProject(project);
   };
 
   const openConfirm = (type, project) => {
@@ -316,6 +329,9 @@ export default function ManageProjects() {
                   <th className="dgv-projects-table__created" style={thStyle}>
                     Created
                   </th>
+                  <th className="dgv-projects-table__access" style={thStyle}>
+                    Access
+                  </th>
                   <th className="dgv-projects-table__status" style={thStyle}>
                     Status
                   </th>
@@ -348,6 +364,17 @@ export default function ManageProjects() {
                       </td>
                       <td className="dgv-projects-table__created" style={tdStyle}>
                         {formatCreated(project.createdAt)}
+                      </td>
+                      <td className="dgv-projects-table__access" style={tdStyle}>
+                        <span
+                          className={`dgv-badge ${
+                            isRestrictedAccessMode(project.accessMode)
+                              ? "dgv-badge--warning"
+                              : "dgv-badge--info"
+                          }`}
+                        >
+                          {projectAccessModeLabel(project.accessMode)}
+                        </span>
                       </td>
                       <td className="dgv-projects-table__status" style={tdStyle}>
                         <span
@@ -389,6 +416,15 @@ export default function ManageProjects() {
                                 >
                                   Edit Project
                                 </button>
+                                {canShowManageAccess(project) ? (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => openAccess(project)}
+                                >
+                                  Manage Access
+                                </button>
+                                ) : null}
                                 {archived ? (
                                   <button
                                     type="button"
@@ -453,6 +489,16 @@ export default function ManageProjects() {
           setEditing(null);
         }}
         onSubmit={handleFormSubmit}
+      />
+
+      <ProjectAccessModal
+        open={Boolean(accessProject)}
+        project={accessProject}
+        onClose={() => {
+          if (busy || saving) return;
+          setAccessProject(null);
+        }}
+        onChanged={load}
       />
 
       <Modal

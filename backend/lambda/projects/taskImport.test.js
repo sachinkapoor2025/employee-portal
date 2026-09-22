@@ -1,7 +1,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
 const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const {
   TYPE_TASK_IMPORT,
@@ -44,9 +44,30 @@ const XLSX_BODY = {
 
 function createMemoryDdb() {
   const items = [];
+  function keyOf(tableName, item) {
+    return `${tableName}|${item.PK}|${item.SK}`;
+  }
   return {
     items,
+    seed(tableName, item) {
+      const idx = items.findIndex(
+        (row) => keyOf(row.TableName, row.Item) === keyOf(tableName, item)
+      );
+      const entry = { TableName: tableName, Item: { ...item } };
+      if (idx >= 0) items[idx] = entry;
+      else items.push(entry);
+    },
     async send(command) {
+      if (command instanceof GetCommand) {
+        const { TableName, Key } = command.input;
+        const found = items.find(
+          (row) =>
+            row.TableName === TableName &&
+            row.Item.PK === Key.PK &&
+            row.Item.SK === Key.SK
+        );
+        return { Item: found ? { ...found.Item } : undefined };
+      }
       assert.ok(command instanceof PutCommand, "expected PutCommand");
       items.push({
         TableName: command.input.TableName,
@@ -63,6 +84,19 @@ async function fakeSign(_client, command) {
 }
 
 async function requestUpload({ user, body, ddb, extras = {} }) {
+  const { skipAccess, access, ...rest } = extras;
+  if (!skipAccess && ddb && typeof ddb.seed === "function") {
+    const e = String(access?.email || user?.email || "admin@mydgv.com")
+      .trim()
+      .toLowerCase();
+    ddb.seed("access-table", {
+      PK: e,
+      SK: e,
+      email: e,
+      role: access?.role || "ADMIN",
+      status: access?.status || "ACTIVE",
+    });
+  }
   return handleUploadUrlRequest({
     user,
     body,
@@ -71,9 +105,10 @@ async function requestUpload({ user, body, ddb, extras = {} }) {
     getSignedUrlFn: fakeSign,
     tableName: "work-table",
     bucket: "docs-bucket",
+    accessTable: "access-table",
     now: "2026-09-15T07:00:00.000Z",
     batchId: "batch-11111111-2222-3333-4444-555555555555",
-    ...extras,
+    ...rest,
   });
 }
 
@@ -159,6 +194,11 @@ assert.ok(
   "API Gateway route for confirm must exist"
 );
 
+function importMeta(ddb) {
+  return ddb.items.find((row) => row.Item && row.Item.SK === META_SK && row.Item.type === TYPE_TASK_IMPORT)
+    ?.Item;
+}
+
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
 
 async function expectStatus(body, statusCode, errorPattern) {
@@ -166,7 +206,9 @@ async function expectStatus(body, statusCode, errorPattern) {
   const result = await requestUpload({ user: ADMIN, body, ddb });
   assert.strictEqual(result.statusCode, statusCode);
   if (errorPattern) assert.match(result.body.error, errorPattern);
-  if (statusCode !== 200) assert.strictEqual(ddb.items.length, 0);
+  if (statusCode !== 200) {
+    assert.ok(ddb.items.every((row) => row.TableName === "access-table"));
+  }
   return { result, ddb };
 }
 
@@ -181,6 +223,7 @@ async function expectStatus(body, statusCode, errorPattern) {
     },
     body: XLSX_BODY,
     ddb,
+    extras: { skipAccess: true },
   });
   assert.strictEqual(result.statusCode, 403);
   assert.strictEqual(result.body.error, "Admin required");
@@ -217,40 +260,34 @@ async function expectStatus(body, statusCode, errorPattern) {
     { ...XLSX_BODY, contentType: OCTET_STREAM_CONTENT_TYPE },
     200
   );
-  assert.strictEqual(
-    octet.ddb.items[0].Item.contentType,
-    OCTET_STREAM_CONTENT_TYPE
-  );
+  assert.strictEqual(importMeta(octet.ddb).contentType, OCTET_STREAM_CONTENT_TYPE);
 
   const missing = await expectStatus(
     { fileName: "bulk-tasks.xlsx", fileSize: 1024 },
     200
   );
-  assert.strictEqual(missing.ddb.items[0].Item.contentType, "");
+  assert.strictEqual(importMeta(missing.ddb).contentType, "");
 
   const empty = await expectStatus({ ...XLSX_BODY, contentType: "" }, 200);
-  assert.strictEqual(empty.ddb.items[0].Item.contentType, "");
+  assert.strictEqual(importMeta(empty.ddb).contentType, "");
 
   const legacy = await expectStatus(
     { ...XLSX_BODY, contentType: XLSX_LEGACY_CONTENT_TYPE },
     200
   );
-  assert.strictEqual(
-    legacy.ddb.items[0].Item.contentType,
-    XLSX_LEGACY_CONTENT_TYPE
-  );
+  assert.strictEqual(importMeta(legacy.ddb).contentType, XLSX_LEGACY_CONTENT_TYPE);
 
   const mixed = await expectStatus(
     { ...XLSX_BODY, fileName: "BULK-TASKS.XLSX" },
     200
   );
-  assert.strictEqual(mixed.ddb.items[0].Item.fileName, "BULK-TASKS.XLSX");
+  assert.strictEqual(importMeta(mixed.ddb).fileName, "BULK-TASKS.XLSX");
 
   const charset = await expectStatus(
     { ...XLSX_BODY, contentType: `${XLSX_CONTENT_TYPE}; charset=utf-8` },
     200
   );
-  assert.strictEqual(charset.ddb.items[0].Item.contentType, XLSX_CONTENT_TYPE);
+  assert.strictEqual(importMeta(charset.ddb).contentType, XLSX_CONTENT_TYPE);
 }
 
 {
@@ -271,10 +308,11 @@ async function expectStatus(body, statusCode, errorPattern) {
   );
   assert.strictEqual(buildTmpS3Key("admin@mydgv.com", batchId), result.body.s3Key);
   assert.strictEqual(buildS3Key("admin@mydgv.com", batchId), result.body.s3Key);
-  assert.strictEqual(ddb.items.length, 2);
-  assert.ok(ddb.items.every((entry) => entry.TableName === "work-table"));
+  const workItems = ddb.items.filter((row) => row.TableName === "work-table");
+  assert.strictEqual(workItems.length, 2);
+  assert.ok(workItems.every((entry) => entry.TableName === "work-table"));
 
-  const meta = ddb.items[0].Item;
+  const meta = importMeta(ddb);
   assert.strictEqual(meta.PK, importPk(batchId));
   assert.strictEqual(meta.SK, META_SK);
   assert.strictEqual(meta.batchId, batchId);
@@ -300,7 +338,7 @@ async function expectStatus(body, statusCode, errorPattern) {
   assert.strictEqual(meta.failureCount, 0);
   assert.strictEqual(meta.completedAt, null);
 
-  const history = ddb.items[1].Item;
+  const history = ddb.items.find((row) => row.Item && row.Item.PK === HISTORY_PK)?.Item;
   assert.strictEqual(history.PK, HISTORY_PK);
   assert.strictEqual(history.SK, historySk(uploadedAt, batchId));
   assert.strictEqual(history.batchId, batchId);

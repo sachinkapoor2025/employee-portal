@@ -17,6 +17,7 @@ jest.mock("../../services/api", () => ({
   createProject: jest.fn(),
   updateProject: jest.fn(),
   deleteProject: jest.fn(),
+  fetchUsers: jest.fn(),
 }));
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -26,6 +27,7 @@ import {
   createProject,
   deleteProject,
   fetchProjects,
+  fetchUsers,
   updateProject,
 } from "../../services/api";
 
@@ -50,6 +52,10 @@ beforeEach(() => {
   createProject.mockReset();
   updateProject.mockReset();
   deleteProject.mockReset();
+  fetchUsers.mockReset();
+  fetchUsers.mockResolvedValue([
+    { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
+  ]);
 });
 
 test("lists projects with Take Action and no row Delete button", async () => {
@@ -62,6 +68,7 @@ test("lists projects with Take Action and no row Delete button", async () => {
   expect(screen.getByRole("button", { name: "+ Create Project" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Take Action" })).toBeInTheDocument();
   expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
+  expect(screen.getByText("Open", { selector: ".dgv-badge" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   expect(fetchProjects).toHaveBeenCalledWith({ status: "ALL" });
   const table = document.querySelector("table");
@@ -401,4 +408,96 @@ test("legacy ARCHIVED delete response is not treated as successful deletion", as
   ).not.toBeInTheDocument();
   expect(screen.getByText("Portal", { selector: ".dgv-projects-table__name" })).toBeInTheDocument();
   expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
+});
+
+test("restricted projects show a Restricted access badge", async () => {
+  fetchProjects.mockResolvedValue([{ ...PROJECT, accessMode: "RESTRICTED" }]);
+  render(<ManageProjects />);
+  expect(await screen.findByText("Restricted", { selector: ".dgv-badge" })).toBeInTheDocument();
+  expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
+});
+
+test("Open Project does not show Manage Access", async () => {
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  expect(screen.getByRole("menuitem", { name: "Edit Project" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Archive Project" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Delete Project" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Manage Access" })).not.toBeInTheDocument();
+});
+
+test("Restricted Project hides Manage Access unless the caller is a Project Admin", async () => {
+  fetchProjects.mockResolvedValue([
+    { ...PROJECT, accessMode: "RESTRICTED", canManageAccess: false },
+  ]);
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  expect(screen.queryByRole("menuitem", { name: "Manage Access" })).not.toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Edit Project" })).toBeInTheDocument();
+});
+
+test("Restricted Project shows Manage Access to its Project Admin", async () => {
+  fetchProjects.mockResolvedValue([
+    { ...PROJECT, accessMode: "RESTRICTED", canManageAccess: true },
+  ]);
+  updateProject.mockResolvedValue({
+    projectId: "p1",
+    accessMode: "RESTRICTED",
+    members: [
+      { email: "rahul@mydgv.com", status: "ACTIVE", active: true },
+    ],
+    projectAdmins: [
+      { email: "admin@mydgv.com", status: "ACTIVE", active: true },
+    ],
+  });
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Manage Access" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage Access — Portal" });
+  await waitFor(() => {
+    expect(updateProject).toHaveBeenCalledWith("p1", {
+      access: { action: "list", includeRevoked: true },
+    });
+  });
+  expect(within(dialog).getByText(/rahul@mydgv.com/)).toBeInTheDocument();
+  expect(within(dialog).getByText(/admin@mydgv.com/)).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
+});
+
+test("Manage Access shows 403 from the access API", async () => {
+  fetchProjects.mockResolvedValue([
+    { ...PROJECT, accessMode: "RESTRICTED", canManageAccess: true },
+  ]);
+  const denied = new Error("You do not have permission to access this resource.");
+  denied.status = 403;
+  updateProject.mockRejectedValue(denied);
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Manage Access" }));
+  expect(
+    await screen.findByText("You do not have permission to access this resource.")
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Project updated.")).not.toBeInTheDocument();
+});
+
+test("Manage Access shows 409 from the access API", async () => {
+  fetchProjects.mockResolvedValue([
+    { ...PROJECT, accessMode: "RESTRICTED", canManageAccess: true },
+  ]);
+  const conflict = new Error("Conflict");
+  conflict.status = 409;
+  updateProject
+    .mockResolvedValueOnce({
+      projectId: "p1",
+      accessMode: "RESTRICTED",
+      members: [{ email: "rahul@mydgv.com", status: "ACTIVE", active: true }],
+      projectAdmins: [{ email: "admin@mydgv.com", status: "ACTIVE", active: true }],
+    })
+    .mockRejectedValueOnce(conflict);
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Manage Access" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage Access — Portal" });
+  userEvent.click(await within(dialog).findByRole("button", { name: "Revoke" }));
+  expect(await screen.findByText("Conflict")).toBeInTheDocument();
 });

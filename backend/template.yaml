@@ -977,6 +977,7 @@ Resources:
           TASK_NOTIFY_FROM_EMAIL: !Ref NotificationFromEmail
           TASK_NOTIFY_FROM_NAME: DGV Portal
           PORTAL_URL: !Sub "https://${FrontendDomainName}"
+          PROJECT_ACL_RESTRICTED_CREATE: "true"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:

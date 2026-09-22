@@ -6,6 +6,10 @@ const {
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { DeleteObjectsCommand } = require("@aws-sdk/client-s3");
+const { randomUUID } = require("crypto");
+const { isEligibleProjectAdmin, ACCESS_OPEN, ACCESS_RESTRICTED, normalizeEmail, isRestrictedProject, isActiveRegularMemberItem, isActiveProjectAdminItem, isProjectDeleting } = require("./projectAccess");
+const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
+const { createRestrictedProject, acquireDeletionLock, releaseDeletionLock, convertLockToDeleting, deleteAllProjectAclRecords, REASON_INVALID_TASK_VISIBILITY, REASON_CONDITION_FAILED, REASON_TX_CONFLICT, REASON_DDB_ERROR, REASON_INVALID_IDENTITY } = require("./projectAccessPersist");
 
 const PROJECT_ENTITY_PK = "ENTITY#PROJECT";
 const TASK_ENTITY_PK = "ENTITY#TASK";
@@ -22,6 +26,12 @@ const S3_DELETE_LIMIT = 1000;
 const DELETE_MAX_ATTEMPTS = 5;
 const CONFIRM_NAME_REQUIRED = "Project name confirmation is required";
 const CONFIRM_NAME_MISMATCH = "Project name confirmation does not match";
+const RESTRICTED_CREATE_DISABLED = "Restricted project creation is not enabled";
+const RESTRICTED_MEMBERS_REQUIRED = "At least one employee must be selected";
+const RESTRICTED_MEMBER_INACTIVE = "Target user is not active";
+const RESTRICTED_TOO_MANY_MEMBERS = "Too many members";
+const ENV_RESTRICTED_CREATE = "PROJECT_ACL_RESTRICTED_CREATE";
+const MAX_RESTRICTED_CREATE_MEMBERS = 40;
 
 function projectSk(projectId) {
   return `PROJECT#${projectId}`;
@@ -67,7 +77,7 @@ function projectStatusOf(item) {
 }
 
 function isActiveProject(item) {
-  return projectStatusOf(item) === STATUS_ACTIVE;
+  return projectStatusOf(item) === STATUS_ACTIVE && !isProjectDeleting(item);
 }
 
 function filterActiveProjects(items) {
@@ -386,7 +396,13 @@ async function deleteS3Keys(
   }
 }
 
-async function handleListProjects({ ddb, tableName, status } = {}) {
+async function handleListProjects({
+  ddb,
+  tableName,
+  status,
+  user,
+  accessTable,
+} = {}) {
   if (!tableName) {
     return { statusCode: 500, body: { error: "Work table not configured" } };
   }
@@ -394,8 +410,106 @@ async function handleListProjects({ ddb, tableName, status } = {}) {
   if (!parsed) {
     return { statusCode: 400, body: { error: "Invalid status" } };
   }
-  const items = await listAllProjects(ddb, tableName);
-  return { statusCode: 200, body: filterProjectsByStatus(items, parsed) };
+  const email = normalizeEmail(user?.email);
+  if (!email) {
+    return { statusCode: 401, body: { error: "Unauthorized" } };
+  }
+  if (!accessTable) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+
+  let accessRow;
+  try {
+    accessRow = await loadPortalAccessRow(ddb, accessTable, email);
+  } catch (err) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  const portalActive = isEligibleProjectAdmin({
+    role: accessRow?.role,
+    status: accessRow?.status,
+  });
+  const accessActive = String(accessRow?.status || "").toUpperCase() === "ACTIVE";
+
+  let catalog;
+  try {
+    catalog = await listAllProjects(ddb, tableName);
+  } catch (err) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  const statusFiltered = filterProjectsByStatus(catalog, parsed);
+
+  let restrictedAcl = { visibleIds: new Set(), adminIds: new Set() };
+  if (accessActive) {
+    try {
+      restrictedAcl = await loadRestrictedCallerAcl(ddb, tableName, email);
+    } catch (err) {
+      return { statusCode: 500, body: { error: "Internal server error" } };
+    }
+  }
+
+  const visible = statusFiltered
+    .filter((project) => {
+      if (isProjectDeleting(project)) return false;
+      if (isRestrictedProject(project)) {
+        const id = String(project.projectId || "").trim();
+        return Boolean(id && restrictedAcl.visibleIds.has(id));
+      }
+      return portalActive;
+    })
+    .map((project) => {
+      const id = String(project.projectId || "").trim();
+      return {
+        ...project,
+        canManageAccess: Boolean(
+          isRestrictedProject(project) && id && restrictedAcl.adminIds.has(id)
+        ),
+      };
+    });
+  return { statusCode: 200, body: visible };
+}
+
+function projectIdFromUserAclSk(sk, prefix) {
+  const raw = String(sk || "");
+  if (!raw.startsWith(prefix)) return "";
+  return raw.slice(prefix.length).trim();
+}
+
+async function loadRestrictedCallerAcl(ddb, tableName, email) {
+  const memberItems = await queryAll(ddb, {
+    TableName: tableName,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+    ExpressionAttributeValues: {
+      ":pk": `USER#${email}`,
+      ":sk": "PROJECT_MEMBER#",
+    },
+  });
+  const adminItems = await queryAll(ddb, {
+    TableName: tableName,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+    ExpressionAttributeValues: {
+      ":pk": `USER#${email}`,
+      ":sk": "PROJECT_ADMIN#",
+    },
+  });
+  const visibleIds = new Set();
+  const adminIds = new Set();
+  for (const item of memberItems) {
+    const id = String(item.projectId || "").trim() || projectIdFromUserAclSk(item.SK, "PROJECT_MEMBER#");
+    if (isActiveRegularMemberItem(item, id, email)) visibleIds.add(id);
+  }
+  for (const item of adminItems) {
+    const id = String(item.projectId || "").trim() || projectIdFromUserAclSk(item.SK, "PROJECT_ADMIN#");
+    if (isActiveProjectAdminItem(item, id, email)) {
+      visibleIds.add(id);
+      adminIds.add(id);
+    }
+  }
+  return { visibleIds, adminIds };
+}
+
+async function loadVisibleRestrictedProjectIds(ddb, tableName, email) {
+  const loaded = await loadRestrictedCallerAcl(ddb, tableName, email);
+  return loaded.visibleIds;
 }
 
 function deleteResponse(action, project, taskCount) {
@@ -414,6 +528,11 @@ function failDelete(code, error) {
   };
 }
 
+/**
+ * DELETE /projects/{id}. Cognito isAdmin is not sufficient.
+ * Requires ACTIVE UserAccess ADMIN or SUPER_ADMIN. Project Admin
+ * membership is not required. Applies to OPEN and RESTRICTED.
+ */
 async function handleDeleteProject({
   user,
   projectId,
@@ -422,6 +541,7 @@ async function handleDeleteProject({
   ddb,
   s3,
   tableName,
+  accessTable,
   attachmentsBucket,
   documentsBucket,
   sleep = defaultSleep,
@@ -429,8 +549,9 @@ async function handleDeleteProject({
   dynamoBatchLimit = DYNAMO_BATCH_LIMIT,
   s3DeleteLimit = S3_DELETE_LIMIT,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await requireEligiblePortalAdmin({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
   const id = String(projectId || "").trim();
   if (!id) {
@@ -455,10 +576,36 @@ async function handleDeleteProject({
 
   let copies;
   let canonical;
+  let deletionLockId = null;
+  const alreadyDeleting = isProjectDeleting(project);
+
+  if (!alreadyDeleting) {
+    const locked = await acquireDeletionLock(ddb, tableName, id);
+    if (!locked.ok) {
+      let latest = null;
+      try {
+        latest = await getProject(ddb, tableName, id);
+      } catch (err) {
+        latest = null;
+      }
+      if (!latest || isProjectDeleting(latest)) {
+        return { statusCode: 404, body: { error: "Project not found" } };
+      }
+      if (locked.reason === REASON_CONDITION_FAILED) {
+        return { statusCode: 409, body: { error: "Conflict" } };
+      }
+      return failDelete("PROJECT_DELETE_FAILED", "Unable to delete project");
+    }
+    deletionLockId = locked.lockId;
+  }
+
   try {
     copies = await listProjectTaskCopies(ddb, tableName, id);
     canonical = await listCanonicalTasksForProject(ddb, tableName, id);
   } catch (err) {
+    if (deletionLockId) {
+      await releaseDeletionLock(ddb, tableName, id, deletionLockId);
+    }
     console.error(
       "PROJECT_DELETE_TASK_LOOKUP_FAILED",
       JSON.stringify({ projectId: id })
@@ -466,6 +613,19 @@ async function handleDeleteProject({
     return {
       statusCode: 500,
       body: { error: "Unable to verify project tasks" },
+    };
+  }
+
+  if ((copies && copies.length) || (canonical && canonical.length)) {
+    if (deletionLockId) {
+      await releaseDeletionLock(ddb, tableName, id, deletionLockId);
+    }
+    return {
+      statusCode: 409,
+      body: {
+        error: PROJECT_HAS_TASKS_MESSAGE,
+        code: PROJECT_HAS_TASKS,
+      },
     };
   }
 
@@ -479,6 +639,9 @@ async function handleDeleteProject({
       );
     }
   } catch (err) {
+    if (deletionLockId) {
+      await releaseDeletionLock(ddb, tableName, id, deletionLockId);
+    }
     console.error(
       "PROJECT_DELETE_CHILD_LOOKUP_FAILED",
       JSON.stringify({ projectId: id })
@@ -491,6 +654,9 @@ async function handleDeleteProject({
 
   const attachments = collectAttachmentTargets(taskIds, childrenByTask);
   if (attachments.unsafe.length) {
+    if (deletionLockId) {
+      await releaseDeletionLock(ddb, tableName, id, deletionLockId);
+    }
     console.error(
       "PROJECT_DELETE_UNSAFE_S3_KEY",
       JSON.stringify({ projectId: id, count: attachments.unsafe.length })
@@ -499,6 +665,31 @@ async function handleDeleteProject({
       "PROJECT_DELETE_UNSAFE_S3_KEY",
       "Unable to delete project attachments"
     );
+  }
+
+  if (!alreadyDeleting) {
+    const marked = await convertLockToDeleting(
+      ddb,
+      tableName,
+      id,
+      deletionLockId
+    );
+    if (!marked.ok) {
+      console.error(
+        "PROJECT_DELETE_TOMBSTONE_FAILED",
+        JSON.stringify({ projectId: id, reason: marked.reason || "" })
+      );
+      return failDelete("PROJECT_DELETE_FAILED", "Unable to delete project");
+    }
+  }
+
+  const aclCleanup = await deleteAllProjectAclRecords(ddb, tableName, id);
+  if (!aclCleanup.ok) {
+    console.error(
+      "PROJECT_DELETE_ACL_FAILED",
+      JSON.stringify({ projectId: id, reason: aclCleanup.reason || "" })
+    );
+    return failDelete("PROJECT_DELETE_FAILED", "Unable to delete project");
   }
 
   const bucket = String(attachmentsBucket || "").trim();
@@ -614,10 +805,24 @@ async function handlePatchProject({
   body = {},
   ddb,
   tableName,
+  accessTable,
   now,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  if (body && body.access && typeof body.access === "object") {
+    const { handleProjectAccess } = require("./projectAccessManage");
+    return handleProjectAccess({
+      user,
+      projectId,
+      access: body.access,
+      ddb,
+      tableName,
+      accessTable,
+      now,
+    });
+  }
+  const auth = await requireEligiblePortalAdmin({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
   }
   const id = String(projectId || "").trim();
   if (!id) {
@@ -628,7 +833,7 @@ async function handlePatchProject({
   }
 
   const project = await getProject(ddb, tableName, id);
-  if (!project) {
+  if (!project || isProjectDeleting(project)) {
     return { statusCode: 404, body: { error: "Project not found" } };
   }
 
@@ -661,7 +866,7 @@ async function handlePatchProject({
     if (status === STATUS_ARCHIVED) {
       next.status = STATUS_ARCHIVED;
       next.archivedAt = now || new Date().toISOString();
-      next.archivedBy = user.email || "";
+      next.archivedBy = auth.email;
     } else {
       next.status = STATUS_ACTIVE;
       delete next.archivedAt;
@@ -686,13 +891,193 @@ async function handlePatchProject({
     }
   }
 
-  await ddb.send(
-    new PutCommand({
-      TableName: tableName,
-      Item: next,
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: next,
+        ConditionExpression:
+          "attribute_exists(PK) AND (attribute_not_exists(deletionStatus) OR deletionStatus <> :deleting)",
+        ExpressionAttributeValues: {
+          ":deleting": "DELETING",
+        },
+      })
+    );
+  } catch (err) {
+    if (String(err?.name || "") !== "ConditionalCheckFailedException") {
+      return { statusCode: 500, body: { error: "Internal server error" } };
+    }
+    let latest = null;
+    try {
+      latest = await getProject(ddb, tableName, id);
+    } catch (readErr) {
+      return { statusCode: 500, body: { error: "Internal server error" } };
+    }
+    if (!latest || isProjectDeleting(latest)) {
+      return { statusCode: 404, body: { error: "Project not found" } };
+    }
+    return { statusCode: 409, body: { error: "Conflict" } };
+  }
+  return { statusCode: 200, body: next };
+}
+
+function isRestrictedCreateEnabled(value, env = process.env) {
+  if (value === true || value === false) return value;
+  return String(env[ENV_RESTRICTED_CREATE] || "").trim().toLowerCase() === "true";
+}
+
+function parseCreateAccessMode(raw) {
+  if (raw == null || String(raw).trim() === "") {
+    return { ok: true, value: ACCESS_OPEN };
+  }
+  const mode = String(raw).trim().toUpperCase();
+  if (mode === ACCESS_OPEN) return { ok: true, value: ACCESS_OPEN };
+  if (mode === ACCESS_RESTRICTED) return { ok: true, value: ACCESS_RESTRICTED };
+  return { ok: false };
+}
+
+function parseCreateMembers(raw, creatorEmail) {
+  const list = Array.isArray(raw) ? raw : [];
+  const emails = [];
+  const seen = new Set();
+  const creator = normalizeEmail(creatorEmail);
+  for (const entry of list) {
+    const value = typeof entry === "string" ? entry : entry?.email;
+    const email = normalizeEmail(value);
+    if (!email || email === creator || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+  }
+  return emails;
+}
+
+async function loadPortalAccessRow(ddb, accessTable, email) {
+  if (!accessTable) return null;
+  const res = await ddb.send(
+    new GetCommand({
+      TableName: accessTable,
+      Key: { PK: email, SK: email },
     })
   );
-  return { statusCode: 200, body: next };
+  return res.Item || null;
+}
+
+function mapPersistWriteError(result) {
+  if (!result || result.ok) return null;
+  if (result.reason === REASON_INVALID_TASK_VISIBILITY) {
+    return { statusCode: 400, body: { error: "Invalid taskVisibility" } };
+  }
+  if (result.reason === REASON_INVALID_IDENTITY) {
+    return { statusCode: 400, body: { error: "Invalid project identity" } };
+  }
+  if (result.reason === REASON_CONDITION_FAILED) {
+    return { statusCode: 409, body: { error: "Conflict" } };
+  }
+  if (result.reason === REASON_TX_CONFLICT || result.reason === REASON_DDB_ERROR) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  return { statusCode: 500, body: { error: "Internal server error" } };
+}
+
+/**
+ * POST /projects. Cognito isAdmin is not sufficient.
+ * RESTRICTED create is gated by PROJECT_ACL_RESTRICTED_CREATE=true until
+ * catalog/task ACL is implemented (GET /projects currently lists all projects).
+ */
+async function handleCreateProject({
+  user,
+  body = {},
+  ddb,
+  tableName,
+  accessTable,
+  now,
+  newId,
+  restrictedCreateEnabled,
+} = {}) {
+  if (!tableName) {
+    return { statusCode: 500, body: { error: "Work table not configured" } };
+  }
+  const auth = await requireEligiblePortalAdmin({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
+  }
+
+  const mode = parseCreateAccessMode(body.accessMode);
+  if (!mode.ok) {
+    return { statusCode: 400, body: { error: "Invalid accessMode" } };
+  }
+
+  const email = auth.email;
+  const createdAt = now || new Date().toISOString();
+  const projectId = typeof newId === "function" ? String(newId()) : randomUUID();
+  const lead = normalizeEmail(body.lead) || email;
+  const catalog = {
+    PK: PROJECT_ENTITY_PK,
+    SK: projectSk(projectId),
+    projectId,
+    name: body.name,
+    client: body.client || "",
+    lead,
+    members: body.members || [],
+    status: body.status || STATUS_ACTIVE,
+    description: body.description || "",
+    createdAt,
+    createdBy: email,
+    accessMode: mode.value,
+  };
+
+  if (mode.value === ACCESS_RESTRICTED) {
+    if (!isRestrictedCreateEnabled(restrictedCreateEnabled)) {
+      return { statusCode: 400, body: { error: RESTRICTED_CREATE_DISABLED } };
+    }
+    const members = parseCreateMembers(body.members, email);
+    if (!members.length) {
+      return { statusCode: 400, body: { error: RESTRICTED_MEMBERS_REQUIRED } };
+    }
+    if (members.length > MAX_RESTRICTED_CREATE_MEMBERS) {
+      return { statusCode: 400, body: { error: RESTRICTED_TOO_MANY_MEMBERS } };
+    }
+    for (const memberEmail of members) {
+      let accessRow;
+      try {
+        accessRow = await loadPortalAccessRow(ddb, accessTable, memberEmail);
+      } catch (err) {
+        return { statusCode: 500, body: { error: "Internal server error" } };
+      }
+      if (String(accessRow?.status || "").toUpperCase() !== STATUS_ACTIVE) {
+        return { statusCode: 400, body: { error: RESTRICTED_MEMBER_INACTIVE } };
+      }
+    }
+    catalog.members = members;
+    const written = await createRestrictedProject(ddb, tableName, {
+      projectId,
+      email,
+      actorEmail: email,
+      now: createdAt,
+      taskVisibility: body.taskVisibility,
+      catalog,
+      members,
+    });
+    const fail = mapPersistWriteError(written);
+    if (fail) return fail;
+    return { statusCode: 201, body: written.catalog };
+  }
+
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: catalog,
+        ConditionExpression: "attribute_not_exists(PK)",
+      })
+    );
+  } catch (err) {
+    if (String(err?.name || "") === "ConditionalCheckFailedException") {
+      return { statusCode: 409, body: { error: "Conflict" } };
+    }
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  return { statusCode: 201, body: catalog };
 }
 
 module.exports = {
@@ -723,6 +1108,12 @@ module.exports = {
   countProjectTasks,
   listActiveProjects,
   handleListProjects,
+  handleCreateProject,
   handleDeleteProject,
   handlePatchProject,
+  isRestrictedCreateEnabled,
+  parseCreateMembers,
+  RESTRICTED_CREATE_DISABLED,
+  RESTRICTED_MEMBERS_REQUIRED,
+  RESTRICTED_MEMBER_INACTIVE,
 };

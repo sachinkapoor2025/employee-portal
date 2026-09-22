@@ -123,6 +123,7 @@ module.exports = {
   canManageUserAccessLifecycle,
   canAssignPortalRole,
   activeAdminEmailsFromAccess,
+  isAdminOrSuperAdminRole,
   activeSuperAdminEmailsFromAccess,
   activeCompletionAdminEmailsFromAccess,
 };

@@ -40,7 +40,9 @@ const {
 process.env.TASK_IMPORT_HOLD_RETENTION_DAYS = "90";
 
 const TABLE = "work-table";
+const ACCESS = "access-table";
 const BUCKET = "docs-bucket";
+process.env.USER_ACCESS_TABLE = ACCESS;
 const NOW = "2026-09-15T09:40:00.000Z";
 const NOW_MS = Date.parse(NOW);
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
@@ -139,7 +141,7 @@ function createMemoryDdb() {
   function keyOf(tableName, item) {
     return `${tableName}|${item.PK}|${item.SK}`;
   }
-  return {
+  const ddb = {
     items,
     queries: [],
     seed(tableName, item) {
@@ -247,6 +249,14 @@ function createMemoryDdb() {
       throw new Error(`unexpected command ${command.constructor.name}`);
     },
   };
+  ddb.seed(ACCESS, {
+    PK: ADMIN.email,
+    SK: ADMIN.email,
+    email: ADMIN.email,
+    role: "ADMIN",
+    status: "ACTIVE",
+  });
+  return ddb;
 }
 
 function s3NotFound() {
@@ -271,8 +281,10 @@ function decodeCopySourceKey(copySource, bucket) {
   return decoded.join("/");
 }
 
-function createMemoryS3(objects = {}, { failCopyTo } = {}) {
+function createMemoryS3(objects = {}, { failCopyTo, failDelete } = {}) {
   const failTo = failCopyTo instanceof Set ? failCopyTo : new Set(failCopyTo ? [failCopyTo] : []);
+  const failDeleteTo =
+    failDelete instanceof Set ? failDelete : new Set(failDelete ? [failDelete] : []);
   return {
     objects,
     copies: [],
@@ -302,8 +314,17 @@ function createMemoryS3(objects = {}, { failCopyTo } = {}) {
         return {};
       }
       if (command instanceof DeleteObjectCommand) {
-        this.deletes.push(command.input.Key);
-        delete objects[command.input.Key];
+        const key = command.input.Key;
+        this.deletes.push(key);
+        if (
+          failDeleteTo.has(key) ||
+          [...failDeleteTo].some((prefix) => String(key).startsWith(prefix))
+        ) {
+          const err = new Error("Delete failed");
+          err.name = "InternalError";
+          throw err;
+        }
+        delete objects[key];
         return {};
       }
       throw new Error(`unexpected s3 command ${command.constructor.name}`);
@@ -684,6 +705,29 @@ async function run() {
     assert.ok(!s3.objects[tmpKey]);
     assert.ok(!s3.objects[holdKey]);
     assert.ok(s3.deletes.includes(tmpKey) || s3.deletes.includes(holdKey));
+    assert.ok(!s3.deletes.includes(auditKey));
+  });
+
+  await test("DeleteObject failure after verified HeadObject keeps the audit object", async () => {
+    const batchId = "batch-cleanup-fail";
+    const ddb = createMemoryDdb();
+    const tmpKey = buildS3Key(ADMIN.email, batchId);
+    const auditKey = buildAuditS3Key(ADMIN.email, batchId);
+    seedMeta(ddb, { batchId, status: IMPORT_STATUSES.COMPLETED });
+    seedImmediateAssigned(ddb, batchId);
+    const s3 = createMemoryS3(
+      { [tmpKey]: FILE },
+      { failDelete: "task-imports/tmp/" }
+    );
+    const result = await promote({ ddb, s3, batchId });
+    assert.strictEqual(result.eligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    const meta = ddb.of(TABLE).find((item) => item.SK === META_SK);
+    assert.strictEqual(meta.status, IMPORT_STATUSES.COMPLETED);
+    assert.strictEqual(meta.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
+    assert.ok(s3.objects[auditKey]);
+    assert.ok(Buffer.compare(s3.objects[auditKey], FILE) === 0);
+    assert.ok(s3.heads.includes(auditKey));
+    assert.ok(s3.objects[tmpKey], "tmp source remains if cleanup delete fails");
     assert.ok(!s3.deletes.includes(auditKey));
   });
 

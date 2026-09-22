@@ -88,7 +88,8 @@ SPA path ownership (employee `/work/:taskId` vs admin `/admin/tasks/:taskId`) is
 | Pattern | Example |
 |---|---|
 | Email on JWT | 401 `{ error: "Unauthorized" }` if missing |
-| `user.isAdmin` | POST `/projects`, POST `/tasks`, `/admin/*` handlers |
+| `user.isAdmin` | `/admin/*` handlers outside project/task/import/time-entry ACL (e.g. dashboard, leave all, documents admin) |
+| ACTIVE UserAccess ADMIN/SUPER_ADMIN | POST/PATCH/DELETE `/projects/{id}`; OPEN task admin create/update/archive; import operator; GET `/time-entries?email=` |
 | Assignee | GET `/tasks/{id}`, PUT `/tasks` |
 | Super Admin | user delete / lifecycle (`canManageUserAccessLifecycle`) |
 | Own profile edit | UserProfileFunction `mode === "EDIT"` and email === caller |
@@ -104,9 +105,11 @@ Many list endpoints are **JWT-only** (any authenticated `@mydgv.com` user who pa
 
 ## Known authorization risks (verified in source — not exploit recipes)
 
+Items 2–3 below were **Phase 1 audit findings**. Live WorkTasks handlers now filter GET `/projects` and GET `/tasks` by project ACL (`taskReadAccess` / catalog list). Document-project and leave APIs are unchanged.
+
 1. **GET `/admin/getUserProfile?email=`** — same handler as `/user/profile`; if `email` query is present it is used **without** admin or self check (`UserProfile/app.mjs`). Authenticated callers can request another user’s item (includes HR document signed URLs when present).
-2. **GET `/tasks`** without `mine=true` returns all non-archived tasks to any authenticated user (`projects/handler.js`).
-3. **GET `/projects`** returns all projects for the requested status filter with no membership check.
+2. **Historical:** GET `/tasks` without `mine=true` returned all non-archived tasks. **Live:** results pass `filterVisibleTasks`.
+3. **Historical:** GET `/projects` returned all projects for the status filter. **Live:** list is ACL-filtered; missing/DELETING catalog is not treated as OPEN.
 4. **POST `/addTrainingMaterial`** — no `isAdmin` in handler (UI is admin-only).
 5. **POST `/training/mock-test`** — handler does not read the user (Gateway still requires JWT).
 6. **Admin password reset** returns `temporaryPassword` in the JSON body (`admin/handler.js`).

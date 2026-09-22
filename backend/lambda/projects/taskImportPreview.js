@@ -24,6 +24,11 @@ const {
   parseTaskImportWorkbook,
 } = require("./taskImportParse");
 const { isActiveProject } = require("./projectManage");
+const {
+  listImportableProjects,
+  applyImportAclToRows,
+  authorizeImportOperator,
+} = require("./workflowAccess");
 
 const TYPE_TASK_IMPORT_ROW = "TASK_IMPORT_ROW";
 const BATCH_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -252,12 +257,28 @@ async function parseAndResolveWorkbook({
   nowMs,
   listProjects,
   loadUserAccess,
+  user,
 } = {}) {
-  const loadProjects = listProjects || (() => defaultListProjects(ddb, tableName));
+  let projects;
+  if (listProjects) {
+    projects = await listProjects();
+  } else {
+    const listed = await listImportableProjects({
+      ddb,
+      tableName,
+      accessTable,
+      user,
+    });
+    if (!listed.ok) {
+      const err = new Error("IMPORT_ACL_LOOKUP_FAILED");
+      err.code = "IMPORT_ACL_LOOKUP_FAILED";
+      throw err;
+    }
+    projects = listed.projects;
+  }
   const loadAccess =
     loadUserAccess ||
     ((email) => defaultLoadUserAccess(ddb, accessTable, email));
-  const projects = await loadProjects();
   const parsed = parseTaskImportWorkbook(buffer, {
     nowMs: Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now(),
     projects,
@@ -270,9 +291,21 @@ async function parseAndResolveWorkbook({
   for (const email of uniqueEmails) {
     accessByEmail.set(email, await loadAccess(email));
   }
-  const rows = (parsed.rows || []).map((row) =>
+  let rows = (parsed.rows || []).map((row) =>
     enrichPreviewRow(row, accessByEmail)
   );
+  const acl = await applyImportAclToRows(rows, {
+    ddb,
+    tableName,
+    accessTable,
+    user,
+  });
+  if (!acl.ok) {
+    const err = new Error("IMPORT_ACL_LOOKUP_FAILED");
+    err.code = "IMPORT_ACL_LOOKUP_FAILED";
+    throw err;
+  }
+  rows = acl.rows;
   const validRows = rows.filter((row) => row.status === ROW_STATUS.VALID).length;
   const invalidRows = rows.length - validRows;
   const warningCount = rows.reduce((sum, row) => sum + (row.warnings || []).length, 0);
@@ -299,8 +332,12 @@ async function handlePreviewRequest({
   listProjects,
   loadUserAccess,
 } = {}) {
-  if (!user?.isAdmin) {
-    return { statusCode: 403, body: { error: "Admin required" } };
+  const auth = await authorizeImportOperator({ user, ddb, accessTable });
+  if (!auth.ok) {
+    return { statusCode: auth.statusCode, body: auth.body };
+  }
+  if (!normalizeEmail(user.email)) {
+    return { statusCode: 401, body: { error: "Unauthorized" } };
   }
 
   const idCheck = validateBatchId(batchId);
@@ -373,6 +410,7 @@ async function handlePreviewRequest({
     nowMs,
     listProjects,
     loadUserAccess,
+    user,
   });
   const { parsed, rows, status, validRows, invalidRows, warningCount } = resolved;
   const updatedAt = now || new Date().toISOString();

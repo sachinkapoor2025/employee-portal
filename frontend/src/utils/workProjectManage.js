@@ -98,3 +98,58 @@ export function projectStatusLabel(status) {
     ? "Archived"
     : "Active";
 }
+
+export function normalizeMemberEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function uniqueMemberEmails(values) {
+  const seen = new Set();
+  const emails = [];
+  for (const value of values || []) {
+    const raw =
+      typeof value === "string" ? value : value?.email;
+    const email = normalizeMemberEmail(raw);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+  }
+  return emails;
+}
+
+export function projectAccessModeLabel(accessMode) {
+  return String(accessMode || "").trim().toUpperCase() === "RESTRICTED"
+    ? "Restricted"
+    : "Open";
+}
+
+export function isRestrictedAccessMode(accessMode) {
+  return String(accessMode || "").trim().toUpperCase() === "RESTRICTED";
+}
+
+export function canShowManageAccess(project) {
+  return (
+    isRestrictedAccessMode(project?.accessMode) &&
+    project?.canManageAccess === true
+  );
+}
+
+export function buildCreateProjectPayload({
+  name,
+  client,
+  description,
+  restricted,
+  memberEmails,
+} = {}) {
+  const payload = {
+    name: String(name || "").trim(),
+    client: String(client || ""),
+    description: String(description || ""),
+  };
+  if (!restricted) return payload;
+  return {
+    ...payload,
+    accessMode: "RESTRICTED",
+    members: uniqueMemberEmails(memberEmails).map((email) => ({ email })),
+  };
+}

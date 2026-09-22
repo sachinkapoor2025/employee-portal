@@ -37,6 +37,7 @@ const {
 } = require("./taskImportHistory");
 
 const TABLE = "work-table";
+const ACCESS = "access-table";
 const BUCKET = "docs-bucket";
 const NOW = "2026-09-15T11:00:00.000Z";
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
@@ -183,9 +184,37 @@ function metaItem({
   };
 }
 
+function seedPortalAdmins(ddb) {
+  for (const user of [ADMIN, OTHER_ADMIN]) {
+    const e = user.email;
+    ddb.seed(ACCESS, {
+      PK: e,
+      SK: e,
+      email: e,
+      role: "ADMIN",
+      status: "ACTIVE",
+    });
+  }
+}
+
 function seedBatch(ddb, meta, historyOverride) {
+  ddb.seed(TABLE, {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#open-1",
+    projectId: "open-1",
+    name: "Open",
+    accessMode: "OPEN",
+    status: "ACTIVE",
+  });
   ddb.seed(TABLE, meta);
   ddb.seed(TABLE, historyOverride || buildHistoryCopy(meta));
+  ddb.seed(TABLE, {
+    PK: `IMPORT#${meta.batchId}`,
+    SK: "ROW#000001",
+    batchId: meta.batchId,
+    projectId: "open-1",
+    status: "IMPORTED",
+  });
 }
 
 let passed = 0;
@@ -219,14 +248,66 @@ async function run() {
     const result = await handleListTaskImports({
       user: EMPLOYEE,
       ddb: createMemoryDdb(),
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 403);
     assert.match(result.body.error, /Admin required/);
   });
 
+  await test("restricted import metadata is hidden from portal admins who are not Project Admin", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
+    ddb.seed(TABLE, {
+      PK: "ENTITY#PROJECT",
+      SK: "PROJECT#secret",
+      projectId: "secret",
+      name: "Secret",
+      accessMode: "RESTRICTED",
+    });
+    const meta = metaItem({
+      batchId: "batch-secret",
+      uploadedAt: NOW,
+    });
+    seedBatch(ddb, meta);
+    ddb.seed(TABLE, {
+      PK: `IMPORT#batch-secret`,
+      SK: "ROW#000001",
+      batchId: "batch-secret",
+      projectId: "secret",
+      status: "IMPORTED",
+    });
+    const listed = await handleListTaskImports({
+      user: ADMIN,
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(listed.statusCode, 200);
+    assert.ok(!listed.body.items.some((item) => item.batchId === "batch-secret"));
+    const detail = await handleGetTaskImport({
+      user: ADMIN,
+      batchId: "batch-secret",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(detail.statusCode, 404);
+  });
+
+  await test("cognito-only admin cannot list import history", async () => {
+    const ddb = createMemoryDdb();
+    const result = await handleListTaskImports({
+      user: { email: "cog@mydgv.com", isAdmin: true },
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(result.statusCode, 403);
+  });
+
   await test("admin can list history newest first with total count", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const older = metaItem({
       batchId: "batch-old",
       uploadedAt: "2026-09-01T00:00:00.000Z",
@@ -240,7 +321,7 @@ async function run() {
     const result = await handleListTaskImports({
       user: OTHER_ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 200);
     assert.strictEqual(result.body.totalCount, 2);
@@ -253,6 +334,7 @@ async function run() {
 
   await test("history list returns only COMPLETED imports", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     seedBatch(
       ddb,
       metaItem({
@@ -280,7 +362,7 @@ async function run() {
     const result = await handleListTaskImports({
       user: ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 200);
     assert.strictEqual(result.body.totalCount, 1);
@@ -295,6 +377,7 @@ async function run() {
 
   await test("history list excludes PROCESSING and VALIDATING without deleting metadata", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     seedBatch(
       ddb,
       metaItem({
@@ -327,7 +410,7 @@ async function run() {
     const result = await handleListTaskImports({
       user: ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 200);
     assert.strictEqual(result.body.totalCount, 1);
@@ -349,6 +432,7 @@ async function run() {
 
   await test("pagination returns nextToken", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     for (let i = 0; i < 3; i += 1) {
       seedBatch(
         ddb,
@@ -361,15 +445,16 @@ async function run() {
     const first = await handleListTaskImports({
       user: ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       limit: 2,
     });
     assert.strictEqual(first.body.items.length, 2);
+    assert.strictEqual(first.body.totalCount, 3);
     assert.ok(first.body.nextToken);
     const second = await handleListTaskImports({
       user: ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       limit: 2,
       nextToken: first.body.nextToken,
     });
@@ -379,6 +464,7 @@ async function run() {
 
   await test("stale history snapshot is hydrated from META", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-stale",
       uploadedAt: NOW,
@@ -394,7 +480,7 @@ async function run() {
     const result = await handleListTaskImports({
       user: ADMIN,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.body.items[0].status, IMPORT_STATUSES.COMPLETED);
     assert.strictEqual(result.body.items[0].successCount, 4);
@@ -403,6 +489,7 @@ async function run() {
 
   await test("syncImportHistory overwrites the existing snapshot", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-sync",
       uploadedAt: NOW,
@@ -422,11 +509,13 @@ async function run() {
   });
 
   await test("missing batch returns 404", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const result = await handleGetTaskImport({
       user: ADMIN,
       batchId: "missing-batch",
-      ddb: createMemoryDdb(),
-      tableName: TABLE,
+      ddb,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 404);
   });
@@ -436,13 +525,14 @@ async function run() {
       user: EMPLOYEE,
       batchId: "batch-1",
       ddb: createMemoryDdb(),
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
     assert.strictEqual(result.statusCode, 403);
   });
 
   await test("batch detail returns META, rows, and task linkage", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-detail";
     const meta = metaItem({
       batchId,
@@ -495,7 +585,7 @@ async function run() {
       batchId,
       ddb,
       s3: createMemoryS3({ [meta.s3Key]: Buffer.from("xlsx") }),
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
     });
     assert.strictEqual(result.statusCode, 200);
@@ -503,15 +593,15 @@ async function run() {
     assert.strictEqual(result.body.summary.fileAvailable, true);
     assert.strictEqual(result.body.summary.auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     assert.ok(!result.body.summary.s3Key);
-    assert.strictEqual(result.body.rows[0].taskId, "task-immediate");
-    assert.deepStrictEqual(result.body.rows[0].assignment.emails, [
-      "rahul@mydgv.com",
-    ]);
-    assert.strictEqual(result.body.rows[0].assignment.state, "ASSIGNED");
+    const linked = result.body.rows.find((row) => row.taskId === "task-immediate");
+    assert.ok(linked);
+    assert.deepStrictEqual(linked.assignment.emails, ["rahul@mydgv.com"]);
+    assert.strictEqual(linked.assignment.state, "ASSIGNED");
   });
 
   await test("immediate assignment uses assignment records not Excel emails", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-assign";
     seedBatch(ddb, metaItem({ batchId, uploadedAt: NOW }));
     ddb.seed(TABLE, {
@@ -539,18 +629,17 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
-    assert.deepStrictEqual(result.body.rows[0].assignment.emails, [
-      "actual@mydgv.com",
-    ]);
-    assert.deepStrictEqual(result.body.rows[0].excelAssignees, [
-      "excel@mydgv.com",
-    ]);
+    const linked = result.body.rows.find((row) => row.taskId === "task-a");
+    assert.ok(linked);
+    assert.deepStrictEqual(linked.assignment.emails, ["actual@mydgv.com"]);
+    assert.deepStrictEqual(linked.excelAssignees, ["excel@mydgv.com"]);
   });
 
   await test("scheduled pending shows pendingAssignees", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-sched";
     seedBatch(ddb, metaItem({ batchId, uploadedAt: NOW }));
     ddb.seed(TABLE, {
@@ -576,13 +665,13 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
-    assert.strictEqual(result.body.rows[0].assignment.state, "PENDING");
-    assert.strictEqual(result.body.rows[0].assignment.scheduled, true);
-    assert.deepStrictEqual(result.body.rows[0].assignment.emails, [
-      "priya@mydgv.com",
-    ]);
+    const linked = result.body.rows.find((row) => row.taskId === "task-s");
+    assert.ok(linked);
+    assert.strictEqual(linked.assignment.state, "PENDING");
+    assert.strictEqual(linked.assignment.scheduled, true);
+    assert.deepStrictEqual(linked.assignment.emails, ["priya@mydgv.com"]);
     assert.deepStrictEqual(
       ddb.of(TABLE).find((item) => item.taskId === "task-s" && item.PK === "ENTITY#TASK"),
       before
@@ -591,6 +680,7 @@ async function run() {
 
   await test("scheduled assigned shows actual assignment records", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-sched-done";
     seedBatch(ddb, metaItem({ batchId, uploadedAt: NOW }));
     ddb.seed(TABLE, {
@@ -619,12 +709,12 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
     });
-    assert.strictEqual(result.body.rows[0].assignment.state, "ASSIGNED");
-    assert.deepStrictEqual(result.body.rows[0].assignment.emails, [
-      "priya@mydgv.com",
-    ]);
+    const linked = result.body.rows.find((row) => row.taskId === "task-s2");
+    assert.ok(linked);
+    assert.strictEqual(linked.assignment.state, "ASSIGNED");
+    assert.deepStrictEqual(linked.assignment.emails, ["priya@mydgv.com"]);
   });
 
   await test("download requires admin", async () => {
@@ -632,7 +722,7 @@ async function run() {
       user: EMPLOYEE,
       batchId: "batch-1",
       ddb: createMemoryDdb(),
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3(),
     });
@@ -640,11 +730,13 @@ async function run() {
   });
 
   await test("download missing batch returns 404", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const result = await handleGetTaskImportDownloadUrl({
       user: ADMIN,
       batchId: "missing",
-      ddb: createMemoryDdb(),
-      tableName: TABLE,
+      ddb,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3(),
     });
@@ -653,6 +745,7 @@ async function run() {
 
   await test("download missing S3 object returns 404", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-file",
       uploadedAt: NOW,
@@ -666,7 +759,7 @@ async function run() {
       user: ADMIN,
       batchId: "batch-file",
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3(),
     });
@@ -675,6 +768,7 @@ async function run() {
 
   await test("download rejects untrusted s3Key", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-bad-key",
       uploadedAt: NOW,
@@ -685,7 +779,7 @@ async function run() {
       user: ADMIN,
       batchId: "batch-bad-key",
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3({ "profiles/secret.xlsx": Buffer.from("x") }),
     });
@@ -694,6 +788,7 @@ async function run() {
 
   await test("download produces short-lived GET presigned URL", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-dl",
       uploadedAt: NOW,
@@ -709,7 +804,7 @@ async function run() {
       user: ADMIN,
       batchId: "batch-dl",
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3,
       signedTtl: 900,
@@ -737,6 +832,7 @@ async function run() {
 
   await test("download uses original uploaded filename in Content-Disposition", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-named";
     const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
     const original = Buffer.from("original-xlsx-bytes");
@@ -755,7 +851,7 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3({ [auditKey]: original }),
       getSignedUrlFn: async (_client, command) => {
@@ -792,6 +888,7 @@ async function run() {
     assert.ok(!downloadContentDisposition("a\nb.xlsx").includes("\n"));
 
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-unsafe-name";
     const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
     const meta = metaItem({
@@ -809,7 +906,7 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3({ [auditKey]: Buffer.from("xlsx") }),
       getSignedUrlFn: async (_client, command) => {
@@ -835,6 +932,7 @@ async function run() {
     assert.strictEqual(sanitizeDownloadFileName(".xlsx"), DOWNLOAD_FALLBACK_FILENAME);
 
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const batchId = "batch-fallback";
     const auditKey = buildAuditS3Key("admin@mydgv.com", batchId);
     const meta = metaItem({
@@ -852,7 +950,7 @@ async function run() {
       user: ADMIN,
       batchId,
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3({ [auditKey]: Buffer.from("xlsx") }),
       getSignedUrlFn: async (_client, command) => {
@@ -871,6 +969,7 @@ async function run() {
 
   await test("download is denied for WAITING_DISTRIBUTION hold objects", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const meta = metaItem({
       batchId: "batch-hold",
       uploadedAt: NOW,
@@ -884,7 +983,7 @@ async function run() {
       user: ADMIN,
       batchId: "batch-hold",
       ddb,
-      tableName: TABLE,
+      tableName: TABLE, accessTable: ACCESS,
       bucket: BUCKET,
       s3: createMemoryS3({ [meta.s3Key]: Buffer.from("xlsx") }),
     });
@@ -893,6 +992,7 @@ async function run() {
 
   await test("history list does not mutate task data", async () => {
     const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
     const task = {
       PK: "ENTITY#TASK",
       SK: "TASK#keep",
@@ -902,13 +1002,142 @@ async function run() {
     ddb.seed(TABLE, task);
     seedBatch(ddb, metaItem({ batchId: "batch-keep", uploadedAt: NOW }));
     const before = JSON.stringify(ddb.of(TABLE));
-    await handleListTaskImports({ user: ADMIN, ddb, tableName: TABLE });
+    await handleListTaskImports({ user: ADMIN, ddb, tableName: TABLE, accessTable: ACCESS });
     assert.strictEqual(JSON.stringify(ddb.of(TABLE)), before);
   });
 
   await test("no re-import route is introduced", () => {
     assert.strictEqual(listPathMatch("/task-imports"), true);
     assert.strictEqual(detailPathMatch("/task-imports/abc/confirm"), null);
+  });
+
+  await test("unpreviewed batch META is owner-only", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
+    const meta = {
+      ...metaItem({
+        batchId: "batch-preview",
+        uploadedAt: NOW,
+        status: IMPORT_STATUSES.UPLOADED,
+      }),
+    };
+    ddb.seed(TABLE, meta);
+    const owner = await handleGetTaskImport({
+      user: ADMIN,
+      batchId: "batch-preview",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(owner.statusCode, 200);
+    const other = await handleGetTaskImport({
+      user: OTHER_ADMIN,
+      batchId: "batch-preview",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(other.statusCode, 404);
+  });
+
+  await test("hidden restricted batches are excluded from totalCount", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
+    seedBatch(ddb, metaItem({ batchId: "batch-open", uploadedAt: NOW }));
+    ddb.seed(TABLE, {
+      PK: "ENTITY#PROJECT",
+      SK: "PROJECT#secret",
+      projectId: "secret",
+      name: "Secret",
+      accessMode: "RESTRICTED",
+    });
+    const secret = metaItem({
+      batchId: "batch-hidden",
+      uploadedAt: "2026-09-14T00:00:00.000Z",
+    });
+    ddb.seed(TABLE, secret);
+    ddb.seed(TABLE, buildHistoryCopy(secret));
+    ddb.seed(TABLE, {
+      PK: "IMPORT#batch-hidden",
+      SK: "ROW#000001",
+      batchId: "batch-hidden",
+      projectId: "secret",
+    });
+    const listed = await handleListTaskImports({
+      user: ADMIN,
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(listed.statusCode, 200);
+    assert.strictEqual(listed.body.totalCount, 1);
+    assert.deepStrictEqual(
+      listed.body.items.map((item) => item.batchId),
+      ["batch-open"]
+    );
+  });
+
+  await test("pendingAssignees emails are normalized", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
+    const meta = metaItem({ batchId: "batch-pending", uploadedAt: NOW });
+    seedBatch(ddb, meta);
+    ddb.seed(TABLE, {
+      PK: "ENTITY#TASK",
+      SK: "TASK#sched-1",
+      taskId: "sched-1",
+      assignmentMode: "SCHEDULED",
+      assignmentState: "PENDING",
+      pendingAssignees: ["  Rahul@MyDGV.com ", "RAHUL@mydgv.com", " "],
+    });
+    ddb.seed(TABLE, {
+      PK: "IMPORT#batch-pending",
+      SK: "ROW#000001",
+      batchId: "batch-pending",
+      projectId: "open-1",
+      taskId: "sched-1",
+      assignmentMode: "SCHEDULED",
+    });
+    const detail = await handleGetTaskImport({
+      user: ADMIN,
+      batchId: "batch-pending",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(detail.statusCode, 200);
+    const emails = detail.body.rows[0].assignment.emails;
+    assert.deepStrictEqual(emails, ["rahul@mydgv.com"]);
+  });
+
+  await test("completed empty-row batches are owner-only", async () => {
+    const ddb = createMemoryDdb();
+    seedPortalAdmins(ddb);
+    const meta = {
+      ...metaItem({
+        batchId: "batch-empty-done",
+        uploadedAt: NOW,
+        status: IMPORT_STATUSES.COMPLETED,
+      }),
+    };
+    ddb.seed(TABLE, meta);
+    ddb.seed(TABLE, buildHistoryCopy(meta));
+    const owner = await handleGetTaskImport({
+      user: ADMIN,
+      batchId: "batch-empty-done",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(owner.statusCode, 200);
+    const other = await handleGetTaskImport({
+      user: OTHER_ADMIN,
+      batchId: "batch-empty-done",
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS,
+    });
+    assert.strictEqual(other.statusCode, 404);
   });
 
   console.log(`${passed} task import history tests passed`);

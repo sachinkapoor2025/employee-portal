@@ -6,6 +6,7 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
   ACTION_ARCHIVED,
@@ -13,6 +14,8 @@ const {
   CONFIRM_NAME_MISMATCH,
   CONFIRM_NAME_REQUIRED,
   DYNAMO_BATCH_LIMIT,
+  PROJECT_HAS_TASKS,
+  PROJECT_HAS_TASKS_MESSAGE,
   STATUS_ACTIVE,
   STATUS_ARCHIVED,
   confirmationNameOf,
@@ -28,8 +31,10 @@ const {
   namesMatch,
   projectPathMatch,
 } = require("./projectManage");
+const { projectMemberKeys, projectAdminKeys } = require("./projectAccess");
 
 const TABLE = "work-table";
+const ACCESS_TABLE = "access-table";
 const ATTACH_BUCKET = "task-attachments";
 const DOCS_BUCKET = "documents-bucket";
 const ACTIVE_ID = "project-active-1";
@@ -39,6 +44,17 @@ const MISSING_ID = "project-missing";
 const OTHER_ID = "project-other-1";
 const NOW = "2026-09-15T11:30:00.000Z";
 const ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
+const SUPER_ADMIN_USER = {
+  email: "super@mydgv.com",
+  groups: ["Admin"],
+  isAdmin: true,
+};
+const MANAGER_USER = {
+  email: "manager@mydgv.com",
+  groups: ["Admin"],
+  isAdmin: true,
+};
+const COGNITO_ADMIN = { email: "admin@mydgv.com", groups: ["Admin"], isAdmin: true };
 const EMPLOYEE = {
   email: "rahul@mydgv.com",
   groups: ["Employee"],
@@ -50,6 +66,63 @@ const NAMES = {
   [ARCHIVED_ID]: "Legacy Archive",
   [OTHER_ID]: "Other Project",
 };
+
+function evalCatalogCondition(item, expr, values = {}) {
+  const s = String(expr || "");
+  if (!s) return true;
+  if (s.includes("attribute_exists(PK)") && !(item && item.PK)) return false;
+  if (s.includes("attribute_not_exists(PK)") && item && item.PK) return false;
+  if (s.includes("deletionStatus <> :deleting") || s.includes("deletionStatus <> :d")) {
+    const deleting = String(values[":deleting"] || values[":d"] || "DELETING").toUpperCase();
+    const raw =
+      item && Object.prototype.hasOwnProperty.call(item, "deletionStatus")
+        ? String(item.deletionStatus).toUpperCase()
+        : "";
+    if (raw === deleting) return false;
+  }
+  if (s.includes("deletionLockId = :lockId")) {
+    if (!item || item.deletionLockId !== values[":lockId"]) return false;
+  }
+  if (s.includes("attribute_not_exists(deletionLockId)")) {
+    const hasLock = Boolean(item && item.deletionLockId);
+    if (s.includes("deletionLockAt < :stale")) {
+      const staleOk =
+        !hasLock || String(item.deletionLockAt || "") < String(values[":stale"] || "");
+      if (!staleOk) return false;
+    } else if (hasLock) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function applyCatalogUpdate(item, expr, values = {}) {
+  const next = { ...item };
+  const text = String(expr || "");
+  if (/SET /i.test(text)) {
+    if (Object.prototype.hasOwnProperty.call(values, ":lockId")) {
+      next.deletionLockId = values[":lockId"];
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(values, ":now") &&
+      /deletionLockAt/.test(text)
+    ) {
+      next.deletionLockAt = values[":now"];
+    }
+    if (Object.prototype.hasOwnProperty.call(values, ":d")) {
+      next.deletionStatus = values[":d"];
+      if (values[":now"]) next.deletionStartedAt = values[":now"];
+    }
+    if (Object.prototype.hasOwnProperty.call(values, ":n")) {
+      next.activeAdminCount = values[":n"];
+    }
+  }
+  if (/REMOVE deletionLockId/.test(text)) {
+    delete next.deletionLockId;
+    delete next.deletionLockAt;
+  }
+  return next;
+}
 
 function createMemoryDdb(options = {}) {
   const items = [];
@@ -63,6 +136,7 @@ function createMemoryDdb(options = {}) {
     batchWriteSizes: [],
     deletedKeys: [],
     putItems: [],
+    failBatch: Boolean(options.failBatch),
     seed(tableName, item) {
       const idx = items.findIndex(
         (row) => keyOf(row.TableName, row.Item) === keyOf(tableName, item)
@@ -91,6 +165,9 @@ function createMemoryDdb(options = {}) {
     async send(command) {
       if (command instanceof GetCommand) {
         const { TableName, Key } = command.input;
+        if (options.failAccessGet && TableName === ACCESS_TABLE) {
+          throw new Error("simulated user access lookup failure");
+        }
         const found = items.find(
           (row) =>
             row.TableName === TableName &&
@@ -100,8 +177,28 @@ function createMemoryDdb(options = {}) {
         return { Item: found ? { ...found.Item } : undefined };
       }
       if (command instanceof PutCommand) {
-        this.putItems.push({ ...command.input.Item });
-        this.seed(command.input.TableName, command.input.Item);
+        const { TableName, Item, ConditionExpression, ExpressionAttributeValues } =
+          command.input;
+        const found = items.find(
+          (row) =>
+            row.TableName === TableName &&
+            row.Item.PK === Item.PK &&
+            row.Item.SK === Item.SK
+        );
+        if (
+          ConditionExpression &&
+          !evalCatalogCondition(
+            found ? found.Item : {},
+            ConditionExpression,
+            ExpressionAttributeValues || {}
+          )
+        ) {
+          const err = new Error("conditional");
+          err.name = "ConditionalCheckFailedException";
+          throw err;
+        }
+        this.putItems.push({ ...Item });
+        this.seed(TableName, Item);
         return {};
       }
       if (command instanceof DeleteCommand) {
@@ -109,11 +206,43 @@ function createMemoryDdb(options = {}) {
         this.remove(TableName, Key);
         return {};
       }
+      if (command instanceof UpdateCommand) {
+        const {
+          TableName,
+          Key,
+          UpdateExpression = "",
+          ConditionExpression = "",
+          ExpressionAttributeValues = {},
+        } = command.input;
+        const found = items.find(
+          (row) =>
+            row.TableName === TableName &&
+            row.Item.PK === Key.PK &&
+            row.Item.SK === Key.SK
+        );
+        if (
+          !evalCatalogCondition(
+            found ? found.Item : {},
+            ConditionExpression,
+            ExpressionAttributeValues
+          )
+        ) {
+          const err = new Error("conditional");
+          err.name = "ConditionalCheckFailedException";
+          throw err;
+        }
+        found.Item = applyCatalogUpdate(
+          found.Item,
+          UpdateExpression,
+          ExpressionAttributeValues
+        );
+        return {};
+      }
       if (command instanceof BatchWriteCommand) {
         const tableName = Object.keys(command.input.RequestItems || {})[0];
         const reqs = command.input.RequestItems?.[tableName] || [];
         this.batchWriteSizes.push(reqs.length);
-        if (options.failBatch) {
+        if (this.failBatch) {
           throw new Error("simulated batch write failure");
         }
         if (unprocessedLeft > 0) {
@@ -197,6 +326,32 @@ function createMemoryS3({ objects = {}, failKeys = [] } = {}) {
       return { Deleted, Errors };
     },
   };
+}
+
+function seedAdminAccess(ddb, { email = ADMIN.email, role = "ADMIN", status = "ACTIVE" } = {}) {
+  const id = String(email).toLowerCase();
+  ddb.seed(ACCESS_TABLE, {
+    PK: id,
+    SK: id,
+    email: id,
+    role,
+    status,
+  });
+}
+
+function listProjects(ddb, extra = {}) {
+  seedAdminAccess(ddb, {
+    email: extra.user?.email || ADMIN.email,
+    role: extra.role,
+    status: extra.accessStatus,
+  });
+  return handleListProjects({
+    ddb,
+    tableName: TABLE,
+    accessTable: ACCESS_TABLE,
+    user: extra.user || ADMIN,
+    status: extra.status,
+  });
 }
 
 function projectItem({ projectId, name, status = "ACTIVE", extra = {} }) {
@@ -315,7 +470,40 @@ function seedRetained(ddb, projectId = ACTIVE_ID) {
   });
 }
 
+function seedAclPair(ddb, kind, projectId, email, extra = {}) {
+  const keys =
+    kind === "admin"
+      ? projectAdminKeys(projectId, email)
+      : projectMemberKeys(projectId, email);
+  const base = {
+    type: kind === "admin" ? "PROJECT_ADMIN" : "PROJECT_MEMBER",
+    projectId,
+    email: String(email).trim().toLowerCase(),
+    status: extra.status || "ACTIVE",
+    taskVisibility: extra.taskVisibility,
+  };
+  ddb.seed(TABLE, { ...keys.projectSide, ...base });
+  ddb.seed(TABLE, { ...keys.userSide, ...base });
+}
+
+function seedRestrictedEmpty(ddb, projectId, name) {
+  ddb.seed(
+    TABLE,
+    projectItem({
+      projectId,
+      name,
+      extra: { accessMode: "RESTRICTED", activeAdminCount: 1 },
+    })
+  );
+}
+
+function assertNotDeleting(project) {
+  assert.ok(project);
+  assert.notStrictEqual(String(project.deletionStatus || "").toUpperCase(), "DELETING");
+}
+
 function seedBase(ddb) {
+  seedAdminAccess(ddb);
   ddb.seed(TABLE, projectItem({ projectId: ACTIVE_ID, name: "Portal" }));
   ddb.seed(TABLE, projectItem({ projectId: EMPTY_ID, name: "Empty Project" }));
   ddb.seed(
@@ -331,6 +519,13 @@ function seedBase(ddb) {
     })
   );
   ddb.seed(TABLE, projectItem({ projectId: OTHER_ID, name: "Other Project" }));
+}
+
+function runPatch(opts) {
+  return handlePatchProject({
+    accessTable: ACCESS_TABLE,
+    ...opts,
+  });
 }
 
 function noSleep() {
@@ -351,6 +546,7 @@ async function del(
     maxAttempts,
     dynamoBatchLimit,
     s3DeleteLimit,
+    accessTable = ACCESS_TABLE,
   } = {}
 ) {
   const resolvedConfirm =
@@ -370,6 +566,7 @@ async function del(
     ddb,
     s3,
     tableName: TABLE,
+    accessTable,
     attachmentsBucket,
     documentsBucket,
     sleep: noSleep,
@@ -530,7 +727,9 @@ async function run() {
     const result = await del(ddb, { user: EMPLOYEE, projectId: EMPTY_ID });
     assert.strictEqual(result.statusCode, 403);
     assert.strictEqual(result.body.error, "Admin required");
-    assert.ok(await getProject(ddb, TABLE, EMPTY_ID));
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.ok(stored);
+    assertNotDeleting(stored);
   });
 
   await test("5. missing project", async () => {
@@ -566,7 +765,7 @@ async function run() {
     assertNoArchiveWrite(ddb);
   });
 
-  await test("8-10. active, completed, and archived tasks are deleted", async () => {
+  await test("8-10. active, completed, and archived tasks block deletion", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedRetained(ddb);
@@ -577,17 +776,27 @@ async function run() {
       status: "TODO",
       archived: true,
     });
+    const before = ddb.of(TABLE).map((item) => `${item.PK}|${item.SK}`).sort();
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(result.body.action, ACTION_DELETED);
-    assert.strictEqual(result.body.taskCount, 3);
-    assert.strictEqual(await getProject(ddb, TABLE, ACTIVE_ID), null);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["active-1", "done-1", "archived-1"]);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.strictEqual(result.body.error, PROJECT_HAS_TASKS_MESSAGE);
+    const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+    assert.ok(stored);
+    assert.notStrictEqual(String(stored.deletionStatus || "").toUpperCase(), "DELETING");
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "active-1"));
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "done-1"));
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "archived-1"));
     assertRetained(ddb);
     assertNoArchiveWrite(ddb);
+    assert.deepStrictEqual(
+      ddb.of(TABLE).map((item) => `${item.PK}|${item.SK}`).sort(),
+      before
+    );
+    assert.strictEqual(ddb.deletedKeys.length, 0);
   });
 
-  await test("11. pagination of project task discovery", async () => {
+  await test("11. pagination of project task discovery still finds copies", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedTaskGraph(ddb, { taskId: "t-a" });
@@ -606,13 +815,14 @@ async function run() {
       return orig(command);
     };
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(result.body.taskCount, 3);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
     assert.ok(copyQueries >= 3);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["t-a", "t-b", "t-c"]);
+    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "t-a"));
   });
 
-  await test("12. pagination of canonical task discovery", async () => {
+  await test("12. canonical task history blocks deletion", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     ddb.seed(
@@ -640,33 +850,28 @@ async function run() {
       return orig(command);
     };
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(result.body.taskCount, 2);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
     assert.ok(entityQueries >= 2);
-    assert.strictEqual(
-      ddb.of(TABLE).some((item) => item.taskId === "orphan-a"),
-      false
-    );
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "orphan-a"));
     assert.ok(ddb.of(TABLE).some((item) => item.taskId === "other-task"));
+    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
   });
 
-  await test("13. duplicate task IDs are deleted once", async () => {
+  await test("13. duplicate copy and canonical records still block deletion", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     const copy = taskCopy({ projectId: ACTIVE_ID, taskId: "dup-1" });
     ddb.seed(TABLE, copy);
     ddb.seed(TABLE, entityTask(copy));
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(result.body.taskCount, 1);
-    const deletedTaskKeys = ddb.deletedKeys.filter(
-      (key) => key.SK === "TASK#dup-1"
-    );
-    assert.strictEqual(deletedTaskKeys.length, 2);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["dup-1"]);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "dup-1"));
+    assert.strictEqual(ddb.deletedKeys.length, 0);
   });
 
-  await test("14-17. child records, copies, and canonical tasks are deleted", async () => {
+  await test("14-17. children and attachments are not deleted when tasks exist", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedTaskGraph(ddb, {
@@ -686,13 +891,14 @@ async function run() {
       objects: { "tasks/child-1/1-file.pdf": true },
     });
     const result = await del(ddb, { projectId: ACTIVE_ID, s3 });
-    assert.strictEqual(result.statusCode, 200);
-    assert.deepStrictEqual(s3.deleted, ["tasks/child-1/1-file.pdf"]);
-    assert.deepStrictEqual(s3.buckets, [ATTACH_BUCKET]);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["child-1"]);
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.deepStrictEqual(s3.deleted, []);
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "child-1"));
+    assert.ok(ddb.of(TABLE).some((item) => item.SK === "ASSIGNMENT#rahul@mydgv.com"));
   });
 
-  await test("18. DynamoDB BatchWrite chunks at 25 items", async () => {
+  await test("18-21. task and S3 cleanup are skipped when copies exist", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     const children = [];
@@ -700,54 +906,28 @@ async function run() {
       children.push({ SK: `COMMENT#2026-09-01T00:00:00.000Z#c${i}` });
     }
     seedTaskGraph(ddb, { taskId: "chunk-1", children });
-    const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.ok(ddb.batchWriteSizes.length >= 2);
-    assert.ok(ddb.batchWriteSizes.every((size) => size <= DYNAMO_BATCH_LIMIT));
-    assert.ok(ddb.batchWriteSizes.includes(DYNAMO_BATCH_LIMIT));
+    const s3 = createMemoryS3({ objects: { "tasks/att-task/ok.pdf": true } });
+    const result = await del(ddb, { projectId: ACTIVE_ID, s3 });
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    assert.deepStrictEqual(ddb.batchWriteSizes, []);
+    assert.deepStrictEqual(s3.deleted, []);
+    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
   });
 
-  await test("19. DynamoDB UnprocessedItems retry", async () => {
-    const ddb = createMemoryDdb({ unprocessedRounds: 1 });
-    seedBase(ddb);
-    seedTaskGraph(ddb, { taskId: "retry-1" });
-    const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.ok(ddb.batchWriteSizes.length >= 2);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["retry-1"]);
-  });
-
-  await test("20. bounded retry failure", async () => {
+  await test("20. bounded retry of task deletes is not reached", async () => {
     const ddb = createMemoryDdb({ unprocessedRounds: 10 });
     seedBase(ddb);
     seedTaskGraph(ddb, { taskId: "fail-1" });
     const result = await del(ddb, { projectId: ACTIVE_ID, maxAttempts: 3 });
-    assert.strictEqual(result.statusCode, 500);
-    assert.strictEqual(result.body.code, "PROJECT_DELETE_UNPROCESSED");
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
     assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
     assert.ok(ddb.of(TABLE).some((item) => item.taskId === "fail-1"));
     assertNoArchiveWrite(ddb);
   });
 
-  await test("21. registered attachment discovery", async () => {
-    const ddb = createMemoryDdb();
-    seedBase(ddb);
-    seedTaskGraph(ddb, {
-      taskId: "att-task",
-      children: [
-        {
-          SK: "ATTACHMENT#keep",
-          s3Key: "tasks/att-task/ok.pdf",
-        },
-      ],
-    });
-    const s3 = createMemoryS3({ objects: { "tasks/att-task/ok.pdf": true } });
-    const result = await del(ddb, { projectId: ACTIVE_ID, s3 });
-    assert.strictEqual(result.statusCode, 200);
-    assert.deepStrictEqual(s3.deleted, ["tasks/att-task/ok.pdf"]);
-  });
-
-  await test("22-25. unsafe, traversal, profile, and import keys are rejected", async () => {
+  await test("22-27. unsafe keys and S3 failures are not reached when tasks exist", async () => {
     const cases = [
       "tasks/t-unsafe/../secret.pdf",
       "profiles/admin@mydgv.com/pic.png",
@@ -762,148 +942,69 @@ async function run() {
       });
       const s3 = createMemoryS3({ objects: { [s3Key]: true } });
       const result = await del(ddb, { projectId: ACTIVE_ID, s3 });
-      assert.strictEqual(result.statusCode, 500);
-      assert.strictEqual(result.body.code, "PROJECT_DELETE_UNSAFE_S3_KEY");
+      assert.strictEqual(result.statusCode, 409);
+      assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
       assert.strictEqual(s3.deleted.length, 0);
-      assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
+      const stored = await getProject(ddb, TABLE, ACTIVE_ID);
+      assert.ok(stored);
+      assert.notStrictEqual(String(stored.deletionStatus || "").toUpperCase(), "DELETING");
       assert.ok(s3.objects[s3Key]);
     }
   });
 
-  await test("26. DocumentsBucket exclusion", async () => {
-    const ddb = createMemoryDdb();
-    seedBase(ddb);
-    seedTaskGraph(ddb, {
-      taskId: "docs-1",
-      children: [
-        {
-          SK: "ATTACHMENT#a1",
-          s3Key: "tasks/docs-1/file.pdf",
-        },
-      ],
-    });
-    const s3 = createMemoryS3({
-      objects: { "tasks/docs-1/file.pdf": true },
-    });
-    const result = await del(ddb, {
-      projectId: ACTIVE_ID,
-      s3,
-      attachmentsBucket: DOCS_BUCKET,
-      documentsBucket: DOCS_BUCKET,
-    });
-    assert.strictEqual(result.statusCode, 500);
-    assert.strictEqual(result.body.code, "PROJECT_DELETE_S3_FAILED");
-    assert.strictEqual(s3.deleted.length, 0);
-    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
-  });
-
-  await test("27. S3 deletion failure blocks success", async () => {
-    const ddb = createMemoryDdb();
-    seedBase(ddb);
-    seedTaskGraph(ddb, {
-      taskId: "s3-fail",
-      children: [
-        { SK: "ATTACHMENT#a1", s3Key: "tasks/s3-fail/file.pdf" },
-      ],
-    });
-    const s3 = createMemoryS3({
-      objects: { "tasks/s3-fail/file.pdf": true },
-      failKeys: ["tasks/s3-fail/file.pdf"],
-    });
-    const result = await del(ddb, {
-      projectId: ACTIVE_ID,
-      s3,
-      maxAttempts: 2,
-    });
-    assert.strictEqual(result.statusCode, 500);
-    assert.strictEqual(result.body.code, "PROJECT_DELETE_S3_FAILED");
-    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
-    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "s3-fail"));
-    assertNoArchiveWrite(ddb);
-  });
-
-  await test("28. missing S3 object is idempotent", async () => {
-    const ddb = createMemoryDdb();
-    seedBase(ddb);
-    seedTaskGraph(ddb, {
-      taskId: "s3-missing",
-      children: [
-        { SK: "ATTACHMENT#a1", s3Key: "tasks/s3-missing/gone.pdf" },
-      ],
-    });
-    const s3 = createMemoryS3();
-    const result = await del(ddb, { projectId: ACTIVE_ID, s3 });
-    assert.strictEqual(result.statusCode, 200);
-    assert.deepStrictEqual(s3.deleted, ["tasks/s3-missing/gone.pdf"]);
-    assert.strictEqual(await getProject(ddb, TABLE, ACTIVE_ID), null);
-  });
-
-  await test("29-32. import history, users, notifies, and time entries are retained", async () => {
+  await test("28-32. side records stay when deletion is blocked", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedRetained(ddb);
     seedTaskGraph(ddb, { taskId: "keep-side" });
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.statusCode, 409);
     assertRetained(ddb);
+    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
+    assert.ok(ddb.of(TABLE).some((item) => item.taskId === "keep-side"));
   });
 
-  await test("33. project item is deleted last", async () => {
+  await test("33. empty project catalog is deleted last", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    seedTaskGraph(ddb, { taskId: "last-1" });
-    const result = await del(ddb, { projectId: ACTIVE_ID });
+    const result = await del(ddb, { projectId: EMPTY_ID });
     assert.strictEqual(result.statusCode, 200);
     const last = ddb.deletedKeys[ddb.deletedKeys.length - 1];
     assert.deepStrictEqual(last, {
       PK: "ENTITY#PROJECT",
-      SK: `PROJECT#${ACTIVE_ID}`,
+      SK: `PROJECT#${EMPTY_ID}`,
     });
-    assert.ok(
-      ddb.deletedKeys.some(
-        (key) => key.PK === "ENTITY#TASK" && key.SK === "TASK#last-1"
-      )
-    );
   });
 
-  await test("34. verification failure blocks success", async () => {
+  await test("34. tasks remain and catalog is not deleted", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedTaskGraph(ddb, { taskId: "verify-1" });
     const orig = ddb.send.bind(ddb);
-    let batchDone = false;
     ddb.send = async (command) => {
-      const res = await orig(command);
-      if (command instanceof BatchWriteCommand) {
-        batchDone = true;
-        ddb.seed(
-          TABLE,
-          taskCopy({ projectId: ACTIVE_ID, taskId: "verify-1" })
-        );
+      if (command instanceof DeleteCommand) {
+        throw new Error("project delete should not run when tasks exist");
       }
-      if (batchDone && command instanceof DeleteCommand) {
-        throw new Error("project delete should not run after verify failure");
-      }
-      return res;
+      return orig(command);
     };
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 500);
-    assert.strictEqual(result.body.code, "PROJECT_DELETE_VERIFY_FAILED");
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
     assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
     assertNoArchiveWrite(ddb);
   });
 
-  await test("35. DELETE never writes ARCHIVED", async () => {
+  await test("35. DELETE with tasks never writes ARCHIVED", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedTaskGraph(ddb, { taskId: "no-archive" });
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.statusCode, 409);
     assert.notStrictEqual(result.body.action, ACTION_ARCHIVED);
     assertNoArchiveWrite(ddb);
   });
 
-  await test("36. no task records remain after successful cleanup", async () => {
+  await test("36. task records remain after blocked deletion", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedRetained(ddb);
@@ -915,10 +1016,11 @@ async function run() {
       ],
     });
     const result = await del(ddb, { projectId: ACTIVE_ID });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(await countProjectTasks(ddb, TABLE, ACTIVE_ID), 0);
-    assertProjectOwnedGone(ddb, ACTIVE_ID, ["final-1"]);
+    assert.strictEqual(result.statusCode, 409);
+    assert.ok((await countProjectTasks(ddb, TABLE, ACTIVE_ID)) > 0);
+    assert.ok(await getProject(ddb, TABLE, ACTIVE_ID));
     assert.ok(await getProject(ddb, TABLE, OTHER_ID));
+    assertRetained(ddb);
   });
 
   await test("DELETE task lookup failure does not delete or archive", async () => {
@@ -947,7 +1049,7 @@ async function run() {
       await getProjectName(ddb, TABLE, ARCHIVED_ID),
       "Legacy Archive"
     );
-    await handlePatchProject({
+    await runPatch({
       user: ADMIN,
       projectId: ACTIVE_ID,
       body: { status: "ARCHIVED" },
@@ -961,7 +1063,7 @@ async function run() {
   await test("E. GET /projects excludes ARCHIVED projects", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    await handlePatchProject({
+    await runPatch({
       user: ADMIN,
       projectId: ACTIVE_ID,
       body: { status: "ARCHIVED" },
@@ -970,7 +1072,7 @@ async function run() {
       now: NOW,
     });
 
-    const listed = await handleListProjects({ ddb, tableName: TABLE });
+    const listed = await listProjects(ddb);
     assert.strictEqual(listed.statusCode, 200);
     const ids = listed.body.map((p) => p.projectId).sort();
     assert.deepStrictEqual(ids, [EMPTY_ID, OTHER_ID].sort());
@@ -988,7 +1090,7 @@ async function run() {
         extra: { status: undefined },
       })
     );
-    const listed = await handleListProjects({ ddb, tableName: TABLE });
+    const listed = await listProjects(ddb);
     assert.strictEqual(listed.body.length, 1);
     assert.strictEqual(listed.body[0].projectId, "legacy");
   });
@@ -999,7 +1101,9 @@ async function run() {
     const result = await del(ddb, { user: EMPLOYEE, projectId: EMPTY_ID });
     assert.strictEqual(result.statusCode, 403);
     assert.strictEqual(result.body.error, "Admin required");
-    assert.ok(await getProject(ddb, TABLE, EMPTY_ID));
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.ok(stored);
+    assertNotDeleting(stored);
   });
 
   await test("dashboard KPI counts only ACTIVE projects", () => {
@@ -1014,12 +1118,8 @@ async function run() {
   await test("GET /projects default and ACTIVE return only active projects", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const def = await handleListProjects({ ddb, tableName: TABLE });
-    const active = await handleListProjects({
-      ddb,
-      tableName: TABLE,
-      status: "ACTIVE",
-    });
+    const def = await listProjects(ddb);
+    const active = await listProjects(ddb, { status: "ACTIVE" });
     const ids = def.body.map((p) => p.projectId).sort();
     assert.deepStrictEqual(ids, [ACTIVE_ID, EMPTY_ID, OTHER_ID].sort());
     assert.deepStrictEqual(
@@ -1031,11 +1131,7 @@ async function run() {
   await test("GET /projects?status=ARCHIVED returns archived only", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const listed = await handleListProjects({
-      ddb,
-      tableName: TABLE,
-      status: "ARCHIVED",
-    });
+    const listed = await listProjects(ddb, { status: "ARCHIVED" });
     assert.deepStrictEqual(
       listed.body.map((p) => p.projectId),
       [ARCHIVED_ID]
@@ -1045,11 +1141,7 @@ async function run() {
   await test("GET /projects?status=ALL returns active and archived", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const listed = await handleListProjects({
-      ddb,
-      tableName: TABLE,
-      status: "all",
-    });
+    const listed = await listProjects(ddb, { status: "all" });
     assert.strictEqual(listed.statusCode, 200);
     assert.strictEqual(listed.body.length, 4);
   });
@@ -1068,7 +1160,7 @@ async function run() {
   await test("PATCH edits name client description", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: EMPTY_ID,
       body: {
@@ -1091,7 +1183,7 @@ async function run() {
   await test("PATCH rejects duplicate active name", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: EMPTY_ID,
       body: { name: " portal " },
@@ -1106,7 +1198,7 @@ async function run() {
   await test("PATCH archive works with zero tasks", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: EMPTY_ID,
       body: { status: "ARCHIVED" },
@@ -1119,14 +1211,14 @@ async function run() {
     assert.strictEqual(result.body.archivedAt, NOW);
     assert.strictEqual(result.body.archivedBy, ADMIN.email);
     assert.ok(await getProject(ddb, TABLE, EMPTY_ID));
-    const listed = await handleListProjects({ ddb, tableName: TABLE });
+    const listed = await listProjects(ddb);
     assert.ok(!listed.body.some((p) => p.projectId === EMPTY_ID));
   });
 
   await test("PATCH restore returns a project to ACTIVE", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: ARCHIVED_ID,
       body: { status: "ACTIVE" },
@@ -1137,7 +1229,7 @@ async function run() {
     assert.strictEqual(result.body.status, STATUS_ACTIVE);
     assert.strictEqual(result.body.archivedAt, undefined);
     assert.strictEqual(result.body.archivedBy, undefined);
-    const listed = await handleListProjects({ ddb, tableName: TABLE });
+    const listed = await listProjects(ddb);
     assert.ok(listed.body.some((p) => p.projectId === ARCHIVED_ID));
   });
 
@@ -1153,7 +1245,7 @@ async function run() {
         extra: { archivedAt: NOW, archivedBy: ADMIN.email },
       })
     );
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: ARCHIVED_ID,
       body: { status: "ACTIVE" },
@@ -1166,7 +1258,7 @@ async function run() {
   await test("PATCH missing project and invalid status", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const missing = await handlePatchProject({
+    const missing = await runPatch({
       user: ADMIN,
       projectId: MISSING_ID,
       body: { name: "X" },
@@ -1174,7 +1266,7 @@ async function run() {
       tableName: TABLE,
     });
     assert.strictEqual(missing.statusCode, 404);
-    const invalid = await handlePatchProject({
+    const invalid = await runPatch({
       user: ADMIN,
       projectId: EMPTY_ID,
       body: { status: "DELETED" },
@@ -1182,7 +1274,7 @@ async function run() {
       tableName: TABLE,
     });
     assert.strictEqual(invalid.statusCode, 400);
-    const empty = await handlePatchProject({
+    const empty = await runPatch({
       user: ADMIN,
       projectId: EMPTY_ID,
       body: {},
@@ -1195,7 +1287,7 @@ async function run() {
   await test("employee cannot PATCH /projects/{projectId}", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: EMPLOYEE,
       projectId: EMPTY_ID,
       body: { name: "Nope" },
@@ -1212,7 +1304,7 @@ async function run() {
     ddb.seed(TABLE, copy);
     ddb.seed(TABLE, entityTask(copy));
     const before = ddb.of(TABLE).filter((item) => item.taskId === "keep-2");
-    await handlePatchProject({
+    await runPatch({
       user: ADMIN,
       projectId: ACTIVE_ID,
       body: { status: "ARCHIVED" },
@@ -1237,7 +1329,7 @@ async function run() {
         extra: { archivedAt: NOW, archivedBy: ADMIN.email },
       })
     );
-    const result = await handlePatchProject({
+    const result = await runPatch({
       user: ADMIN,
       projectId: ARCHIVED_ID,
       body: { name: "Portal", client: "Kept" },
@@ -1247,6 +1339,474 @@ async function run() {
     assert.strictEqual(result.statusCode, 200);
     assert.strictEqual(result.body.client, "Kept");
     assert.strictEqual(result.body.status, STATUS_ARCHIVED);
+  });
+
+  await test("active ADMIN can delete an empty OPEN project", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.action, ACTION_DELETED);
+    assert.strictEqual(await getProject(ddb, TABLE, EMPTY_ID), null);
+  });
+
+  await test("active SUPER_ADMIN can delete an empty RESTRICTED project", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
+    seedRestrictedEmpty(ddb, "secret-empty", "Secret Empty");
+    const result = await del(ddb, {
+      user: SUPER_ADMIN_USER,
+      projectId: "secret-empty",
+      confirmName: "Secret Empty",
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(await getProject(ddb, TABLE, "secret-empty"), null);
+  });
+
+  await test("active ADMIN can delete RESTRICTED without Project Admin membership", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, "rest-no-pa", "No PA");
+    seedAclPair(ddb, "admin", "rest-no-pa", "other-pa@mydgv.com", {
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
+    const result = await del(ddb, {
+      projectId: "rest-no-pa",
+      confirmName: "No PA",
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(await getProject(ddb, TABLE, "rest-no-pa"), null);
+  });
+
+  await test("active SUPER_ADMIN can delete RESTRICTED without Project Admin membership", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
+    seedRestrictedEmpty(ddb, "rest-sa", "SA Delete");
+    const result = await del(ddb, {
+      user: SUPER_ADMIN_USER,
+      projectId: "rest-sa",
+      confirmName: "SA Delete",
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(await getProject(ddb, TABLE, "rest-sa"), null);
+  });
+
+  await test("Cognito isAdmin without UserAccess cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    ddb.remove(ACCESS_TABLE, { PK: ADMIN.email, SK: ADMIN.email });
+    const result = await del(ddb, { user: COGNITO_ADMIN, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("Cognito isAdmin with PENDING UserAccess cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { status: "PENDING" });
+    const result = await del(ddb, { user: COGNITO_ADMIN, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("Cognito isAdmin with BLOCKED UserAccess cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { status: "BLOCKED" });
+    const result = await del(ddb, { user: COGNITO_ADMIN, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("Cognito isAdmin with inactive UserAccess cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { status: "INACTIVE" });
+    const result = await del(ddb, { user: COGNITO_ADMIN, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("active MANAGER cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { email: MANAGER_USER.email, role: "MANAGER" });
+    const result = await del(ddb, { user: MANAGER_USER, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("active EMPLOYEE cannot delete", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { email: EMPLOYEE.email, role: "EMPLOYEE" });
+    const result = await del(ddb, { user: EMPLOYEE, projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("UserAccess lookup failure returns 500", async () => {
+    const ddb = createMemoryDdb({ failAccessGet: true });
+    seedBase(ddb);
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 500);
+    assert.strictEqual(result.body.error, "Internal server error");
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("missing caller email returns 401", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const missing = await del(ddb, {
+      user: { isAdmin: true },
+      projectId: EMPTY_ID,
+    });
+    assert.strictEqual(missing.statusCode, 401);
+    assert.strictEqual(missing.body.error, "Unauthorized");
+    const blank = await del(ddb, {
+      user: { email: "   ", isAdmin: true },
+      projectId: EMPTY_ID,
+    });
+    assert.strictEqual(blank.statusCode, 401);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("normalized caller email authorizes deletion", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const result = await del(ddb, {
+      user: { email: "  Admin@MyDGV.com ", isAdmin: false },
+      projectId: EMPTY_ID,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(await getProject(ddb, TABLE, EMPTY_ID), null);
+  });
+
+  await test("client-supplied role status and accessMode cannot authorize deletion", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    ddb.remove(ACCESS_TABLE, { PK: ADMIN.email, SK: ADMIN.email });
+    const result = await del(ddb, {
+      user: COGNITO_ADMIN,
+      projectId: EMPTY_ID,
+      body: {
+        confirmName: "Empty Project",
+        role: "SUPER_ADMIN",
+        status: "ACTIVE",
+        accessMode: "OPEN",
+        PK: ADMIN.email,
+        SK: ADMIN.email,
+        projectId: EMPTY_ID,
+      },
+    });
+    assert.strictEqual(result.statusCode, 403);
+    assertNotDeleting(await getProject(ddb, TABLE, EMPTY_ID));
+  });
+
+  await test("empty project deletion cleans both ACL copies", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAclPair(ddb, "member", EMPTY_ID, "rahul@mydgv.com");
+    seedAclPair(ddb, "admin", EMPTY_ID, "pa@mydgv.com", {
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 200);
+    const leftover = ddb.of(TABLE).filter(
+      (item) =>
+        String(item.SK).startsWith("MEMBER#") ||
+        String(item.SK).startsWith("PROJECT_ADMIN#") ||
+        String(item.SK) === `PROJECT_MEMBER#${EMPTY_ID}` ||
+        String(item.SK) === `PROJECT_ADMIN#${EMPTY_ID}`
+    );
+    assert.deepStrictEqual(leftover, []);
+  });
+
+  await test("ACL cleanup failure returns 500 after tombstone", async () => {
+    const ddb = createMemoryDdb({ failBatch: true });
+    seedBase(ddb);
+    seedAclPair(ddb, "member", EMPTY_ID, "rahul@mydgv.com");
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 500);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.deletionStatus, "DELETING");
+    assert.ok(
+      ddb.of(TABLE).some((item) => item.SK === "MEMBER#rahul@mydgv.com")
+    );
+  });
+
+  await test("DELETING retry requires active UserAccess ADMIN or SUPER_ADMIN", async () => {
+    const ddb = createMemoryDdb({ failBatch: true });
+    seedBase(ddb);
+    seedAclPair(ddb, "member", EMPTY_ID, "rahul@mydgv.com");
+    const first = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(first.statusCode, 500);
+    ddb.failBatch = false;
+    seedAdminAccess(ddb, { email: MANAGER_USER.email, role: "MANAGER" });
+    const denied = await del(ddb, { user: MANAGER_USER, projectId: EMPTY_ID });
+    assert.strictEqual(denied.statusCode, 403);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.deletionStatus, "DELETING");
+    const missingConfirm = await del(ddb, {
+      projectId: EMPTY_ID,
+      body: {},
+    });
+    assert.strictEqual(missingConfirm.statusCode, 400);
+    assert.strictEqual(missingConfirm.body.error, CONFIRM_NAME_REQUIRED);
+    assert.strictEqual(
+      (await getProject(ddb, TABLE, EMPTY_ID)).deletionStatus,
+      "DELETING"
+    );
+    const retry = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(retry.statusCode, 200);
+    assert.strictEqual(await getProject(ddb, TABLE, EMPTY_ID), null);
+  });
+
+  await test("missing project does not fall back to OPEN", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const before = ddb.items.length;
+    const result = await del(ddb, {
+      projectId: MISSING_ID,
+      confirmName: "Anything",
+    });
+    assert.strictEqual(result.statusCode, 404);
+    assert.strictEqual(result.body.error, "Project not found");
+    assert.strictEqual(ddb.items.length, before);
+    assert.strictEqual(ddb.putItems.length, 0);
+  });
+
+  await test("catalog PATCH requires ACTIVE UserAccess ADMIN or SUPER_ADMIN", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, "rest-patch", "Restricted Patch");
+    const okAdmin = await runPatch({
+      user: ADMIN,
+      projectId: "rest-patch",
+      body: { client: "Acme" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(okAdmin.statusCode, 200);
+    seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
+    const okSuper = await runPatch({
+      user: SUPER_ADMIN_USER,
+      projectId: "rest-patch",
+      body: { description: "by super" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(okSuper.statusCode, 200);
+    seedAdminAccess(ddb, { email: MANAGER_USER.email, role: "MANAGER" });
+    const mgr = await runPatch({
+      user: MANAGER_USER,
+      projectId: EMPTY_ID,
+      body: { name: "Nope" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(mgr.statusCode, 403);
+    ddb.remove(ACCESS_TABLE, { PK: ADMIN.email, SK: ADMIN.email });
+    const missing = await runPatch({
+      user: COGNITO_ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Nope", role: "ADMIN", status: "ACTIVE", isAdmin: true },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(missing.statusCode, 403);
+    seedAdminAccess(ddb, { status: "PENDING" });
+    const pending = await runPatch({
+      user: COGNITO_ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Nope" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(pending.statusCode, 403);
+    seedAdminAccess(ddb, { status: "BLOCKED" });
+    const blocked = await runPatch({
+      user: COGNITO_ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Nope" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(blocked.statusCode, 403);
+  });
+
+  await test("catalog PATCH missing and DELETING projects return 404", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const missing = await runPatch({
+      user: ADMIN,
+      projectId: MISSING_ID,
+      body: { name: "X" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(missing.statusCode, 404);
+    ddb.seed(
+      TABLE,
+      projectItem({
+        projectId: "going",
+        name: "Going",
+        extra: { deletionStatus: "DELETING" },
+      })
+    );
+    const deleting = await runPatch({
+      user: ADMIN,
+      projectId: "going",
+      body: { name: "Still Going" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(deleting.statusCode, 404);
+  });
+
+  await test("PATCH returns 409 when Put condition fails but the project is still live", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const orig = ddb.send.bind(ddb);
+    ddb.send = async (command) => {
+      if (command instanceof PutCommand) {
+        const err = new Error("conditional");
+        err.name = "ConditionalCheckFailedException";
+        throw err;
+      }
+      return orig(command);
+    };
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Won't Stick" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 409);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.name, NAMES[EMPTY_ID]);
+    assert.ok(!stored.deletionStatus);
+  });
+
+  await test("stale PATCH cannot overwrite a DELETING tombstone", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const orig = ddb.send.bind(ddb);
+    ddb.send = async (command) => {
+      const result = await orig(command);
+      if (
+        command instanceof GetCommand &&
+        command.input.TableName === TABLE &&
+        command.input.Key?.SK === `PROJECT#${EMPTY_ID}`
+      ) {
+        const row = ddb.items.find(
+          (item) =>
+            item.TableName === TABLE &&
+            item.Item.SK === `PROJECT#${EMPTY_ID}`
+        );
+        if (row) row.Item.deletionStatus = "DELETING";
+      }
+      return result;
+    };
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Resurrected" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 404);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.deletionStatus, "DELETING");
+    assert.strictEqual(stored.name, NAMES[EMPTY_ID]);
+  });
+
+  await test("DELETE returns 409 when a task exists and does not tombstone", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    ddb.seed(TABLE, {
+      PK: `PROJECT#${EMPTY_ID}`,
+      SK: "TASK#late",
+      taskId: "late",
+      projectId: EMPTY_ID,
+    });
+    const result = await del(ddb, { projectId: EMPTY_ID });
+    assert.strictEqual(result.statusCode, 409);
+    assert.strictEqual(result.body.code, PROJECT_HAS_TASKS);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.notStrictEqual(String(stored.deletionStatus || "").toUpperCase(), "DELETING");
+    assert.ok(!stored.deletionLockId);
+    assert.ok(
+      ddb.of(TABLE).some((item) => item.taskId === "late")
+    );
+  });
+
+  await test("fresh deletion lock is not stolen", async () => {
+    const persist = require("./projectAccessPersist");
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const first = await persist.acquireDeletionLock(ddb, TABLE, EMPTY_ID, {
+      now: "2026-09-21T12:00:00.000Z",
+      lockId: "lock-a",
+    });
+    assert.strictEqual(first.ok, true);
+    const second = await persist.acquireDeletionLock(ddb, TABLE, EMPTY_ID, {
+      now: "2026-09-21T12:00:01.000Z",
+      lockId: "lock-b",
+    });
+    assert.strictEqual(second.ok, false);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.deletionLockId, "lock-a");
+  });
+
+  await test("stale deletion lock can be recovered and wrong lock cannot be released", async () => {
+    const persist = require("./projectAccessPersist");
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const first = await persist.acquireDeletionLock(ddb, TABLE, EMPTY_ID, {
+      now: "2026-09-21T12:00:00.000Z",
+      lockId: "lock-old",
+      staleMs: 1000,
+    });
+    assert.strictEqual(first.ok, true);
+    const stolen = await persist.releaseDeletionLock(
+      ddb,
+      TABLE,
+      EMPTY_ID,
+      "lock-other"
+    );
+    assert.strictEqual(stolen.ok, false);
+    assert.strictEqual((await getProject(ddb, TABLE, EMPTY_ID)).deletionLockId, "lock-old");
+    const recovered = await persist.acquireDeletionLock(ddb, TABLE, EMPTY_ID, {
+      now: "2026-09-21T12:00:05.000Z",
+      lockId: "lock-new",
+      staleMs: 1000,
+    });
+    assert.strictEqual(recovered.ok, true);
+    assert.strictEqual((await getProject(ddb, TABLE, EMPTY_ID)).deletionLockId, "lock-new");
+  });
+
+  await test("wrong lock ID cannot convert catalog to DELETING", async () => {
+    const persist = require("./projectAccessPersist");
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const locked = await persist.acquireDeletionLock(ddb, TABLE, EMPTY_ID, {
+      lockId: "lock-owner",
+    });
+    assert.strictEqual(locked.ok, true);
+    const stolen = await persist.convertLockToDeleting(
+      ddb,
+      TABLE,
+      EMPTY_ID,
+      "lock-other"
+    );
+    assert.strictEqual(stolen.ok, false);
+    const stored = await getProject(ddb, TABLE, EMPTY_ID);
+    assert.strictEqual(stored.deletionLockId, "lock-owner");
+    assert.notStrictEqual(String(stored.deletionStatus || "").toUpperCase(), "DELETING");
   });
 
   console.log(`${passed} project management tests passed`);

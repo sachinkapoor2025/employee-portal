@@ -7,6 +7,7 @@ const {
   getAccessRow,
   isActiveAccess,
   AccessLookupError,
+  notifyExcelAssignment,
 } = require("./taskImportAssignNotify");
 
 assert.strictEqual(
@@ -76,7 +77,32 @@ async function runAccessLookup() {
   console.log("taskImportAssignNotify tests passed");
 }
 
-runAccessLookup().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function runNotifyNormalize() {
+  const puts = [];
+  const ddb = {
+    async send(command) {
+      const item = command.input?.Item;
+      if (item) puts.push(item);
+      return {};
+    },
+  };
+  await notifyExcelAssignment({
+    ddb,
+    accessTable: "access",
+    tableName: "work",
+    task: { taskId: "t-norm", title: "T", createdBy: "admin@mydgv.com" },
+    assigneeEmails: ["  Rahul@MyDGV.com ", "RAHUL@mydgv.com", " ", "lead@mydgv.com"],
+    listAccessRows: async () => [],
+  });
+  const employeeEmails = [
+    ...new Set(puts.map((item) => item.email).filter(Boolean)),
+  ].sort();
+  assert.deepStrictEqual(employeeEmails, ["lead@mydgv.com", "rahul@mydgv.com"]);
+}
+
+runAccessLookup()
+  .then(runNotifyNormalize)
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
