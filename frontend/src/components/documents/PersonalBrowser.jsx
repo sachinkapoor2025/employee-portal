@@ -35,7 +35,7 @@ import { colors } from "../../theme";
 const ACCEPT =
   ".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,application/pdf,image/jpeg,image/png,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const ALLOWED_EXT = [".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx"];
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 50 * 1024 * 1024;
 const NESTING_CAP = 10;
 const REQUIRED_DOCUMENTS_ID = "required-documents";
 
@@ -442,7 +442,7 @@ export default function PersonalBrowser() {
         return;
       }
       if (file.size > MAX_BYTES) {
-        setUploadError("File size exceeds the allowed limit of 10 MB.");
+        setUploadError("File size exceeds the allowed limit of 50 MB.");
         return;
       }
       if (file.size <= 0) {
@@ -778,7 +778,7 @@ export default function PersonalBrowser() {
             multiple
             disabled={uploading}
             onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
-            hint="PDF, JPG, PNG, DOC, DOCX, XLS, XLSX · max 10 MB each · multiple files allowed"
+            hint="PDF, JPG, PNG, DOC, DOCX, XLS, XLSX · max 50 MB each · multiple files allowed"
           />
           {uploadFiles.length ? (
             <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0 }}>

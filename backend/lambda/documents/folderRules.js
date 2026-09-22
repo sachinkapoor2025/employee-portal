@@ -3,7 +3,7 @@ const { json } = require("../common/response");
 const REQUIRED_DOCUMENTS_NAME = "Required Documents";
 const REQUIRED_DOCUMENTS_ID = "required-documents";
 const RESERVED_FOLDER_NAME = "required documents";
-const MAX_BYTES = Number(process.env.DOCUMENT_MAX_BYTES || 10 * 1024 * 1024);
+const MAX_BYTES = Number(process.env.DOCUMENT_MAX_BYTES || 50 * 1024 * 1024);
 const ALLOWED_BY_EXT = {
   ".pdf": "application/pdf",
   ".jpg": "image/jpeg",

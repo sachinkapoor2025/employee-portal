@@ -27,7 +27,7 @@ const ddb = DynamoDBDocumentClient.from(
 );
 const s3 = new S3Client({ region: process.env.AWS_REGION });
 
-const MAX_BYTES = Number(process.env.DOCUMENT_MAX_BYTES || 10 * 1024 * 1024);
+const MAX_BYTES = Number(process.env.DOCUMENT_MAX_BYTES || 50 * 1024 * 1024);
 const SIGNED_TTL = Number(process.env.DOCUMENT_URL_TTL_SECONDS || 300);
 const REMINDER_MS = 7 * 24 * 60 * 60 * 1000;
 
