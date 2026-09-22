@@ -106,7 +106,9 @@ export const api = async (path, method = "GET", body) => {
       res,
       res.status === 403
         ? "You do not have permission to access this resource."
-        : "API request failed"
+        : res.status === 413
+          ? "This file is too large to send through the server."
+          : "API request failed"
     );
     console.error("API error:", res.status, err.message);
     throw err;
@@ -822,6 +824,8 @@ export const fetchDocumentProjectFolder = (projectId, folderId) =>
   api(projectFolderPath(projectId, folderId, folderId && folderId !== "root" ? "" : "/folders"), "GET");
 export const createDocumentProjectSubfolder = (projectId, folderId, name) =>
   api(projectFolderPath(projectId, folderId, "/subfolders"), "POST", { name });
+export const getDocumentProjectUploadUrl = (projectId, folderId, payload) =>
+  api(projectFolderPath(projectId, folderId, "/files/upload-url"), "POST", payload);
 export const uploadDocumentProjectFiles = (projectId, folderId, payload) =>
   api(projectFolderPath(projectId, folderId, "/files"), "POST", payload);
 export const renameDocumentProjectFolder = (projectId, folderId, name) =>
@@ -861,6 +865,8 @@ export const fetchDocumentPersonalFolder = (email, folderId) =>
   api(personalFolderPath(email, folderId), "GET");
 export const createDocumentPersonalSubfolder = (email, folderId, name) =>
   api(personalFolderPath(email, folderId, "/subfolders"), "POST", { name });
+export const getDocumentPersonalUploadUrl = (email, folderId, payload) =>
+  api(personalFolderPath(email, folderId, "/files/upload-url"), "POST", payload);
 export const uploadDocumentPersonalFiles = (email, folderId, payload) =>
   api(personalFolderPath(email, folderId, "/files"), "POST", payload);
 export const renameDocumentPersonalFolder = (email, folderId, name) =>
@@ -886,6 +892,25 @@ export const getDocumentPersonalDownloadUrl = (email, folderId, fileId) =>
     "POST",
     {}
   );
+
+export async function putToSignedUrl(uploadUrl, file, contentType) {
+  const headers = {};
+  if (contentType) headers["Content-Type"] = contentType;
+  let res;
+  try {
+    res = await fetch(uploadUrl, { method: "PUT", headers, body: file });
+  } catch (networkErr) {
+    const err = new Error(
+      "Unable to reach the server. Check your connection and try again."
+    );
+    err.cause = networkErr;
+    err.isNetworkError = true;
+    throw err;
+  }
+  if (!res.ok) {
+    throw new Error("File upload failed. Please try again.");
+  }
+}
 
 export const fetchDocumentNotificationFeed = () =>
   apiOptional("/documents/notifications/feed", "GET");

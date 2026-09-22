@@ -24,6 +24,8 @@ import {
   fetchDocumentProjectFolder,
   fetchDocumentProjects,
   getDocumentProjectDownloadUrl,
+  getDocumentProjectUploadUrl,
+  putToSignedUrl,
   renameDocumentProject,
   renameDocumentProjectFile,
   renameDocumentProjectFolder,
@@ -76,19 +78,6 @@ function formatWhen(value) {
     day: "2-digit",
     month: "short",
     year: "numeric",
-  });
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(new Error("Could not read file."));
-    reader.readAsDataURL(file);
   });
 }
 
@@ -413,19 +402,32 @@ export default function ProjectsBrowser() {
     }
     setUploading(true);
     try {
-      const encoded = [];
+      const registered = [];
       for (const file of uploadFiles) {
-        encoded.push({
-          fileName: file.name,
-          contentType: file.type,
+        const session = await getDocumentProjectUploadUrl(
+          project.projectId,
+          folderId,
+          {
+            fileName: file.name,
+            contentType: file.type,
+            fileSize: file.size,
+          }
+        );
+        if (!session?.uploadUrl || !session?.fileId) {
+          throw new Error("Upload URL was not returned. Please try again.");
+        }
+        await putToSignedUrl(session.uploadUrl, file, session.contentType);
+        registered.push({
+          fileId: session.fileId,
+          fileName: session.fileName || file.name,
+          contentType: session.contentType || file.type,
           fileSize: file.size,
-          content: await fileToBase64(file),
         });
       }
       await uploadDocumentProjectFiles(project.projectId, folderId, {
         description: uploadDescription,
         date: uploadDate,
-        files: encoded,
+        files: registered,
       });
       setUploadOpen(false);
       setUploadFiles([]);

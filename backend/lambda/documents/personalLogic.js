@@ -24,10 +24,14 @@ const {
   normalizeItemName,
   sanitizeFileName,
   uniqueName,
-  prepareUploadFiles,
   pinSystemFoldersFirst,
   normalizeEmail,
 } = require("./folderRules");
+const {
+  createDirectUploadUrl,
+  materializeUploads,
+  rollbackCreatedBlobs,
+} = require("./directUpload");
 
 const defaultStorage = createDocumentsStorage();
 
@@ -53,6 +57,24 @@ function parsePersonalRoute(path) {
       email: decodeSegment(m[1]),
       folderId: "root",
       fileId: decodeSegment(m[2]),
+    };
+  }
+  m = p.match(
+    /\/documents\/personal\/([^/]+)\/folders\/([^/]+)\/files\/upload-url$/
+  );
+  if (m) {
+    return {
+      kind: "upload-url",
+      email: decodeSegment(m[1]),
+      folderId: decodeSegment(m[2]),
+    };
+  }
+  m = p.match(/\/documents\/personal\/([^/]+)\/files\/upload-url$/);
+  if (m) {
+    return {
+      kind: "upload-url",
+      email: decodeSegment(m[1]),
+      folderId: "root",
     };
   }
   m = p.match(
@@ -343,6 +365,12 @@ async function deleteFolder(storage, email, folderId) {
   });
 }
 
+async function createUploadUrl(storage, email, folderId, body) {
+  const parent = await requireFolder(storage, email, folderId);
+  if (parent.error) return parent.error;
+  return createDirectUploadUrl(s3, body, { expiresIn: SIGNED_TTL });
+}
+
 async function uploadFiles(storage, user, email, folderId, body) {
   const files = Array.isArray(body.files) ? body.files : [];
   if (!files.length) return json(400, { error: "files is required" });
@@ -350,37 +378,23 @@ async function uploadFiles(storage, user, email, folderId, body) {
   const parent = await requireFolder(storage, email, folderId);
   if (parent.error) return parent.error;
 
-  const { prepared, errors } = prepareUploadFiles(files);
-  if (errors.length) {
-    return json(400, {
-      error: "Some files failed validation.",
-      files: errors,
-    });
-  }
-
   const description = String(body.description || "").trim().slice(0, 500);
   const dateRaw = String(body.date || "").trim();
   const uploadedAt = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw)
     ? dateRaw
     : new Date().toISOString();
-  const uploaded = [];
+  let uploaded = [];
   try {
-    for (const file of prepared) {
-      const blob = await storage.putFileBlob({
-        body: file.body,
-        contentType: file.contentType,
-        fileName: file.fileName,
-        uploadedBy: user.email,
-        uploadedAt,
-        description: file.description || description,
-        size: file.fileSize,
-      });
-      uploaded.push({ ...file, ...blob });
+    const result = await materializeUploads(storage, user, files, {
+      description,
+      uploadedAt,
+    });
+    if (result.error) {
+      await rollbackCreatedBlobs(storage, result.uploaded);
+      return result.error;
     }
+    uploaded = result.uploaded;
   } catch (err) {
-    await Promise.all(
-      uploaded.map((f) => storage.deleteFileBlob(f.fileId).catch(() => {}))
-    );
     console.error("Personal file upload error:", err);
     return json(500, { error: "Upload failed. No files were saved." });
   }
@@ -410,9 +424,7 @@ async function uploadFiles(storage, user, email, folderId, body) {
     });
     savedEntries = (result.manifest.children || []).slice(-uploaded.length);
   } catch (err) {
-    await Promise.all(
-      uploaded.map((f) => storage.deleteFileBlob(f.fileId).catch(() => {}))
-    );
+    await rollbackCreatedBlobs(storage, uploaded);
     throw err;
   }
 
@@ -538,6 +550,13 @@ async function handlePersonalRequest({
     if (route.kind === "subfolders") {
       if (method === "POST") {
         return createSubfolder(store, user, email, route.folderId, body);
+      }
+      return json(405, { error: "Method not allowed" });
+    }
+
+    if (route.kind === "upload-url") {
+      if (method === "POST") {
+        return createUploadUrl(store, email, route.folderId, body);
       }
       return json(405, { error: "Method not allowed" });
     }

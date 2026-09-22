@@ -22,8 +22,12 @@ const {
   sanitizeFileName,
   uniqueName,
   validateFile,
-  prepareUploadFiles,
 } = require("./folderRules");
+const {
+  createDirectUploadUrl,
+  materializeUploads,
+  rollbackCreatedBlobs,
+} = require("./directUpload");
 
 const defaultStorage = createDocumentsStorage();
 
@@ -49,6 +53,24 @@ function parseProjectRoute(path) {
       projectId: decodeSegment(m[1]),
       folderId: "root",
       fileId: decodeSegment(m[2]),
+    };
+  }
+  m = p.match(
+    /\/documents\/projects\/([^/]+)\/folders\/([^/]+)\/files\/upload-url$/
+  );
+  if (m) {
+    return {
+      kind: "upload-url",
+      projectId: decodeSegment(m[1]),
+      folderId: decodeSegment(m[2]),
+    };
+  }
+  m = p.match(/\/documents\/projects\/([^/]+)\/files\/upload-url$/);
+  if (m) {
+    return {
+      kind: "upload-url",
+      projectId: decodeSegment(m[1]),
+      folderId: "root",
     };
   }
   m = p.match(
@@ -418,6 +440,16 @@ async function deleteFolder(storage, user, projectId, folderId) {
   });
 }
 
+async function createUploadUrl(storage, user, projectId, folderId, body) {
+  const denied = adminDenied(user);
+  if (denied) return denied;
+  const found = await requireProject(storage, projectId);
+  if (found.error) return found.error;
+  const parent = await requireFolder(storage, projectId, folderId);
+  if (parent.error) return parent.error;
+  return createDirectUploadUrl(s3, body, { expiresIn: SIGNED_TTL });
+}
+
 async function uploadFiles(storage, user, projectId, folderId, body) {
   const denied = adminDenied(user);
   if (denied) return denied;
@@ -430,37 +462,23 @@ async function uploadFiles(storage, user, projectId, folderId, body) {
   const parent = await requireFolder(storage, projectId, folderId);
   if (parent.error) return parent.error;
 
-  const { prepared, errors } = prepareUploadFiles(files);
-  if (errors.length) {
-    return json(400, {
-      error: "Some files failed validation.",
-      files: errors,
-    });
-  }
-
   const description = String(body.description || "").trim().slice(0, 500);
   const dateRaw = String(body.date || "").trim();
   const uploadedAt = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw)
     ? dateRaw
     : new Date().toISOString();
-  const uploaded = [];
+  let uploaded = [];
   try {
-    for (const file of prepared) {
-      const blob = await storage.putFileBlob({
-        body: file.body,
-        contentType: file.contentType,
-        fileName: file.fileName,
-        uploadedBy: user.email,
-        uploadedAt,
-        description: file.description || description,
-        size: file.fileSize,
-      });
-      uploaded.push({ ...file, ...blob });
+    const result = await materializeUploads(storage, user, files, {
+      description,
+      uploadedAt,
+    });
+    if (result.error) {
+      await rollbackCreatedBlobs(storage, result.uploaded);
+      return result.error;
     }
+    uploaded = result.uploaded;
   } catch (err) {
-    await Promise.all(
-      uploaded.map((f) => storage.deleteFileBlob(f.fileId).catch(() => {}))
-    );
     console.error("Project file upload error:", err);
     return json(500, { error: "Upload failed. No files were saved." });
   }
@@ -490,9 +508,7 @@ async function uploadFiles(storage, user, projectId, folderId, body) {
     });
     savedEntries = (result.manifest.children || []).slice(-uploaded.length);
   } catch (err) {
-    await Promise.all(
-      uploaded.map((f) => storage.deleteFileBlob(f.fileId).catch(() => {}))
-    );
+    await rollbackCreatedBlobs(storage, uploaded);
     throw err;
   }
 
@@ -643,6 +659,13 @@ async function handleProjectRequest({ user, method, body = {}, route, storage })
       return json(405, { error: "Method not allowed" });
     }
 
+    if (route.kind === "upload-url") {
+      if (method === "POST") {
+        return createUploadUrl(store, user, route.projectId, route.folderId, body);
+      }
+      return json(405, { error: "Method not allowed" });
+    }
+
     if (route.kind === "files") {
       if (method === "POST") {
         return uploadFiles(store, user, route.projectId, route.folderId, body);
@@ -698,5 +721,4 @@ module.exports = {
   uniqueName,
   isReservedFolderName,
   validateFile,
-  prepareUploadFiles,
 };

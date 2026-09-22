@@ -132,27 +132,40 @@ function prepareUploadFiles(files) {
   files.forEach((file, index) => {
     const fileName = sanitizeFileName(file?.fileName);
     const body = decodeFileBody(file || {});
+    const fileId = String(file?.fileId || "").trim();
     const fileSize = Number(file?.fileSize || body?.length || 0);
     const error = validateFile({ fileName, fileSize });
-    if (!body) {
-      errors.push({
-        index,
-        fileName,
-        error: error || "File content is required.",
-      });
-      return;
-    }
     if (error) {
       errors.push({ index, fileName, error });
       return;
     }
-    prepared.push({
+    if (body) {
+      prepared.push({
+        index,
+        fileName,
+        fileSize: body.length,
+        contentType: resolvedContentType(fileName, file?.contentType),
+        body,
+        description: String(file?.description || "").trim(),
+      });
+      return;
+    }
+    if (fileId) {
+      prepared.push({
+        index,
+        fileName,
+        fileSize,
+        contentType: resolvedContentType(fileName, file?.contentType),
+        fileId,
+        body: null,
+        description: String(file?.description || "").trim(),
+      });
+      return;
+    }
+    errors.push({
       index,
       fileName,
-      fileSize: body.length,
-      contentType: resolvedContentType(fileName, file?.contentType),
-      body,
-      description: String(file?.description || "").trim(),
+      error: "File content is required.",
     });
   });
   return { prepared, errors };
@@ -183,6 +196,7 @@ module.exports = {
   sanitizeFileName,
   uniqueName,
   validateFile,
+  resolvedContentType,
   prepareUploadFiles,
   pinSystemFoldersFirst,
   normalizeEmail,

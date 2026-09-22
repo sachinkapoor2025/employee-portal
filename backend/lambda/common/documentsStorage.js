@@ -2,6 +2,7 @@ const { randomUUID } = require("crypto");
 const {
   S3Client,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
@@ -346,6 +347,24 @@ async function deleteFileBlob(s3, bucket, fileId) {
   await deleteObject(s3, bucket, fileBlobKey(fileId));
 }
 
+async function headFileBlob(s3, bucket, fileId) {
+  try {
+    const res = await s3.send(
+      new HeadObjectCommand({
+        Bucket: resolveBucket(bucket),
+        Key: fileBlobKey(fileId),
+      })
+    );
+    return {
+      contentLength: Number(res.ContentLength),
+      contentType: res.ContentType || "",
+    };
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
 async function putFileBlob(s3, bucket, input = {}) {
   const fileId = input.fileId || randomUUID();
   const key = fileBlobKey(fileId);
@@ -432,6 +451,7 @@ function createDocumentsStorage(deps = {}) {
     updateManifest: (key, updater, options) =>
       updateManifest(s3, bucketOf(), key, updater, options),
     putFileBlob: (input) => putFileBlob(s3, bucketOf(), input),
+    headFileBlob: (fileId) => headFileBlob(s3, bucketOf(), fileId),
     deleteFileBlob: (fileId) => deleteFileBlob(s3, bucketOf(), fileId),
     deleteFolderTree: (key) => deleteFolderTree(s3, bucketOf(), key),
     putNotificationEvent: (payload) => putNotificationEvent(s3, bucketOf(), payload),
@@ -469,6 +489,7 @@ module.exports = {
   writeManifest,
   updateManifest,
   putFileBlob,
+  headFileBlob,
   deleteFileBlob,
   putNotificationEvent,
   listNotificationEvents,

@@ -1,6 +1,7 @@
 const assert = require("assert");
 const {
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
@@ -19,6 +20,7 @@ const {
   writeManifest,
   updateManifest,
   putFileBlob,
+  headFileBlob,
   deleteFolderTree,
   readProjectIndex,
   writeProjectIndex,
@@ -57,6 +59,22 @@ function createMemoryS3() {
         Body: {
           transformToString: async () => obj.body.toString("utf8"),
         },
+      };
+    }
+
+    if (command instanceof HeadObjectCommand) {
+      const obj = getObject(key);
+      if (!obj) {
+        const err = new Error("NotFound");
+        err.name = "NotFound";
+        err.$metadata = { httpStatusCode: 404 };
+        throw err;
+      }
+      return {
+        ETag: obj.etag,
+        ContentType: obj.contentType,
+        ContentLength: obj.body.length,
+        Metadata: obj.metadata,
       };
     }
 
@@ -268,6 +286,11 @@ async function run() {
   assert.strictEqual(blob.key, "files/blob-nested");
   const storedBlob = s3._get(blob.key);
   assert.strictEqual(storedBlob.contentType, "application/pdf");
+  const headed = await headFileBlob(s3, bucket, "blob-nested");
+  assert.strictEqual(headed.contentLength, 10);
+  assert.strictEqual(headed.contentType, "application/pdf");
+  const missingHead = await headFileBlob(s3, bucket, "no-such-blob");
+  assert.strictEqual(missingHead, null);
   assert.strictEqual(
     storedBlob.metadata.originalfilename,
     encodeURIComponent("Contract (final).pdf")

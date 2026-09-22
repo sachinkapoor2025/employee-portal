@@ -1,6 +1,7 @@
 const assert = require("assert");
 const {
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
@@ -40,6 +41,22 @@ function createMemoryS3() {
         Body: {
           transformToString: async () => obj.body.toString("utf8"),
         },
+      };
+    }
+
+    if (command instanceof HeadObjectCommand) {
+      const obj = objects.get(key);
+      if (!obj) {
+        const err = new Error("NotFound");
+        err.name = "NotFound";
+        err.$metadata = { httpStatusCode: 404 };
+        throw err;
+      }
+      return {
+        ETag: obj.etag,
+        ContentType: obj.contentType,
+        ContentLength: obj.body.length,
+        Metadata: obj.metadata,
       };
     }
 
@@ -154,6 +171,24 @@ async function run() {
       fileId: "file-9",
     }
   );
+  assert.deepStrictEqual(
+    parsePersonalRoute("/documents/personal/ada@mydgv.com/files/upload-url"),
+    {
+      kind: "upload-url",
+      email: "ada@mydgv.com",
+      folderId: "root",
+    }
+  );
+  assert.deepStrictEqual(
+    parsePersonalRoute(
+      "/documents/personal/ada@mydgv.com/folders/d1/files/upload-url"
+    ),
+    {
+      kind: "upload-url",
+      email: "ada@mydgv.com",
+      folderId: "d1",
+    }
+  );
 
   const s3 = createMemoryS3();
   const storage = createDocumentsStorage({ s3, bucket: "test-docs" });
@@ -238,6 +273,52 @@ async function run() {
   assert.strictEqual(intoRequired.status, 201);
   assert.strictEqual(intoRequired.body.files[0].name, "aadhaar.pdf");
   assert.ok(!intoRequired.body.notification);
+
+  process.env.AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID || "test";
+  process.env.AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY || "test";
+  process.env.AWS_REGION = process.env.AWS_REGION || "ap-south-1";
+  process.env.DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET || "test-docs";
+
+  const signed = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/personal/rahul@mydgv.com/folders/${REQUIRED_DOCUMENTS_ID}/files/upload-url`,
+      { body: { fileName: "pan.pdf", fileSize: 3, contentType: "application/pdf" } }
+    )
+  );
+  assert.strictEqual(signed.status, 200);
+  assert.ok(signed.body.uploadUrl);
+  assert.ok(signed.body.fileId);
+
+  await storage.putFileBlob({
+    fileId: signed.body.fileId,
+    body: Buffer.from("pan"),
+    contentType: "application/pdf",
+    fileName: "pan.pdf",
+    size: 3,
+  });
+  const directUpload = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/personal/rahul@mydgv.com/folders/${REQUIRED_DOCUMENTS_ID}/files`,
+      {
+        body: {
+          files: [
+            {
+              fileId: signed.body.fileId,
+              fileName: "pan.pdf",
+              fileSize: 3,
+              contentType: "application/pdf",
+            },
+          ],
+        },
+      }
+    )
+  );
+  assert.strictEqual(directUpload.status, 201);
+  assert.strictEqual(directUpload.body.files[0].fileId, signed.body.fileId);
   const notifyKeys = [...s3._objects.keys()].filter((k) =>
     k.startsWith("notifications/events/")
   );

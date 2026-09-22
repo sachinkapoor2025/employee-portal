@@ -1,6 +1,7 @@
 const assert = require("assert");
 const {
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
@@ -41,6 +42,22 @@ function createMemoryS3() {
         Body: {
           transformToString: async () => obj.body.toString("utf8"),
         },
+      };
+    }
+
+    if (command instanceof HeadObjectCommand) {
+      const obj = objects.get(key);
+      if (!obj) {
+        const err = new Error("NotFound");
+        err.name = "NotFound";
+        err.$metadata = { httpStatusCode: 404 };
+        throw err;
+      }
+      return {
+        ETag: obj.etag,
+        ContentType: obj.contentType,
+        ContentLength: obj.body.length,
+        Metadata: obj.metadata,
       };
     }
 
@@ -169,6 +186,14 @@ async function run() {
       folderId: "d1",
       fileId: "file-9",
     }
+  );
+  assert.deepStrictEqual(
+    parseProjectRoute("/documents/projects/p1/files/upload-url"),
+    { kind: "upload-url", projectId: "p1", folderId: "root" }
+  );
+  assert.deepStrictEqual(
+    parseProjectRoute("/documents/projects/p1/folders/d1/files/upload-url"),
+    { kind: "upload-url", projectId: "p1", folderId: "d1" }
   );
 
   const s3 = createMemoryS3();
@@ -327,6 +352,98 @@ async function run() {
   assert.strictEqual(event.uploadedBy, "admin@mydgv.com");
   assert.strictEqual(event.projectId, projectId);
 
+  process.env.AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID || "test";
+  process.env.AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY || "test";
+  process.env.AWS_REGION = process.env.AWS_REGION || "ap-south-1";
+  process.env.DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET || "test-docs";
+
+  const empUploadUrl = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/projects/${projectId}/folders/${folderBId}/files/upload-url`,
+      {
+        user: employee(),
+        body: { fileName: "direct.pdf", fileSize: 4, contentType: "application/pdf" },
+      }
+    )
+  );
+  assert.strictEqual(empUploadUrl.status, 403);
+
+  const signed = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/projects/${projectId}/folders/${folderBId}/files/upload-url`,
+      {
+        body: { fileName: "direct.pdf", fileSize: 4, contentType: "application/pdf" },
+      }
+    )
+  );
+  assert.strictEqual(signed.status, 200);
+  assert.ok(signed.body.uploadUrl);
+  assert.ok(signed.body.fileId);
+  assert.strictEqual(signed.body.fileName, "direct.pdf");
+
+  const missingBlob = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/projects/${projectId}/folders/${folderBId}/files`,
+      {
+        body: {
+          description: "Direct upload",
+          date: "2026-01-16",
+          files: [
+            {
+              fileId: signed.body.fileId,
+              fileName: "direct.pdf",
+              fileSize: 4,
+              contentType: "application/pdf",
+            },
+          ],
+        },
+      }
+    )
+  );
+  assert.strictEqual(missingBlob.status, 400);
+
+  const directBlob = await storage.putFileBlob({
+    fileId: signed.body.fileId,
+    body: Buffer.from("abcd"),
+    contentType: "application/pdf",
+    fileName: "direct.pdf",
+    size: 4,
+  });
+  assert.strictEqual(directBlob.fileId, signed.body.fileId);
+
+  const directUpload = parse(
+    await call(
+      storage,
+      "POST",
+      `/documents/projects/${projectId}/folders/${folderBId}/files`,
+      {
+        body: {
+          description: "Direct upload",
+          date: "2026-01-16",
+          files: [
+            {
+              fileId: signed.body.fileId,
+              fileName: "direct.pdf",
+              fileSize: 4,
+              contentType: "application/pdf",
+            },
+          ],
+        },
+      }
+    )
+  );
+  assert.strictEqual(directUpload.status, 201);
+  assert.strictEqual(directUpload.body.files[0].name, "direct.pdf");
+  assert.strictEqual(directUpload.body.files[0].fileId, signed.body.fileId);
+  assert.strictEqual(directUpload.body.files[0].uploadedAt, "2026-01-16");
+  assert.strictEqual(notificationKeys(s3).length, 2);
+
   let blobCalls = 0;
   const failingStorage = {
     ...storage,
@@ -349,7 +466,7 @@ async function run() {
     )
   );
   assert.strictEqual(partial.status, 500);
-  assert.strictEqual(notificationKeys(s3).length, 1);
+  assert.strictEqual(notificationKeys(s3).length, 2);
   const rootAfterPartial = parse(
     await call(storage, "GET", `/documents/projects/${projectId}`)
   );
@@ -413,7 +530,7 @@ async function run() {
     await call(storage, "GET", `/documents/projects/${projectId}/folders`)
   );
   assert.ok(!rootAfterDelete.body.children.some((c) => c.id === folderAId));
-  assert.strictEqual(notificationKeys(s3).length, 1);
+  assert.strictEqual(notificationKeys(s3).length, 2);
 
   const renamedProject = parse(
     await call(storage, "PATCH", `/documents/projects/${projectId}`, {
