@@ -13,15 +13,15 @@ export default function ProjectMemberPicker({
   excludeEmails = [],
 }) {
   const [search, setSearch] = useState("");
-  const excluded = new Set(
-    (excludeEmails || []).map((email) => normalizeMemberEmail(email)).filter(Boolean)
-  );
   const selected = useMemo(
     () => uniqueSelected(selectedEmails),
     [selectedEmails]
   );
 
   const options = useMemo(() => {
+    const excluded = new Set(
+      (excludeEmails || []).map((email) => normalizeMemberEmail(email)).filter(Boolean)
+    );
     const q = search.trim().toLowerCase();
     return selectableTaskAssignees(users)
       .filter((user) => {
@@ -34,7 +34,7 @@ export default function ProjectMemberPicker({
       .sort((a, b) =>
         String(a.name || a.email).localeCompare(String(b.name || b.email))
       );
-  }, [users, search, excluded]);
+  }, [users, search, excludeEmails]);
 
   const toggle = (email) => {
     if (disabled) return;

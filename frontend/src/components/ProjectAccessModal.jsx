@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Modal from "./ui/Modal";
 import ProjectMemberPicker from "./ProjectMemberPicker";
 import { fetchUsers, updateProject } from "../services/api";
@@ -25,7 +25,7 @@ export default function ProjectAccessModal({
 
   const projectId = project?.projectId || "";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     setError("");
@@ -40,13 +40,13 @@ export default function ProjectAccessModal({
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId]);
 
   useEffect(() => {
     if (!open || !projectId) return;
     setAddEmails([]);
     load().catch(console.error);
-  }, [open, projectId]);
+  }, [open, projectId, load]);
 
   useEffect(() => {
     if (!open) return undefined;
