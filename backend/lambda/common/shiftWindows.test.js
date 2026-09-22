@@ -9,6 +9,7 @@ const {
   resolveShiftTimes,
   addDaysIso,
   parseInstantMs,
+  isSameCompanyDay,
   taskFitsWindow,
 } = require("./shiftWindows");
 
@@ -40,6 +41,21 @@ assert.strictEqual(
 assert.strictEqual(
   companyDateKey("2026-09-22T08:30:00.000Z"),
   "2026-09-22"
+);
+
+assert.strictEqual(
+  isSameCompanyDay(
+    parseInstantMs("2026-09-22T11:30:00+05:30"),
+    parseInstantMs("2026-09-22T20:00:00+05:30")
+  ),
+  true
+);
+assert.strictEqual(
+  isSameCompanyDay(
+    parseInstantMs("2026-09-22T11:30:00+05:30"),
+    parseInstantMs("2026-10-03T18:00:00+05:30")
+  ),
+  false
 );
 
 const morningHalf = resolveShiftTimes("Half Day", "Morning Shift", "2026-09-22");

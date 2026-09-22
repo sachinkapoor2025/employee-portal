@@ -2,6 +2,7 @@ const { GetCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   addDaysIso,
   companyDateKey,
+  isSameCompanyDay,
   parseInstantMs,
   taskFitsWindow,
   windowMsFromRecord,
@@ -25,10 +26,36 @@ const NON_WORKING_REASONS = {
   Holiday: REASON_HOLIDAY,
   WeeklyOff: REASON_WEEKLY_OFF,
   Absent: REASON_ABSENT,
+  "Week Off": REASON_WEEKLY_OFF,
 };
 
 function normalizeStatus(status) {
   return String(status || "").trim();
+}
+
+function isWorkingAttendance(status) {
+  const normalized = normalizeStatus(status);
+  return normalized === "Working" || normalized === "Present";
+}
+
+function isSameDayTask(taskStartMs, taskEndMs) {
+  return isSameCompanyDay(taskStartMs, taskEndMs);
+}
+
+function assignWorking(status) {
+  return {
+    action: ACTION_ASSIGN,
+    reason: REASON_WORKING,
+    attendanceStatus: status,
+  };
+}
+
+function postponeOutsideShift(status) {
+  return {
+    action: ACTION_POSTPONE,
+    reason: REASON_OUTSIDE_SHIFT,
+    attendanceStatus: status,
+  };
 }
 
 function decideScheduledAttendance({
@@ -60,33 +87,22 @@ function decideScheduledAttendance({
       attendanceStatus: status,
     };
   }
-  if (status !== "Working") {
-    return {
-      action: ACTION_POSTPONE,
-      reason: REASON_OUTSIDE_SHIFT,
-      attendanceStatus: status,
-    };
+  if (!isWorkingAttendance(status)) {
+    return postponeOutsideShift(status);
+  }
+  // Multi-day: Working/Present on the assignment date is enough.
+  // Do not require the later deadline to fit today's shift.
+  if (!isSameDayTask(taskStartMs, taskEndMs)) {
+    return assignWorking(status);
   }
   const window = windowMsFromRecord(record, dateKey || record.date || record.SK);
   if (!window) {
-    return {
-      action: ACTION_POSTPONE,
-      reason: REASON_OUTSIDE_SHIFT,
-      attendanceStatus: status,
-    };
+    return postponeOutsideShift(status);
   }
   if (taskFitsWindow(taskStartMs, taskEndMs, window.startMs, window.endMs)) {
-    return {
-      action: ACTION_ASSIGN,
-      reason: REASON_WORKING,
-      attendanceStatus: status,
-    };
+    return assignWorking(status);
   }
-  return {
-    action: ACTION_POSTPONE,
-    reason: REASON_OUTSIDE_SHIFT,
-    attendanceStatus: status,
-  };
+  return postponeOutsideShift(status);
 }
 
 async function loadAttendanceRecord(ddb, attendanceTable, email, dateKey) {
@@ -183,6 +199,8 @@ module.exports = {
   REASON_OUTSIDE_SHIFT,
   NON_WORKING_REASONS,
   decideScheduledAttendance,
+  isSameDayTask,
+  isWorkingAttendance,
   loadAttendanceRecord,
   alreadyAssignedState,
   taskEvaluationRange,
