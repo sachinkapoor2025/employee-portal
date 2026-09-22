@@ -1406,22 +1406,10 @@ Resources:
             Path: /documents/projects/{projectId}/files
             Method: POST
             RestApiId: !Ref ApiGateway
-        DocumentsProjectRootFilesUploadUrlApi:
-          Type: Api
-          Properties:
-            Path: /documents/projects/{projectId}/files/upload-url
-            Method: POST
-            RestApiId: !Ref ApiGateway
         DocumentsProjectFilesPostApi:
           Type: Api
           Properties:
             Path: /documents/projects/{projectId}/folders/{folderId}/files
-            Method: POST
-            RestApiId: !Ref ApiGateway
-        DocumentsProjectFilesUploadUrlApi:
-          Type: Api
-          Properties:
-            Path: /documents/projects/{projectId}/folders/{folderId}/files/upload-url
             Method: POST
             RestApiId: !Ref ApiGateway
         DocumentsProjectRootFilePatchApi:
@@ -1526,22 +1514,10 @@ Resources:
             Path: /documents/personal/{email}/files
             Method: POST
             RestApiId: !Ref ApiGateway
-        DocumentsPersonalRootFilesUploadUrlApi:
-          Type: Api
-          Properties:
-            Path: /documents/personal/{email}/files/upload-url
-            Method: POST
-            RestApiId: !Ref ApiGateway
         DocumentsPersonalFilesPostApi:
           Type: Api
           Properties:
             Path: /documents/personal/{email}/folders/{folderId}/files
-            Method: POST
-            RestApiId: !Ref ApiGateway
-        DocumentsPersonalFilesUploadUrlApi:
-          Type: Api
-          Properties:
-            Path: /documents/personal/{email}/folders/{folderId}/files/upload-url
             Method: POST
             RestApiId: !Ref ApiGateway
         DocumentsPersonalRootFilePatchApi:

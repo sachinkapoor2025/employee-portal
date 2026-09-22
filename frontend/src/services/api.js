@@ -825,7 +825,10 @@ export const fetchDocumentProjectFolder = (projectId, folderId) =>
 export const createDocumentProjectSubfolder = (projectId, folderId, name) =>
   api(projectFolderPath(projectId, folderId, "/subfolders"), "POST", { name });
 export const getDocumentProjectUploadUrl = (projectId, folderId, payload) =>
-  api(projectFolderPath(projectId, folderId, "/files/upload-url"), "POST", payload);
+  api(projectFolderPath(projectId, folderId, "/files"), "POST", {
+    action: "upload-url",
+    ...payload,
+  });
 export const uploadDocumentProjectFiles = (projectId, folderId, payload) =>
   api(projectFolderPath(projectId, folderId, "/files"), "POST", payload);
 export const renameDocumentProjectFolder = (projectId, folderId, name) =>
@@ -866,7 +869,10 @@ export const fetchDocumentPersonalFolder = (email, folderId) =>
 export const createDocumentPersonalSubfolder = (email, folderId, name) =>
   api(personalFolderPath(email, folderId, "/subfolders"), "POST", { name });
 export const getDocumentPersonalUploadUrl = (email, folderId, payload) =>
-  api(personalFolderPath(email, folderId, "/files/upload-url"), "POST", payload);
+  api(personalFolderPath(email, folderId, "/files"), "POST", {
+    action: "upload-url",
+    ...payload,
+  });
 export const uploadDocumentPersonalFiles = (email, folderId, payload) =>
   api(personalFolderPath(email, folderId, "/files"), "POST", payload);
 export const renameDocumentPersonalFolder = (email, folderId, name) =>

@@ -283,8 +283,15 @@ async function run() {
     await call(
       storage,
       "POST",
-      `/documents/personal/rahul@mydgv.com/folders/${REQUIRED_DOCUMENTS_ID}/files/upload-url`,
-      { body: { fileName: "pan.pdf", fileSize: 3, contentType: "application/pdf" } }
+      `/documents/personal/rahul@mydgv.com/folders/${REQUIRED_DOCUMENTS_ID}/files`,
+      {
+        body: {
+          action: "upload-url",
+          fileName: "pan.pdf",
+          fileSize: 3,
+          contentType: "application/pdf",
+        },
+      }
     )
   );
   assert.strictEqual(signed.status, 200);

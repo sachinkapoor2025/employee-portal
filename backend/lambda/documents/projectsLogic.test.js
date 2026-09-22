@@ -361,10 +361,15 @@ async function run() {
     await call(
       storage,
       "POST",
-      `/documents/projects/${projectId}/folders/${folderBId}/files/upload-url`,
+      `/documents/projects/${projectId}/folders/${folderBId}/files`,
       {
         user: employee(),
-        body: { fileName: "direct.pdf", fileSize: 4, contentType: "application/pdf" },
+        body: {
+          action: "upload-url",
+          fileName: "direct.pdf",
+          fileSize: 4,
+          contentType: "application/pdf",
+        },
       }
     )
   );
@@ -374,9 +379,14 @@ async function run() {
     await call(
       storage,
       "POST",
-      `/documents/projects/${projectId}/folders/${folderBId}/files/upload-url`,
+      `/documents/projects/${projectId}/folders/${folderBId}/files`,
       {
-        body: { fileName: "direct.pdf", fileSize: 4, contentType: "application/pdf" },
+        body: {
+          action: "upload-url",
+          fileName: "direct.pdf",
+          fileSize: 4,
+          contentType: "application/pdf",
+        },
       }
     )
   );

@@ -563,6 +563,9 @@ async function handlePersonalRequest({
 
     if (route.kind === "files") {
       if (method === "POST") {
+        if (body.action === "upload-url") {
+          return createUploadUrl(store, email, route.folderId, body);
+        }
         return uploadFiles(store, user, email, route.folderId, body);
       }
       return json(405, { error: "Method not allowed" });

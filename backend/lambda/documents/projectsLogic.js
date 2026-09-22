@@ -668,6 +668,9 @@ async function handleProjectRequest({ user, method, body = {}, route, storage })
 
     if (route.kind === "files") {
       if (method === "POST") {
+        if (body.action === "upload-url") {
+          return createUploadUrl(store, user, route.projectId, route.folderId, body);
+        }
         return uploadFiles(store, user, route.projectId, route.folderId, body);
       }
       return json(405, { error: "Method not allowed" });
