@@ -148,6 +148,19 @@ assert.ok(
   template.includes('TASK_SCHEDULED_ASSIGN_LEASE_MS: "180000"'),
   "TASK_SCHEDULED_ASSIGN_LEASE_MS must exceed the 120s Lambda timeout"
 );
+const projectsFn = template.split("ProjectsFunction:")[1].split("LeaveFunction:")[0];
+assert.ok(
+  projectsFn.includes("ATTENDANCE_TABLE: !Ref AttendanceTable"),
+  "ProjectsFunction must receive ATTENDANCE_TABLE"
+);
+assert.ok(
+  /DynamoDBReadPolicy:\s*\n\s+TableName: !Ref AttendanceTable/.test(projectsFn),
+  "ProjectsFunction must have Attendance read access"
+);
+assert.ok(
+  !/DynamoDBCrudPolicy:\s*\n\s+TableName: !Ref AttendanceTable/.test(projectsFn),
+  "ProjectsFunction must not have Attendance write access"
+);
 assert.ok(
   /Timeout:\s*120/.test(template),
   "ProjectsFunction Timeout must remain 120 seconds"

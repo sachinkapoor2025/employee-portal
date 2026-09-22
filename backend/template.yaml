@@ -969,6 +969,7 @@ Resources:
           TASK_IMPORT_PROCESSING_LEASE_MS: "180000"
           TASK_SCHEDULED_ASSIGN_LEASE_MS: "180000"
           TASK_IMPORT_HOLD_RETENTION_DAYS: !Ref TaskImportHoldRetentionDays
+          ATTENDANCE_TABLE: !Ref AttendanceTable
           COMPANY_TIMEZONE: Asia/Kolkata
           COMPANY_TZ_OFFSET: "+05:30"
           TASK_ORANGE_MS: "86400000"
@@ -986,6 +987,8 @@ Resources:
             TableName: !Ref UserProfileTable
         - DynamoDBReadPolicy:
             TableName: !Ref UserAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref AttendanceTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
         - S3WritePolicy:

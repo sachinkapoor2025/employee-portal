@@ -10,13 +10,15 @@ const {
   ScanCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { isSuperAdminRole } = require("../common/roles");
+const {
+  companyTodayKey,
+  resolveShiftTimes,
+} = require("../common/shiftWindows");
 
 let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
 
-const COMPANY_TZ = process.env.COMPANY_TIMEZONE || "Asia/Kolkata";
-const COMPANY_OFFSET = process.env.COMPANY_TZ_OFFSET || "+05:30";
 const EMPLOYEE_STATUSES = new Set([
   "Working",
   "Leave",
@@ -24,44 +26,6 @@ const EMPLOYEE_STATUSES = new Set([
   "WeeklyOff",
 ]);
 const DAY_TYPES = new Set(["Full Day", "Half Day"]);
-const SHIFT_TIMES = {
-  "Full Day": {
-    "Morning Shift": { in: "11:00", out: "20:00" },
-    "Afternoon Shift": { in: "14:00", out: "23:00" },
-    "Evening Shift": { in: "17:00", out: "23:00" },
-  },
-  "Half Day": {
-    "Morning Shift": { in: "11:00", out: "15:30" },
-    "Afternoon Shift": { in: "14:00", out: "18:30" },
-    "Evening Shift": { in: "17:00", out: "20:30" },
-  },
-};
-
-function companyDateTimeIso(dateKey, hhmm) {
-  if (!dateKey || !hhmm) return null;
-  const d = new Date(`${dateKey}T${hhmm}:00${COMPANY_OFFSET}`);
-  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
-}
-
-function resolveShiftTimes(dayType, shift, dateKey) {
-  const mapping = SHIFT_TIMES[dayType]?.[shift];
-  if (!mapping) return null;
-  const checkInTime = companyDateTimeIso(dateKey, mapping.in);
-  const checkOutTime = companyDateTimeIso(dateKey, mapping.out);
-  if (!checkInTime || !checkOutTime) return null;
-  return { checkInTime, checkOutTime };
-}
-
-function companyTodayKey(now = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: COMPANY_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-  const get = (type) => parts.find((p) => p.type === type)?.value;
-  return `${get("year")}-${get("month")}-${get("day")}`;
-}
 
 function isValidDateKey(key) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(key || ""));

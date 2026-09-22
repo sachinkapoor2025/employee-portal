@@ -39,10 +39,18 @@ const {
   assignedNotifyKey,
   getAccessRow,
   isActiveAccess,
+  AccessLookupError,
   notifyExcelAssignment,
 } = require("./taskImportAssignNotify");
 const { authorizeImportRowCreate, filterScheduledAssignees, authorizeImportOperator } = require("./workflowAccess");
 const { createCache } = require("./taskReadAccess");
+const {
+  ACTION_POSTPONE,
+  alreadyAssignedState,
+  attendanceDecisionForEmployee,
+  nextScheduleFields,
+} = require("./scheduledAttendance");
+const { notifyScheduledPostponement } = require("./taskScheduledPostponeNotify");
 
 const ROW_IMPORTED = "IMPORTED";
 const ASSIGNMENT_PENDING = "PENDING";
@@ -1023,6 +1031,251 @@ async function handleConfirmRequest({
   };
 }
 
+function uniqueCodes(list) {
+  const seen = new Set();
+  const out = [];
+  for (const value of list || []) {
+    const code = String(value || "").trim();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+function uniqueEmails(list) {
+  const seen = new Set();
+  const out = [];
+  for (const value of list || []) {
+    const email = escalation.normalizeEmail(value);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+function assignedEmailSet(task) {
+  const emails = [
+    ...(task?.assignees || []),
+    ...((task?.assignments || [])
+      .filter((row) => row && !row.removed)
+      .map((row) => row.email)),
+  ];
+  return new Set(uniqueEmails(emails));
+}
+
+function remainingPendingEmails(task) {
+  const assigned = assignedEmailSet(task);
+  const pending = uniqueEmails(
+    task?.pendingAssignees && task.pendingAssignees.length
+      ? task.pendingAssignees
+      : task?.assignees || []
+  );
+  return pending.filter((email) => !assigned.has(email));
+}
+
+function existingAssignmentList(task) {
+  if (Array.isArray(task?.assignments) && task.assignments.length) {
+    return task.assignments.filter((row) => row && !row.removed);
+  }
+  return uniqueEmails(task?.assignees || []).map((email) => ({
+    email,
+    status: "TODO",
+    assignedAt: task.updatedAt || task.createdAt || new Date().toISOString(),
+    assignedBy: escalation.normalizeEmail(task.createdBy) || "",
+  }));
+}
+
+function isAccessLookupFailure(err) {
+  return (
+    err instanceof AccessLookupError ||
+    err?.name === "AccessLookupError" ||
+    err?.code === "SCHEDULED_ACL_LOOKUP_FAILED"
+  );
+}
+
+async function classifyScheduledAssignees({
+  ddb,
+  tableName,
+  accessTable,
+  attendanceTable,
+  task,
+  emails,
+  loadUserAccess,
+}) {
+  const pending = uniqueEmails(emails);
+  const skipped = [];
+  const eligible = [];
+  for (const email of pending) {
+    const access = await getAccessRow(ddb, accessTable, email, loadUserAccess);
+    if (isActiveAccess(access)) eligible.push(email);
+    else skipped.push(email);
+  }
+  const membership = await filterScheduledAssignees({
+    ddb,
+    tableName,
+    task,
+    emails: eligible,
+  });
+  if (!membership.ok) {
+    const err = new Error("SCHEDULED_ACL_LOOKUP_FAILED");
+    err.code = "SCHEDULED_ACL_LOOKUP_FAILED";
+    throw err;
+  }
+  skipped.push(...membership.skipped);
+  const assignNow = [];
+  const postpone = [];
+  const attendanceStatusByEmail = {};
+  const reasons = [];
+  for (const email of membership.active) {
+    const decision = await attendanceDecisionForEmployee({
+      ddb,
+      attendanceTable,
+      email,
+      task,
+    });
+    attendanceStatusByEmail[email] = decision.attendanceStatus;
+    if (decision.action === ACTION_POSTPONE) {
+      postpone.push(email);
+      reasons.push(decision.reason);
+    } else {
+      assignNow.push(email);
+    }
+  }
+  return {
+    skipped: uniqueEmails(skipped),
+    assignNow,
+    postpone,
+    attendanceStatusByEmail,
+    reasons: uniqueCodes(reasons),
+  };
+}
+
+async function postponeScheduledTask({
+  ddb,
+  tableName,
+  task,
+  nowIso,
+  nowMs,
+  postponedEmails,
+  reasons,
+  attendanceStatusByEmail,
+  moveTaskDates,
+}) {
+  if (!ddb || !tableName || !task?.taskId) return { ok: false };
+  const expectedAssignAt = task.scheduledAssignAt;
+  const next = nextScheduleFields(task, { moveTaskDates });
+  const count = Number(task.postponementCount || 0) + 1;
+  const reason = uniqueCodes(reasons).join(",") || "UNAVAILABLE";
+  const state = String(task.assignmentState || "").toUpperCase();
+  const names = { "#mode": "assignmentMode" };
+  const values = {
+    ":scheduled": "SCHEDULED",
+    ":expected": expectedAssignAt,
+    ":nextAssign": next.scheduledAssignAt,
+    ":count": count,
+    ":now": nowIso,
+    ":reason": reason,
+    ":statusMap": attendanceStatusByEmail || {},
+    ":pending": ASSIGNMENT_PENDING,
+  };
+  let condition =
+    "#mode = :scheduled AND assignmentState = :pending AND scheduledAssignAt = :expected";
+  let updateExpression =
+    "SET scheduledAssignAt = :nextAssign, postponementCount = :count, lastPostponementAt = :now, lastPostponementReason = :reason, lastAttendanceStatusByEmail = :statusMap, updatedAt = :now";
+  if (moveTaskDates) {
+    updateExpression += ", startDate = :nextStart, dueDate = :nextDue";
+    values[":nextStart"] = next.startDate;
+    values[":nextDue"] = next.dueDate;
+  }
+  if (!task.originalStartDate) {
+    updateExpression +=
+      ", originalStartDate = :origStart, originalDueDate = :origDue, originalScheduledAssignAt = :origAssign";
+    values[":origStart"] = task.startDate;
+    values[":origDue"] = task.dueDate;
+    values[":origAssign"] = task.scheduledAssignAt;
+  }
+  if (state === ASSIGNMENT_ASSIGNED) {
+    condition =
+      "#mode = :scheduled AND assignmentState = :assigned AND scheduledAssignAt = :expected";
+    values[":assigned"] = ASSIGNMENT_ASSIGNED;
+  } else if (state === ASSIGNMENT_ASSIGNING) {
+    const staleIso = new Date(nowMs - scheduledAssignLeaseMs()).toISOString();
+    condition =
+      "#mode = :scheduled AND assignmentState = :assigning AND scheduledAssignAt = :expected AND (attribute_not_exists(assigningStartedAt) OR assigningStartedAt < :stale)";
+    values[":assigning"] = ASSIGNMENT_ASSIGNING;
+    values[":stale"] = staleIso;
+    updateExpression += ", assignmentState = :pending";
+    updateExpression += " REMOVE assigningStartedAt, assigningOwner";
+  } else {
+    updateExpression += ", assignmentState = :pending";
+  }
+  if (Array.isArray(postponedEmails)) {
+    updateExpression = updateExpression.replace(
+      "SET ",
+      "SET pendingAssignees = :pendingEmails, "
+    );
+    values[":pendingEmails"] = uniqueEmails(postponedEmails);
+  }
+  try {
+    const res = await ddb.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { PK: "ENTITY#TASK", SK: `TASK#${task.taskId}` },
+        ConditionExpression: condition,
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+        ReturnValues: "ALL_NEW",
+      })
+    );
+    const updated = {
+      ...(res.Attributes || {}),
+      PK: "ENTITY#TASK",
+      SK: `TASK#${task.taskId}`,
+    };
+    await putTaskCopies(ddb, tableName, updated);
+    return { ok: true, task: updated, previous: task, next, count, reason };
+  } catch (err) {
+    if (isConditionalCheckFailed(err)) return { ok: false, conflict: true };
+    throw err;
+  }
+}
+
+async function notifyPostponeIfNeeded({
+  ddb,
+  accessTable,
+  listAccessRows,
+  task,
+  postponedEmails,
+  previousStart,
+  previousDue,
+  previousScheduledAssignAt,
+  nextStart,
+  nextDue,
+  reasons,
+  attendanceStatusByEmail,
+  postponementCount,
+}) {
+  if (!postponedEmails?.length) return;
+  await notifyScheduledPostponement({
+    ddb,
+    accessTable,
+    listAccessRows,
+    task,
+    postponedEmails,
+    previousStart,
+    previousDue,
+    previousScheduledAssignAt,
+    nextStart,
+    nextDue,
+    reasons,
+    attendanceStatusByEmail,
+    postponementCount,
+  });
+}
+
 async function skipInactiveScheduledAssignment(
   ddb,
   tableName,
@@ -1071,15 +1324,18 @@ async function activateScheduledTask(
   task,
   nowMs,
   nowIso,
-  { accessTable, listAccessRows, loadUserAccess } = {}
+  {
+    accessTable,
+    listAccessRows,
+    loadUserAccess,
+    emailsToAssign,
+    remainingPending,
+  } = {}
 ) {
-  const emails = [
-    ...new Set(
-      (task.pendingAssignees || task.assignees || [])
-        .map((email) => escalation.normalizeEmail(email))
-        .filter(Boolean)
-    ),
-  ];
+  const emails = uniqueEmails(
+    emailsToAssign || task.pendingAssignees || task.assignees || []
+  );
+  const leftover = uniqueEmails(remainingPending || []);
   const active = [];
   const skipped = [];
   for (const email of emails) {
@@ -1101,12 +1357,14 @@ async function activateScheduledTask(
     throw err;
   }
   skipped.push(...membership.skipped);
-  const memberActive = membership.active;
+  const memberActive = membership.active.filter(
+    (email) => !assignedEmailSet(task).has(email)
+  );
   const assignedBy =
     escalation.normalizeEmail(task.createdBy) ||
     escalation.normalizeEmail(task.assignedBy) ||
     "";
-  if (!memberActive.length) {
+  if (!memberActive.length && !leftover.length) {
     const skippedTask = await skipInactiveScheduledAssignment(
       ddb,
       tableName,
@@ -1120,7 +1378,7 @@ async function activateScheduledTask(
     }
     return skippedTask;
   }
-  const assignments = memberActive.map((email) => ({
+  const newAssignments = memberActive.map((email) => ({
     email,
     status: "TODO",
     assignedAt: nowIso,
@@ -1130,20 +1388,28 @@ async function activateScheduledTask(
       nowMs
     ),
   }));
+  const allAssignments = [...existingAssignmentList(task), ...newAssignments];
   const next = snapshotTask(
     {
       ...task,
-      assignmentState: ASSIGNMENT_ASSIGNED,
+      assignmentState: memberActive.length || alreadyAssignedState(task)
+        ? ASSIGNMENT_ASSIGNED
+        : task.assignmentState,
+      pendingAssignees: leftover,
       assignmentSkipReason: skipped.length ? "EMPLOYEE_INACTIVE" : undefined,
       assignmentSkippedEmails: skipped.length ? skipped : undefined,
       assignmentSkippedAt: skipped.length ? nowIso : undefined,
       updatedAt: nowIso,
     },
-    assignments
+    allAssignments
   );
   delete next.assigningStartedAt;
   delete next.assigningOwner;
-  await persistAssignmentsAndTask(ddb, tableName, next, assignments);
+  if (memberActive.length) {
+    await persistAssignmentsAndTask(ddb, tableName, next, allAssignments);
+  } else {
+    await putTaskCopies(ddb, tableName, next);
+  }
   if (skipped.length) {
     await appendActivity(
       ddb,
@@ -1248,10 +1514,201 @@ async function claimScheduledActivation(ddb, tableName, task, nowIso, nowMs, own
   }
 }
 
+async function processDueScheduledTask({
+  ddb,
+  tableName,
+  accessTable,
+  attendanceTable,
+  task,
+  nowMs,
+  nowIso,
+  listAccessRows,
+  loadUserAccess,
+  claim,
+}) {
+  const emails = remainingPendingEmails(task);
+  if (!emails.length) return 0;
+  let decision;
+  try {
+    decision = await classifyScheduledAssignees({
+      ddb,
+      tableName,
+      accessTable,
+      attendanceTable,
+      task,
+      emails,
+      loadUserAccess,
+    });
+  } catch (err) {
+    if (!claim || !isAccessLookupFailure(err)) {
+      console.error(
+        "SCHEDULED_ASSIGN_ERROR",
+        JSON.stringify({ taskId: task.taskId || "" })
+      );
+      console.error(err);
+      return 0;
+    }
+    const claimed = await claimScheduledActivation(
+      ddb,
+      tableName,
+      task,
+      nowIso,
+      nowMs,
+      crypto.randomUUID()
+    );
+    if (!claimed.ok) return 0;
+    try {
+      await activateScheduledTask(ddb, tableName, claimed.task, nowMs, nowIso, {
+        accessTable,
+        listAccessRows,
+        loadUserAccess,
+      });
+      return 1;
+    } catch (activateErr) {
+      console.error(
+        "SCHEDULED_ASSIGN_ERROR",
+        JSON.stringify({ taskId: task.taskId || "" })
+      );
+      console.error(activateErr);
+      return 0;
+    }
+  }
+
+  if (!decision.assignNow.length && !decision.postpone.length) {
+    if (!claim) {
+      const next = {
+        ...task,
+        pendingAssignees: [],
+        assignmentSkippedEmails: decision.skipped,
+        assignmentSkippedAt: nowIso,
+        assignmentSkipReason: "EMPLOYEE_INACTIVE",
+        updatedAt: nowIso,
+      };
+      await putTaskCopies(ddb, tableName, next);
+      return 1;
+    }
+    const claimed = await claimScheduledActivation(
+      ddb,
+      tableName,
+      task,
+      nowIso,
+      nowMs,
+      crypto.randomUUID()
+    );
+    if (!claimed.ok) return 0;
+    await activateScheduledTask(ddb, tableName, claimed.task, nowMs, nowIso, {
+      accessTable,
+      listAccessRows,
+      loadUserAccess,
+    });
+    return 1;
+  }
+
+  if (!decision.assignNow.length && decision.postpone.length) {
+    const postponed = await postponeScheduledTask({
+      ddb,
+      tableName,
+      task,
+      nowIso,
+      nowMs,
+      postponedEmails: decision.postpone,
+      reasons: decision.reasons,
+      attendanceStatusByEmail: decision.attendanceStatusByEmail,
+      moveTaskDates: !alreadyAssignedState(task),
+    });
+    if (!postponed.ok) return 0;
+    await notifyPostponeIfNeeded({
+      ddb,
+      accessTable,
+      listAccessRows,
+      task,
+      postponedEmails: decision.postpone,
+      previousStart: task.startDate,
+      previousDue: task.dueDate,
+      previousScheduledAssignAt: task.scheduledAssignAt,
+      nextStart: postponed.next.startDate,
+      nextDue: postponed.next.dueDate,
+      reasons: decision.reasons,
+      attendanceStatusByEmail: decision.attendanceStatusByEmail,
+      postponementCount: postponed.count,
+    });
+    return 1;
+  }
+
+  let current = task;
+  if (claim) {
+    const claimed = await claimScheduledActivation(
+      ddb,
+      tableName,
+      task,
+      nowIso,
+      nowMs,
+      crypto.randomUUID()
+    );
+    if (!claimed.ok) return 0;
+    current = claimed.task;
+  }
+  try {
+    const assignedTask = await activateScheduledTask(
+      ddb,
+      tableName,
+      current,
+      nowMs,
+      nowIso,
+      {
+        accessTable,
+        listAccessRows,
+        loadUserAccess,
+        emailsToAssign: decision.assignNow,
+        remainingPending: decision.postpone,
+      }
+    );
+    if (decision.postpone.length) {
+      const postponed = await postponeScheduledTask({
+        ddb,
+        tableName,
+        task: assignedTask,
+        nowIso,
+        nowMs,
+        postponedEmails: decision.postpone,
+        reasons: decision.reasons,
+        attendanceStatusByEmail: decision.attendanceStatusByEmail,
+        moveTaskDates: false,
+      });
+      if (postponed.ok) {
+        await notifyPostponeIfNeeded({
+          ddb,
+          accessTable,
+          listAccessRows,
+          task: assignedTask,
+          postponedEmails: decision.postpone,
+          previousStart: assignedTask.startDate,
+          previousDue: assignedTask.dueDate,
+          previousScheduledAssignAt: assignedTask.scheduledAssignAt,
+          nextStart: postponed.next.startDate,
+          nextDue: postponed.next.dueDate,
+          reasons: decision.reasons,
+          attendanceStatusByEmail: decision.attendanceStatusByEmail,
+          postponementCount: postponed.count,
+        });
+      }
+    }
+    return 1;
+  } catch (err) {
+    console.error(
+      "SCHEDULED_ASSIGN_ERROR",
+      JSON.stringify({ taskId: task.taskId || "" })
+    );
+    console.error(err);
+    return 0;
+  }
+}
+
 async function assignDueScheduledTasks({
   ddb,
   tableName = process.env.WORK_TABLE,
   accessTable = process.env.USER_ACCESS_TABLE,
+  attendanceTable = process.env.ATTENDANCE_TABLE,
   nowMs = Date.now(),
   listAccessRows,
   loadUserAccess,
@@ -1269,35 +1726,40 @@ async function assignDueScheduledTasks({
     if (task.archived) continue;
     if (String(task.assignmentMode || "").toUpperCase() !== "SCHEDULED") continue;
     const state = String(task.assignmentState || "").toUpperCase();
-    if (state !== ASSIGNMENT_PENDING && state !== ASSIGNMENT_ASSIGNING) continue;
     const due = Date.parse(task.scheduledAssignAt || "");
     if (!Number.isFinite(due) || due > nowMs) continue;
+    if (state === ASSIGNMENT_ASSIGNED) {
+      if (!remainingPendingEmails(task).length) continue;
+      processed += await processDueScheduledTask({
+        ddb,
+        tableName,
+        accessTable,
+        attendanceTable,
+        task,
+        nowMs,
+        nowIso,
+        listAccessRows,
+        loadUserAccess,
+        claim: false,
+      });
+      continue;
+    }
+    if (state !== ASSIGNMENT_PENDING && state !== ASSIGNMENT_ASSIGNING) continue;
     if (state === ASSIGNMENT_ASSIGNING && !isAssigningLeaseStale(task, nowMs)) {
       continue;
     }
-    const claimed = await claimScheduledActivation(
+    processed += await processDueScheduledTask({
       ddb,
       tableName,
+      accessTable,
+      attendanceTable,
       task,
-      nowIso,
       nowMs,
-      crypto.randomUUID()
-    );
-    if (!claimed.ok) continue;
-    try {
-      await activateScheduledTask(ddb, tableName, claimed.task, nowMs, nowIso, {
-        accessTable,
-        listAccessRows,
-        loadUserAccess,
-      });
-      processed += 1;
-    } catch (err) {
-      console.error(
-        "SCHEDULED_ASSIGN_ERROR",
-        JSON.stringify({ taskId: task.taskId || "" })
-      );
-      console.error(err);
-    }
+      nowIso,
+      listAccessRows,
+      loadUserAccess,
+      claim: true,
+    });
   }
   return { processed };
 }
@@ -1323,4 +1785,6 @@ module.exports = {
   activateScheduledTask,
   claimBatchForProcessing,
   claimScheduledActivation,
+  postponeScheduledTask,
+  remainingPendingEmails,
 };
