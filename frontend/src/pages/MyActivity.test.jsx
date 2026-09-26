@@ -16,11 +16,13 @@ import { todayKeyIST } from "../utils/meetings";
 
 const TODAY = todayKeyIST();
 const YESTERDAY = "2026-09-24";
+const PRIYA = "priya@mydgv.com";
+const LEAD = "rahul@mydgv.com";
 
 const EMPTY = {
   date: TODAY,
   employee: {
-    email: "priya@mydgv.com",
+    email: PRIYA,
     name: "Priya",
     empId: "DGV-101",
     department: "Engineering",
@@ -48,7 +50,7 @@ const EMPTY = {
 const FULL = {
   date: TODAY,
   employee: {
-    email: "priya@mydgv.com",
+    email: PRIYA,
     name: "Priya",
     empId: "DGV-101",
     department: "Engineering",
@@ -91,9 +93,29 @@ const FULL = {
       timing: "On track",
       activity: [
         {
+          timestamp: "2026-09-25T09:00:00+05:30",
+          action: "task_created",
+          detail: "Task created by admin",
+          actorEmail: "admin@mydgv.com",
+        },
+        {
           timestamp: "2026-09-25T10:05:00+05:30",
-          action: "assigned",
-          detail: "Assigned to Priya",
+          action: "status_changed",
+          detail: `${PRIYA}: To Do → In Progress`,
+          actorEmail: PRIYA,
+          assignmentEmail: PRIYA,
+        },
+        {
+          timestamp: "2026-09-25T10:10:00+05:30",
+          action: "BLOCKER_REPORTED",
+          detail: "Employee reported a blocker",
+          actorEmail: LEAD,
+          assignmentEmail: LEAD,
+        },
+        {
+          timestamp: "2026-09-25T10:15:00+05:30",
+          action: "deadline_changed",
+          detail: "Deadline changed from none → 2026-09-25",
           actorEmail: "admin@mydgv.com",
         },
       ],
@@ -130,7 +152,7 @@ test("page renders and loads company today", async () => {
 
 test("date selector triggers reload", async () => {
   render(<MyActivity />);
-  await screen.findByText("Morning Shift");
+  await screen.findByText("Shared banner");
   const input = screen.getByLabelText("Date");
   await userEvent.clear(input);
   await userEvent.type(input, YESTERDAY);
@@ -139,67 +161,62 @@ test("date selector triggers reload", async () => {
   );
 });
 
-test("shift displays", async () => {
+test("does not render Shift as work activity", async () => {
   render(<MyActivity />);
-  expect(await screen.findByText("Morning Shift")).toBeInTheDocument();
-  expect(screen.getAllByText(/11:00 AM/).length).toBeGreaterThan(0);
-  expect(screen.getAllByText(/8:00 PM/).length).toBeGreaterThan(0);
-  expect(screen.getByText("Overnight")).toBeInTheDocument();
+  expect(await screen.findByText("Shared banner")).toBeInTheDocument();
+  expect(screen.queryByText("Morning Shift")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Shift" })).not.toBeInTheDocument();
+  expect(screen.queryByText("No shift assigned")).not.toBeInTheDocument();
 });
 
-test("attendance displays", async () => {
+test("does not render Attendance, check-in, or LATE as work activity", async () => {
   render(<MyActivity />);
-  expect(await screen.findByText("Working")).toBeInTheDocument();
-  expect(screen.getByText("Full Day")).toBeInTheDocument();
-  expect(screen.getByText(/LATE/)).toBeInTheDocument();
-  expect(screen.getByText(/20 min late/)).toBeInTheDocument();
-  expect(screen.getByText(/Finished a client call/)).toBeInTheDocument();
+  expect(await screen.findByText("Shared banner")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Attendance" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  expect(screen.queryByText("Full Day")).not.toBeInTheDocument();
+  expect(screen.queryByText(/LATE/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/20 min late/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Actual check-in")).not.toBeInTheDocument();
+  expect(screen.queryByText("Actual check-out")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Finished a client call/)).not.toBeInTheDocument();
 });
 
-test("missing attendance renders empty state, not Absent", async () => {
-  fetchMyDayActivity.mockResolvedValue(EMPTY);
+test("does not render portal presence as work activity", async () => {
   render(<MyActivity />);
-  expect(
-    await screen.findByText("No attendance recorded for this day.")
-  ).toBeInTheDocument();
-  expect(screen.queryByText("Absent")).not.toBeInTheDocument();
+  expect(await screen.findByText("Shared banner")).toBeInTheDocument();
+  expect(screen.queryByText("Portal presence")).not.toBeInTheDocument();
+  expect(screen.queryByText(/not working hours/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/login/)).not.toBeInTheDocument();
+  expect(screen.queryByText("/attendance")).not.toBeInTheDocument();
+  expect(screen.queryByText("desktop")).not.toBeInTheDocument();
 });
 
-test("Holiday displays Holiday, not Absent", async () => {
-  fetchMyDayActivity.mockResolvedValue({
-    ...EMPTY,
-    attendance: { marked: true, status: "Holiday", workPeriod: null },
-  });
-  render(<MyActivity />);
-  expect(await screen.findByText("Holiday")).toBeInTheDocument();
-  expect(screen.queryByText("Absent")).not.toBeInTheDocument();
-});
-
-test("tasks and task activity render", async () => {
+test("employee task cards and status/progress still appear", async () => {
   render(<MyActivity />);
   expect(await screen.findByText("Shared banner")).toBeInTheDocument();
   expect(screen.getByText("proj-1")).toBeInTheDocument();
-  expect(screen.getByText(/Assigned to Priya/)).toBeInTheDocument();
-  expect(screen.getByText(/admin@mydgv.com/)).toBeInTheDocument();
+  expect(screen.getAllByText("IN_PROGRESS").length).toBeGreaterThan(0);
+  expect(screen.getByText("On track")).toBeInTheDocument();
 });
 
-test("portal presence renders with not working hours", async () => {
+test("own assignment activity appears and other assignment activity does not", async () => {
   render(<MyActivity />);
-  expect(
-    await screen.findByText("Portal presence, not working hours")
-  ).toBeInTheDocument();
-  expect(screen.getByText(/login/)).toBeInTheDocument();
-  expect(screen.queryByText(/sessionMinutes/i)).not.toBeInTheDocument();
-  expect(screen.queryByText(/totalMinutes/i)).not.toBeInTheDocument();
+  expect(await screen.findByText(/To Do → In Progress/)).toBeInTheDocument();
+  expect(screen.queryByText("Employee reported a blocker")).not.toBeInTheDocument();
 });
 
-test("no tasks or presence still renders", async () => {
+test("task-wide activity without assignmentEmail still appears", async () => {
+  render(<MyActivity />);
+  expect(await screen.findByText(/Task created by admin/)).toBeInTheDocument();
+  expect(screen.getByText(/Deadline changed from none/)).toBeInTheDocument();
+});
+
+test("empty tasks still renders without attendance or presence", async () => {
   fetchMyDayActivity.mockResolvedValue(EMPTY);
   render(<MyActivity />);
-  expect(await screen.findByText("No shift assigned")).toBeInTheDocument();
-  expect(screen.getByText("No tasks for this day.")).toBeInTheDocument();
-  expect(
-    screen.getByText("No portal presence events for this day.")
-  ).toBeInTheDocument();
-  expect(screen.getByText("Portal presence, not working hours")).toBeInTheDocument();
+  expect(await screen.findByText("No tasks for this day.")).toBeInTheDocument();
+  expect(screen.queryByText("No shift assigned")).not.toBeInTheDocument();
+  expect(screen.queryByText("No attendance recorded for this day.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Portal presence")).not.toBeInTheDocument();
 });

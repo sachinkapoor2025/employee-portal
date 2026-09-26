@@ -862,6 +862,130 @@ assert.strictEqual(overnightHalfOutside.ok, false);
     "15:30"
   );
 
+  const firstDdb = memoryDdb();
+  Object.assign(firstDdb.items, accessDdb().items);
+  await seedShiftsIfMissing({
+    ddb: firstDdb,
+    tableName: TABLE,
+    nowIso: NOW,
+    actor: ADMIN.email,
+  });
+  const FIRST_EMAIL = "amit@mydgv.com";
+  const firstOpenTask = {
+    PK: "ENTITY#TASK",
+    SK: "TASK#first-open-1",
+    taskId: "first-open-1",
+    title: "Existing open work",
+    archived: false,
+    startDate: "2026-09-22T08:00:00+05:30",
+    dueDate: "2026-09-22T10:00:00+05:30",
+  };
+  const firstOpenAssignment = {
+    PK: "TASK#first-open-1",
+    SK: `ASSIGNMENT#${FIRST_EMAIL}`,
+    email: FIRST_EMAIL,
+    status: "TODO",
+    removed: false,
+  };
+  firstDdb.items[keyOf("ENTITY#TASK", "TASK#first-open-1")] = { ...firstOpenTask };
+  firstDdb.items[keyOf("TASK#first-open-1", `ASSIGNMENT#${FIRST_EMAIL}`)] = {
+    ...firstOpenAssignment,
+  };
+  assert.strictEqual(
+    firstDdb.items[keyOf(`USER#${FIRST_EMAIL}`, "SHIFT#CURRENT")],
+    undefined
+  );
+  const firstAssignOpen = await handleAssignEmployeeShift({
+    user: ADMIN,
+    email: FIRST_EMAIL,
+    body: { shiftId: "morning", effectiveFrom: "2026-09-23" },
+    ddb: firstDdb,
+    tableName: TABLE,
+    accessTable: ACCESS,
+    nowIso: NOW,
+    nowMs: Date.parse(NOW),
+  });
+  assert.strictEqual(firstAssignOpen.statusCode, 200);
+  assert.strictEqual(firstAssignOpen.body.shift.shiftId, "morning");
+  assert.strictEqual(
+    firstDdb.items[keyOf(`USER#${FIRST_EMAIL}`, "SHIFT#CURRENT")].shiftId,
+    "morning"
+  );
+  assert.deepStrictEqual(
+    firstDdb.items[keyOf("ENTITY#TASK", "TASK#first-open-1")],
+    firstOpenTask
+  );
+  assert.deepStrictEqual(
+    firstDdb.items[keyOf("TASK#first-open-1", `ASSIGNMENT#${FIRST_EMAIL}`)],
+    firstOpenAssignment
+  );
+
+  const pendingDdb = memoryDdb();
+  Object.assign(pendingDdb.items, accessDdb().items);
+  await seedShiftsIfMissing({
+    ddb: pendingDdb,
+    tableName: TABLE,
+    nowIso: NOW,
+    actor: ADMIN.email,
+  });
+  const PENDING_EMAIL = "kavya@mydgv.com";
+  const pendingNoShift = {
+    PK: "ENTITY#TASK",
+    SK: "TASK#first-pending-noshift",
+    taskId: "first-pending-noshift",
+    title: "Pending no shift",
+    archived: false,
+    assignmentMode: "SCHEDULED",
+    assignmentState: "PENDING",
+    pendingAssignees: [PENDING_EMAIL],
+    lastShiftFitByEmail: { [PENDING_EMAIL]: "NO_SHIFT" },
+  };
+  const pendingConflict = {
+    PK: "ENTITY#TASK",
+    SK: "TASK#first-pending-conflict",
+    taskId: "first-pending-conflict",
+    title: "Pending shift conflict",
+    archived: false,
+    assignmentMode: "SCHEDULED",
+    assignmentState: "PENDING",
+    pendingAssignees: [PENDING_EMAIL],
+    lastShiftFitByEmail: { [PENDING_EMAIL]: "SHIFT_CONFLICT" },
+    startDate: "2026-09-22T08:00:00+05:30",
+    dueDate: "2026-09-22T10:00:00+05:30",
+  };
+  pendingDdb.items[keyOf("ENTITY#TASK", "TASK#first-pending-noshift")] = {
+    ...pendingNoShift,
+    lastShiftFitByEmail: { ...pendingNoShift.lastShiftFitByEmail },
+  };
+  pendingDdb.items[keyOf("ENTITY#TASK", "TASK#first-pending-conflict")] = {
+    ...pendingConflict,
+    lastShiftFitByEmail: { ...pendingConflict.lastShiftFitByEmail },
+  };
+  const firstAssignPending = await handleAssignEmployeeShift({
+    user: ADMIN,
+    email: PENDING_EMAIL,
+    body: { shiftId: "morning", effectiveFrom: "2026-09-23" },
+    ddb: pendingDdb,
+    tableName: TABLE,
+    accessTable: ACCESS,
+    nowIso: NOW,
+    nowMs: Date.parse(NOW),
+  });
+  assert.strictEqual(firstAssignPending.statusCode, 200);
+  assert.strictEqual(firstAssignPending.body.shift.shiftId, "morning");
+  assert.strictEqual(
+    pendingDdb.items[keyOf(`USER#${PENDING_EMAIL}`, "SHIFT#CURRENT")].shiftId,
+    "morning"
+  );
+  assert.deepStrictEqual(
+    pendingDdb.items[keyOf("ENTITY#TASK", "TASK#first-pending-noshift")],
+    pendingNoShift
+  );
+  assert.deepStrictEqual(
+    pendingDdb.items[keyOf("ENTITY#TASK", "TASK#first-pending-conflict")],
+    pendingConflict
+  );
+
   console.log("shiftCatalog tests passed");
 })().catch((err) => {
   console.error(err);

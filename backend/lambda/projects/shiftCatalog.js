@@ -708,20 +708,20 @@ async function handleAssignEmployeeShift({
     return { statusCode: 200, body: { shift: publicAssignment(current), unchanged: true } };
   }
 
-  const activeTasks = await findActiveAssignments(ddb, tableName, target);
-  if (activeTasks.length) {
-    return {
-      statusCode: 409,
-      body: {
-        error:
-          "This employee's shift cannot be changed while they have active tasks. Complete or reassign those tasks first.",
-        code: CODE_ACTIVE_TASKS,
-        activeTasks,
-      },
-    };
-  }
-
   if (current) {
+    const activeTasks = await findActiveAssignments(ddb, tableName, target);
+    if (activeTasks.length) {
+      return {
+        statusCode: 409,
+        body: {
+          error:
+            "This employee's shift cannot be changed while they have active tasks. Complete or reassign those tasks first.",
+          code: CODE_ACTIVE_TASKS,
+          activeTasks,
+        },
+      };
+    }
+
     const previousTo =
       current.effectiveFrom && current.effectiveFrom >= effectiveFrom
         ? effectiveFrom

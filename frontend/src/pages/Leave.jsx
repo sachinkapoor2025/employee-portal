@@ -67,7 +67,7 @@ function formatDate(value) {
 
 function displayStatus(row) {
   const s = String(row?.status || "").toUpperCase();
-  if (s === "PLANNED_OFF") return "PLANNED OFF";
+  if (s === "PLANNED_OFF") return "WEEK OFF";
   if (s === "PENDING" || s === "PENDING_APPROVAL") return "PENDING APPROVAL";
   return s || "—";
 }
@@ -80,7 +80,7 @@ function statusClass(row) {
 }
 
 function typeLabel(row) {
-  if (row?.category === "PLANNED_OFF" || row?.type === "PLANNED_OFF") return "Planned Off";
+  if (row?.category === "PLANNED_OFF" || row?.type === "PLANNED_OFF") return "Week Off";
   const map = { CASUAL: "Casual Leave", SICK: "Sick Leave", EARNED: "Earned Leave" };
   return map[row?.type] || row?.type || "Leave";
 }
@@ -158,11 +158,11 @@ export default function Leave() {
     setError("");
     setMsg("");
     if (!planned.date) {
-      setError("Please choose a Planned Off date.");
+      setError("Please choose a Week Off date.");
       return;
     }
     if (plannedSameDay && !planned.emergencyReason.trim()) {
-      setError("Same-day Planned Off requires an emergency reason.");
+      setError("Same-day Week Off requires an emergency reason.");
       return;
     }
     setSaving(true);
@@ -178,10 +178,10 @@ export default function Leave() {
         emergencyReason: planned.emergencyReason,
       });
       setPlanned({ date: "", reason: "", emergencyReason: "" });
-      setMsg("Planned Off recorded. No approval needed.");
+      setMsg("Week Off recorded. No approval needed.");
       load();
     } catch (err) {
-      setError(err.message || "Unable to submit Planned Off.");
+      setError(err.message || "Unable to submit Week Off.");
     } finally {
       setSaving(false);
     }
@@ -235,12 +235,12 @@ export default function Leave() {
       <div style={pageCard}>
         <h2 style={pageTitle}>Request Time Off</h2>
         <p style={pageSubtitle}>
-          Choose Planned Off for a scheduled day off, or Apply for Leave when approval is required.
+          Choose Week Off for a scheduled day off, or Apply for Leave when approval is required.
         </p>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
           <button type="button" style={choiceCard(mode === "planned")} onClick={() => { setMode("planned"); setError(""); setMsg(""); }}>
-            <div style={{ fontWeight: 800, fontSize: 16 }}>PLANNED OFF</div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>WEEK OFF</div>
             <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>No approval needed</div>
           </button>
           <button type="button" style={choiceCard(mode === "leave")} onClick={() => { setMode("leave"); setError(""); setMsg(""); }}>
@@ -258,11 +258,11 @@ export default function Leave() {
 
         {mode === "planned" ? (
           <section style={sectionBox}>
-            <h3 style={{ marginTop: 0 }}>Planned Off</h3>
+            <h3 style={{ marginTop: 0 }}>Week Off</h3>
             <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 0 }}>
               Submit at least 1 day before the date. Same-day / few hours before is allowed only with an emergency reason.
             </p>
-            <label style={formLabel}>Planned Off Date</label>
+            <label style={formLabel}>Week Off Date</label>
             <input
               type="date"
               style={formInput}
@@ -286,12 +286,12 @@ export default function Leave() {
                   onChange={(e) =>
                     setPlanned({ ...planned, emergencyReason: e.target.value })
                   }
-                  placeholder="Required for same-day Planned Off"
+                  placeholder="Required for same-day Week Off"
                 />
               </>
             ) : null}
             <Button type="button" loading={saving} disabled={saving} onClick={submitPlanned}>
-              Submit Planned Off
+              Submit Week Off
             </Button>
           </section>
         ) : null}

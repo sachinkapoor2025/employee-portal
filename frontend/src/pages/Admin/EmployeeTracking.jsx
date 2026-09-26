@@ -27,6 +27,7 @@ import {
   getAssignmentZone,
   statusLabel,
 } from "../../utils/taskStatus";
+import { filterEmployeeTaskActivity } from "../../utils/taskActivityFilter";
 
 const TABS = [
   "Overview",
@@ -52,13 +53,6 @@ function dateRange(days) {
   const start = new Date();
   start.setDate(end.getDate() - (days - 1));
   return { start: ymd(start), end: ymd(end) };
-}
-
-function formatWhen(iso) {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return String(iso);
-  return new Date(t).toLocaleString();
 }
 
 function leaveOnDate(dateKey, leaves) {
@@ -363,7 +357,7 @@ export default function EmployeeTracking() {
                   designation={profile?.designation}
                 />
               ) : (
-                <ActivityPanel data={activity} tasks={tasks} email={email} />
+                <ActivityPanel tasks={tasks} email={email} />
               )}
             </div>
           </>
@@ -816,107 +810,11 @@ function PerformancePanel({ skill, designation }) {
   );
 }
 
-function presenceLastSeen(data) {
-  const events = data?.events || [];
-  let latest = data?.lastSeen || data?.summary?.lastSeen || "";
-  for (const ev of events) {
-    if (ev?.timestamp && (!latest || String(ev.timestamp) > String(latest))) {
-      latest = ev.timestamp;
-    }
-  }
-  return latest;
-}
-
-function presenceEventCount(data) {
-  const events = data?.events || [];
-  if (events.length) return events.length;
-  const counted = Number(data?.summary?.eventCount);
-  return Number.isFinite(counted) ? counted : 0;
-}
-
-function PortalPresenceSection({ data }) {
-  if (!data) {
-    return (
-      <section aria-labelledby="tracking-portal-presence">
-        <h3 id="tracking-portal-presence" style={{ marginTop: 0 }}>
-          Portal presence
-        </h3>
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          Loading portal presence…
-        </p>
-      </section>
-    );
-  }
-  const events = data.events || [];
-  const lastSeen = presenceLastSeen(data);
-  const eventCount = presenceEventCount(data);
-  return (
-    <section aria-labelledby="tracking-portal-presence" style={{ marginBottom: 28 }}>
-      <h3 id="tracking-portal-presence" style={{ marginTop: 0, marginBottom: 8 }}>
-        Portal presence
-      </h3>
-      <p style={{ color: colors.textMuted, fontSize: 13, margin: "0 0 16px" }}>
-        Portal presence is not working hours.
-      </p>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-          gap: 10,
-          marginBottom: 12,
-        }}
-      >
-        <Meta label="Last seen" value={lastSeen ? formatWhen(lastSeen) : "—"} />
-        <Meta label="Event count" value={String(eventCount)} />
-      </div>
-      {events.length === 0 ? (
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No portal presence events recorded for this employee yet.
-        </p>
-      ) : (
-        <div className="dgv-table-wrap">
-          <table className="dgv-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Type</th>
-                <th>Page</th>
-                <th>Device</th>
-                <th>Location</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((ev) => (
-                <tr key={ev.SK || `${ev.timestamp}-${ev.type}`}>
-                  <td>{formatWhen(ev.timestamp)}</td>
-                  <td>{ev.type || "—"}</td>
-                  <td>{ev.page || "—"}</td>
-                  <td>{ev.device || "—"}</td>
-                  <td>{ev.location || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function normalizeActivityList(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.items)) return payload.items;
   if (Array.isArray(payload?.activity)) return payload.activity;
   return [];
-}
-
-function activityForEmployee(events, email) {
-  const target = normalizeTrackingEmail(email);
-  return (events || []).filter((ev) => {
-    const assigned = normalizeTrackingEmail(ev?.assignmentEmail);
-    if (assigned) return assigned === target;
-    return true;
-  });
 }
 
 function TaskActivitySection({ tasks, email }) {
@@ -936,7 +834,10 @@ function TaskActivitySection({ tasks, email }) {
         return fetchTaskActivity(task.taskId)
           .then((rows) => ({
             task,
-            events: activityForEmployee(normalizeActivityList(rows), email).sort(
+            events: filterEmployeeTaskActivity(
+              normalizeActivityList(rows),
+              email
+            ).sort(
               (a, b) =>
                 String(b.timestamp || "").localeCompare(String(a.timestamp || ""))
             ),
@@ -1023,13 +924,8 @@ function TaskActivitySection({ tasks, email }) {
   );
 }
 
-function ActivityPanel({ data, tasks, email }) {
-  return (
-    <>
-      <PortalPresenceSection data={data} />
-      <TaskActivitySection tasks={tasks} email={email} />
-    </>
-  );
+function ActivityPanel({ tasks, email }) {
+  return <TaskActivitySection tasks={tasks} email={email} />;
 }
 
 function formatHm(hhmm) {

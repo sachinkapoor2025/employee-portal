@@ -424,7 +424,7 @@ async function renderActivity(activity = { events: [] }) {
   trackingRoute.tab = "Activity";
   fetchAdminActivity.mockResolvedValue(activity);
   renderTracking();
-  expect(await screen.findByText("Portal presence")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Task activity" })).toBeInTheDocument();
 }
 
 const PORTAL_EVENTS = {
@@ -447,21 +447,14 @@ const PORTAL_EVENTS = {
   ],
 };
 
-test("portal presence is displayed separately from task activity", async () => {
+test("Activity tab does not present portal presence as work activity", async () => {
   await renderActivity(PORTAL_EVENTS);
-  expect(screen.getByRole("heading", { name: "Portal presence" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Task activity" })).toBeInTheDocument();
-  expect(screen.getByText("login")).toBeInTheDocument();
-  expect(screen.getByText("Last seen")).toBeInTheDocument();
-  expect(screen.getByText("Event count")).toBeInTheDocument();
-  expect(screen.getByText("2")).toBeInTheDocument();
-});
-
-test("portal presence is explicitly labeled as not working hours", async () => {
-  await renderActivity(PORTAL_EVENTS);
-  expect(
-    screen.getByText("Portal presence is not working hours.")
-  ).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Portal presence" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Portal presence is not working hours.")).not.toBeInTheDocument();
+  expect(screen.queryByText("login")).not.toBeInTheDocument();
+  expect(screen.queryByText("heartbeat")).not.toBeInTheDocument();
+  expect(screen.queryByText("Last seen")).not.toBeInTheDocument();
 });
 
 test("portal totalMinutes are not presented as working hours", async () => {

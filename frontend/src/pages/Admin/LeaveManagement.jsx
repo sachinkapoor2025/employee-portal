@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import Layout from "../../components/Layout";
 import { fetchAllLeave, reviewLeave } from "../../services/api";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
+import { companyTodayKey } from "../../utils/attendanceCompliance";
+import { splitLeaveViews } from "../../utils/leaveAdminViews";
 
 function daysInclusive(fromDate, toDate) {
   if (!fromDate || !toDate) return 0;
@@ -51,7 +53,7 @@ function isPlannedOff(row) {
 function displayStatus(row) {
   const s = String(row?.status || "").toUpperCase();
   if (s === "CANCELLED") return "CANCELLED";
-  if (isPlannedOff(row)) return "PLANNED OFF";
+  if (isPlannedOff(row)) return "WEEK OFF";
   if (s === "PENDING" || s === "PENDING_APPROVAL") return "PENDING APPROVAL";
   return s || "—";
 }
@@ -64,17 +66,18 @@ function statusClass(row) {
 }
 
 function typeLabel(row) {
-  if (isPlannedOff(row)) return "Planned Off";
+  if (isPlannedOff(row)) return "Week Off";
   const map = { CASUAL: "Casual Leave", SICK: "Sick Leave", EARNED: "Earned Leave" };
   return map[row?.type] || row?.type || "Leave";
 }
 
 function remainingLabel(row, now) {
   if (!isPending(row.status) || !row.approvalDeadline) return "—";
+  const nowMs = typeof now === "number" ? now : new Date(now).getTime();
   const ms =
     row.remainingMs != null
       ? row.remainingMs
-      : new Date(row.approvalDeadline).getTime() - now.getTime();
+      : new Date(row.approvalDeadline).getTime() - nowMs;
   if (ms <= 0) return "Auto-approving…";
   const totalMins = Math.floor(ms / 60000);
   const h = Math.floor(totalMins / 60);
@@ -87,6 +90,7 @@ export default function LeaveManagement() {
   const [now, setNow] = useState(() => Date.now());
   const [busyId, setBusyId] = useState("");
   const [actMenuId, setActMenuId] = useState("");
+  const [view, setView] = useState("today");
 
   const load = () => fetchAllLeave().then(setLeaves).catch(console.error);
 
@@ -120,16 +124,49 @@ export default function LeaveManagement() {
     () => (Array.isArray(leaves) ? leaves : []),
     [leaves]
   );
-  const planned = rows.filter(isPlannedOff);
-  const requests = rows.filter((r) => !isPlannedOff(r));
+  const todayKey = companyTodayKey(new Date(now));
+  const { today: todayRows, history: historyRows } = useMemo(
+    () => splitLeaveViews(rows, todayKey),
+    [rows, todayKey]
+  );
+  const visible = view === "history" ? historyRows : todayRows;
+  const planned = visible.filter(isPlannedOff);
+  const requests = visible.filter((r) => !isPlannedOff(r));
+  const showingHistory = view === "history";
 
   return (
     <Layout>
       <div style={{ ...pageCard, maxWidth: "100%" }}>
-        <h2 style={pageTitle}>Leave Requests</h2>
-        <p style={pageSubtitle}>
-          Approve or reject leave within 5 hours. Planned Off is recorded immediately and does not need approval.
-        </p>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <h2 style={pageTitle}>
+              {showingHistory ? "Leave History" : "Leave Requests"}
+            </h2>
+            <p style={pageSubtitle}>
+              {showingHistory
+                ? "Past and non-today leave records. Pending requests can still be approved or rejected."
+                : "Today's leave covering the current IST date. Approve or reject leave within 5 hours. Week Off is recorded immediately and does not need approval."}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="dgv-btn dgv-btn--outline"
+            onClick={() => {
+              setActMenuId("");
+              setView(showingHistory ? "today" : "history");
+            }}
+          >
+            {showingHistory ? "Today" : "History"}
+          </button>
+        </div>
 
         <h3 style={{ marginTop: 8 }}>Pending & Leave Requests</h3>
         <div className="dgv-table-wrap" style={{ overflowX: "hidden" }}>
@@ -248,10 +285,12 @@ export default function LeaveManagement() {
           </table>
         </div>
         {requests.length === 0 ? (
-          <p style={{ color: colors.textMuted }}>No leave requests.</p>
+          <p style={{ color: colors.textMuted }}>
+            {showingHistory ? "No leave requests." : "No leave requests covering today."}
+          </p>
         ) : null}
 
-        <h3 style={{ marginTop: 28 }}>Planned Off</h3>
+        <h3 style={{ marginTop: 28 }}>Week Off</h3>
         <p style={{ color: colors.textMuted, fontSize: 13 }}>
           Visible for tracking only. No approval required.
         </p>
@@ -290,7 +329,7 @@ export default function LeaveManagement() {
                       <span className="dgv-badge dgv-badge--danger">CANCELLED</span>
                     ) : (
                       <>
-                        <span className="dgv-badge dgv-badge--success">PLANNED OFF</span>
+                        <span className="dgv-badge dgv-badge--success">WEEK OFF</span>
                         <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
                           No approval required
                         </div>
@@ -303,7 +342,9 @@ export default function LeaveManagement() {
           </table>
         </div>
         {planned.length === 0 ? (
-          <p style={{ color: colors.textMuted }}>No Planned Off records.</p>
+          <p style={{ color: colors.textMuted }}>
+            {showingHistory ? "No Week Off records." : "No Week Off covering today."}
+          </p>
         ) : null}
       </div>
     </Layout>

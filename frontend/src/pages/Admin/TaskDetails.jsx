@@ -6,6 +6,10 @@ import Modal from "../../components/ui/Modal";
 import {
   fetchTaskById,
   fetchTaskActivity,
+  fetchTaskAttachments,
+  getTaskAttachmentUploadUrl,
+  registerTaskAttachment,
+  getTaskAttachmentDownloadUrl,
   updateTask,
   createTask,
   fetchUsers,
@@ -45,6 +49,8 @@ import {
   statusLabel,
   zoneDisplay,
   employeeCanChangeStatus,
+  TASK_ATTACHMENT_EXTS,
+  validateTaskAttachmentFile,
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
 
@@ -110,6 +116,10 @@ export default function TaskDetails() {
   const employeeView = location.pathname.startsWith("/work");
   const [task, setTask] = useState(location.state?.task || null);
   const [activity, setActivity] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState("");
   const [users, setUsers] = useState([]);
   const [creatorName, setCreatorName] = useState("");
   const [loading, setLoading] = useState(!location.state?.task);
@@ -246,8 +256,13 @@ export default function TaskDetails() {
         category: enriched.category || "",
       });
 
-      const a = await fetchTaskActivity(taskId).catch(() => []);
+      const [a, atts] = await Promise.all([
+        fetchTaskActivity(taskId).catch(() => []),
+        fetchTaskAttachments(taskId).catch(() => []),
+      ]);
       setActivity(Array.isArray(a) ? a : []);
+      setAttachments(Array.isArray(atts) ? atts : []);
+      setAttachmentError("");
     } catch (err) {
       console.error(err);
       const denied = Number(err?.status) === 403;
@@ -300,9 +315,84 @@ export default function TaskDetails() {
     );
     setTask(enriched);
     setCreatorName(enriched.createdByName || creatorName);
-    const a = await fetchTaskActivity(taskId).catch(() => []);
+    const [a, atts] = await Promise.all([
+      fetchTaskActivity(taskId).catch(() => []),
+      fetchTaskAttachments(taskId).catch(() => []),
+    ]);
     setActivity(Array.isArray(a) ? a : []);
+    setAttachments(Array.isArray(atts) ? atts : []);
     return enriched;
+  };
+
+  const refreshAttachmentsAndActivity = async () => {
+    const [a, atts] = await Promise.all([
+      fetchTaskActivity(taskId).catch(() => []),
+      fetchTaskAttachments(taskId).catch(() => []),
+    ]);
+    setActivity(Array.isArray(a) ? a : []);
+    setAttachments(Array.isArray(atts) ? atts : []);
+  };
+
+  const handleAttachmentFile = async (file) => {
+    if (!file) return;
+    setAttachmentError("");
+    const invalid = validateTaskAttachmentFile(file);
+    if (invalid) {
+      setAttachmentError(invalid);
+      return;
+    }
+    setUploadingAttachment(true);
+    try {
+      const contentType = file.type || "application/octet-stream";
+      const signed = await getTaskAttachmentUploadUrl(
+        taskId,
+        file.name,
+        contentType,
+        file.size
+      );
+      if (!signed?.uploadUrl || !signed?.s3Key) {
+        throw new Error("Unable to upload attachment.");
+      }
+      const put = await fetch(signed.uploadUrl, {
+        method: "PUT",
+        body: file,
+        headers: {
+          "Content-Type": signed.contentType || contentType,
+        },
+      });
+      if (!put.ok) {
+        throw new Error("Unable to upload attachment.");
+      }
+      await registerTaskAttachment(taskId, {
+        fileName: signed.fileName || file.name,
+        contentType: signed.contentType || contentType,
+        s3Key: signed.s3Key,
+      });
+      await refreshAttachmentsAndActivity();
+    } catch (err) {
+      setAttachmentError(err.message || "Unable to upload attachment.");
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
+
+  const handleAttachmentDownload = async (item) => {
+    const id = item?.attachmentId || item?.s3Key || "";
+    setAttachmentError("");
+    setDownloadingAttachmentId(id);
+    try {
+      const res = await getTaskAttachmentDownloadUrl(taskId, {
+        attachmentId: item?.attachmentId,
+        s3Key: item?.s3Key,
+      });
+      const url = res?.downloadUrl;
+      if (!url) throw new Error("Unable to download attachment.");
+      window.open(url, "_blank", "noopener");
+    } catch (err) {
+      setAttachmentError(err.message || "Unable to download attachment.");
+    } finally {
+      setDownloadingAttachmentId("");
+    }
   };
 
   const openEdit = () => {
@@ -888,6 +978,12 @@ export default function TaskDetails() {
             showActiveBlocker={showActiveBlocker}
             timeline={timeline}
             users={users}
+            attachments={attachments}
+            attachmentError={attachmentError}
+            uploadingAttachment={uploadingAttachment}
+            downloadingAttachmentId={downloadingAttachmentId}
+            onSelectAttachment={handleAttachmentFile}
+            onDownloadAttachment={handleAttachmentDownload}
           />
         ) : (
         <>
@@ -1062,6 +1158,16 @@ export default function TaskDetails() {
               : "No description added."}
           </p>
         </section>
+
+        <TaskAttachmentsSection
+          attachments={attachments}
+          users={users}
+          error={attachmentError}
+          uploading={uploadingAttachment}
+          downloadingId={downloadingAttachmentId}
+          onSelectFile={handleAttachmentFile}
+          onDownload={handleAttachmentDownload}
+        />
 
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>Task Timeline</h3>
@@ -1715,6 +1821,102 @@ function AdminReviewPanel({
   );
 }
 
+const ATTACHMENT_ACCEPT = TASK_ATTACHMENT_EXTS.join(",");
+
+function TaskAttachmentsSection({
+  attachments,
+  users,
+  error,
+  uploading,
+  downloadingId,
+  onSelectFile,
+  onDownload,
+}) {
+  const items = Array.isArray(attachments) ? attachments : [];
+  return (
+    <section style={{ ...sectionBox, marginTop: 14 }}>
+      <h3 style={sectionTitle}>ATTACHMENTS</h3>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+        Attachments are optional. You can complete this task without attaching a
+        file.
+      </p>
+      <label style={{ ...formLabel, display: "block" }} htmlFor="task-attachment-file">
+        Attach a file
+      </label>
+      <input
+        id="task-attachment-file"
+        type="file"
+        accept={ATTACHMENT_ACCEPT}
+        disabled={uploading}
+        aria-label="Attach a file"
+        style={{ ...formInput, padding: "8px 10px" }}
+        onChange={(e) => {
+          const file = e.target.files && e.target.files[0];
+          e.target.value = "";
+          if (file) onSelectFile(file);
+        }}
+      />
+      {uploading ? (
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: colors.textMuted }}>
+          Uploading…
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          role="alert"
+          style={{ margin: "8px 0 0", fontSize: 13, color: "var(--dgv-danger)" }}
+        >
+          {error}
+        </p>
+      ) : null}
+      {items.length === 0 ? (
+        <p style={{ margin: "14px 0 0", color: colors.textMuted }}>
+          No attachments yet.
+        </p>
+      ) : (
+        <ul style={{ listStyle: "none", margin: "14px 0 0", padding: 0 }}>
+          {items.map((item) => {
+            const id = item.attachmentId || item.s3Key || item.fileName;
+            const who = personLabel(users, item.uploadedBy).name || item.uploadedBy || "—";
+            return (
+              <li
+                key={id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  padding: "10px 0",
+                  borderTop: "1px solid var(--dgv-border)",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
+                    {item.fileName || "Attachment"}
+                  </div>
+                  <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                    {who}
+                    {item.uploadedAt ? ` · ${formatTaskDateTime(item.uploadedAt)}` : ""}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={uploading || downloadingId === id}
+                  onClick={() => onDownload(item)}
+                >
+                  Download {item.fileName || "file"}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function EmployeeTaskBody({
   task,
   mine,
@@ -1724,6 +1926,12 @@ function EmployeeTaskBody({
   showActiveBlocker,
   timeline,
   users,
+  attachments,
+  attachmentError,
+  uploadingAttachment,
+  downloadingAttachmentId,
+  onSelectAttachment,
+  onDownloadAttachment,
 }) {
   return (
     <>
@@ -1753,6 +1961,16 @@ function EmployeeTaskBody({
             : "No description added."}
         </p>
       </section>
+
+      <TaskAttachmentsSection
+        attachments={attachments}
+        users={users}
+        error={attachmentError}
+        uploading={uploadingAttachment}
+        downloadingId={downloadingAttachmentId}
+        onSelectFile={onSelectAttachment}
+        onDownload={onDownloadAttachment}
+      />
 
       <section style={{ ...sectionBox, marginTop: 14 }}>
         <h3 style={sectionTitle}>SCHEDULE</h3>

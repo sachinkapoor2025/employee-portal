@@ -30,6 +30,10 @@ jest.mock("../../services/auth", () => ({
 jest.mock("../../services/api", () => ({
   fetchTaskById: jest.fn(),
   fetchTaskActivity: jest.fn(),
+  fetchTaskAttachments: jest.fn(),
+  getTaskAttachmentUploadUrl: jest.fn(),
+  registerTaskAttachment: jest.fn(),
+  getTaskAttachmentDownloadUrl: jest.fn(),
   updateTask: jest.fn(),
   createTask: jest.fn(),
   fetchUsers: jest.fn(),
@@ -37,12 +41,16 @@ jest.mock("../../services/api", () => ({
   reportTaskBlocker: jest.fn(),
 }));
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskDetails from "./TaskDetails";
 import {
   fetchTaskById,
   fetchTaskActivity,
+  fetchTaskAttachments,
+  getTaskAttachmentUploadUrl,
+  registerTaskAttachment,
+  getTaskAttachmentDownloadUrl,
   fetchUsers,
   fetchUserProfile,
   updateTask,
@@ -134,6 +142,10 @@ beforeEach(() => {
   mockLocation.state = {};
   fetchTaskById.mockReset();
   fetchTaskActivity.mockReset();
+  fetchTaskAttachments.mockReset();
+  getTaskAttachmentUploadUrl.mockReset();
+  registerTaskAttachment.mockReset();
+  getTaskAttachmentDownloadUrl.mockReset();
   fetchUsers.mockReset();
   fetchUserProfile.mockReset();
   updateTask.mockReset();
@@ -141,6 +153,17 @@ beforeEach(() => {
   reportTaskBlocker.mockReset();
   getLoggedInEmail.mockReturnValue("rahul@mydgv.com");
   fetchTaskActivity.mockResolvedValue([]);
+  fetchTaskAttachments.mockResolvedValue([]);
+  getTaskAttachmentUploadUrl.mockResolvedValue({
+    uploadUrl: "https://s3.example/put",
+    s3Key: "tasks/t1/file.pdf",
+    fileName: "brief.pdf",
+    contentType: "application/pdf",
+  });
+  registerTaskAttachment.mockResolvedValue({});
+  getTaskAttachmentDownloadUrl.mockResolvedValue({
+    downloadUrl: "https://s3.example/get",
+  });
   fetchUsers.mockResolvedValue([{ email: "admin@mydgv.com", name: "Admin User" }]);
   updateTask.mockResolvedValue({});
   createTask.mockResolvedValue({ taskId: "t2" });
@@ -1034,4 +1057,202 @@ test("Approve & Complete uses existing DONE mutation", async () => {
     )
   );
   expect(createTask).not.toHaveBeenCalled();
+});
+
+const SAMPLE_ATTACHMENT = {
+  attachmentId: "att-1",
+  fileName: "brief.pdf",
+  s3Key: "tasks/t1/1-brief.pdf",
+  uploadedBy: "rahul@mydgv.com",
+  uploadedAt: "2026-09-20T10:00:00.000Z",
+};
+
+function chooseAttachmentFile(file) {
+  const input = screen.getByLabelText("Attach a file");
+  fireEvent.change(input, { target: { files: [file] } });
+}
+
+test("employee and admin see optional attachments list", async () => {
+  fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  const { unmount } = render(<TaskDetails />);
+  expect(await screen.findByRole("heading", { name: "ATTACHMENTS" })).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Attachments are optional. You can complete this task without attaching a file."
+    )
+  ).toBeInTheDocument();
+  expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download brief.pdf" })).toBeInTheDocument();
+  expect(screen.queryByText("No attachments yet.")).not.toBeInTheDocument();
+  unmount();
+
+  mockLocation.pathname = "/admin/tasks/t1";
+  fetchTaskById.mockResolvedValue(ASSIGNED_TASK);
+  render(<TaskDetails />);
+  expect(await screen.findByRole("heading", { name: "ATTACHMENTS" })).toBeInTheDocument();
+  expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download brief.pdf" })).toBeInTheDocument();
+});
+
+test("empty attachments show optional empty state", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  expect(await screen.findByRole("heading", { name: "ATTACHMENTS" })).toBeInTheDocument();
+  expect(screen.getByText("No attachments yet.")).toBeInTheDocument();
+  expect(screen.getByLabelText("Attach a file")).toBeInTheDocument();
+});
+
+test("optional upload follows presign, PUT, register, then refresh", async () => {
+  fetchTaskAttachments
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  render(<TaskDetails />);
+  await screen.findByText("No attachments yet.");
+  const file = new File(["pdf-bytes"], "brief.pdf", { type: "application/pdf" });
+  chooseAttachmentFile(file);
+  await waitFor(() =>
+    expect(getTaskAttachmentUploadUrl).toHaveBeenCalledWith(
+      "t1",
+      "brief.pdf",
+      "application/pdf",
+      file.size
+    )
+  );
+  await waitFor(() =>
+    expect(global.fetch).toHaveBeenCalledWith("https://s3.example/put", {
+      method: "PUT",
+      body: file,
+      headers: { "Content-Type": "application/pdf" },
+    })
+  );
+  await waitFor(() =>
+    expect(registerTaskAttachment).toHaveBeenCalledWith("t1", {
+      fileName: "brief.pdf",
+      contentType: "application/pdf",
+      s3Key: "tasks/t1/file.pdf",
+    })
+  );
+  expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+  expect(screen.queryByText("No attachments yet.")).not.toBeInTheDocument();
+  expect(fetchTaskAttachments.mock.calls.length).toBeGreaterThan(1);
+});
+
+test("download requests a controlled URL", async () => {
+  fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  const openSpy = jest.spyOn(window, "open").mockImplementation(() => null);
+  render(<TaskDetails />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Download brief.pdf" })
+  );
+  await waitFor(() =>
+    expect(getTaskAttachmentDownloadUrl).toHaveBeenCalledWith("t1", {
+      attachmentId: "att-1",
+      s3Key: "tasks/t1/1-brief.pdf",
+    })
+  );
+  expect(openSpy).toHaveBeenCalledWith(
+    "https://s3.example/get",
+    "_blank",
+    "noopener"
+  );
+  openSpy.mockRestore();
+});
+
+test("invalid file type is rejected before upload", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  await screen.findByLabelText("Attach a file");
+  chooseAttachmentFile(new File(["x"], "notes.exe", { type: "application/x-msdownload" }));
+  expect(
+    await screen.findByText(
+      "Invalid file type. Allowed: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX."
+    )
+  ).toBeInTheDocument();
+  expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
+  expect(registerTaskAttachment).not.toHaveBeenCalled();
+});
+
+test("oversized file is rejected before upload", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  await screen.findByLabelText("Attach a file");
+  const file = new File(["x"], "brief.pdf", { type: "application/pdf" });
+  Object.defineProperty(file, "size", { value: 11 * 1024 * 1024 });
+  chooseAttachmentFile(file);
+  expect(
+    await screen.findByText("File must be 10 MB or smaller.")
+  ).toBeInTheDocument();
+  expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
+  expect(registerTaskAttachment).not.toHaveBeenCalled();
+});
+
+test("upload failure does not register the file", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  getTaskAttachmentUploadUrl.mockResolvedValue({
+    uploadUrl: "https://s3.example/put",
+    s3Key: "tasks/t1/file.pdf",
+    fileName: "brief.pdf",
+    contentType: "application/pdf",
+  });
+  global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403 });
+  render(<TaskDetails />);
+  await screen.findByLabelText("Attach a file");
+  chooseAttachmentFile(new File(["pdf-bytes"], "brief.pdf", { type: "application/pdf" }));
+  expect(await screen.findByText("Unable to upload attachment.")).toBeInTheDocument();
+  await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+  expect(registerTaskAttachment).not.toHaveBeenCalled();
+  expect(screen.getByText("No attachments yet.")).toBeInTheDocument();
+});
+
+test("task completion does not depend on an attachment", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  expect(await screen.findByText("No attachments yet.")).toBeInTheDocument();
+  await userEvent.selectOptions(
+    screen.getByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed without a file."
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed without a file.",
+    })
+  );
+  expect(updateTask.mock.calls[0][0].attachment).toBeUndefined();
+  expect(updateTask.mock.calls[0][0].attachments).toBeUndefined();
+  expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
+  expect(registerTaskAttachment).not.toHaveBeenCalled();
+});
+
+test("admin review complete does not require an attachment", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  fetchTaskById.mockResolvedValue(adminReviewTask());
+  render(<TaskDetails />);
+  expect(await screen.findByRole("heading", { name: "ATTACHMENTS" })).toBeInTheDocument();
+  expect(screen.getByText("No attachments yet.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("radio", { name: "Approve & Complete" }));
+  await userEvent.click(screen.getByRole("button", { name: "Approve & Complete" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "t1",
+        status: "DONE",
+        assignmentEmail: "rahul@mydgv.com",
+      })
+    )
+  );
+  expect(updateTask.mock.calls[0][0].attachment).toBeUndefined();
+  expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
 });

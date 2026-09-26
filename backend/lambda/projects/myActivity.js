@@ -188,7 +188,14 @@ function publicActivity(item) {
     action: item.action || "",
     detail: item.detail || "",
     actorEmail: item.actorEmail || "",
+    assignmentEmail: item.assignmentEmail || "",
   };
+}
+
+function activityVisibleToEmployee(item, email) {
+  const assigned = escalation.normalizeEmail(item?.assignmentEmail);
+  if (!assigned) return true;
+  return assigned === email;
 }
 
 function publicPresenceEvent(item) {
@@ -246,7 +253,7 @@ async function loadPresence(ddb, activityTable, email, dateKey) {
   return presence;
 }
 
-async function loadTaskActivity(ddb, workTable, taskId, dateKey) {
+async function loadTaskActivity(ddb, workTable, taskId, dateKey, email) {
   const items = await queryAll(ddb, {
     TableName: workTable,
     KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
@@ -259,7 +266,8 @@ async function loadTaskActivity(ddb, workTable, taskId, dateKey) {
   return items
     .filter((item) => {
       const ts = item.timestamp || "";
-      return ts && companyDateKey(ts) === dateKey;
+      if (!ts || companyDateKey(ts) !== dateKey) return false;
+      return activityVisibleToEmployee(item, email);
     })
     .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")))
     .slice(0, ACTIVITY_PER_TASK)
@@ -292,7 +300,7 @@ async function loadTasks(ddb, workTable, email, dateKey, nowMs) {
       email
     );
     const mine = decorated.myAssignment || assignment;
-    const activity = await loadTaskActivity(ddb, workTable, taskId, dateKey);
+    const activity = await loadTaskActivity(ddb, workTable, taskId, dateKey, email);
     out.push({
       taskId,
       title: task.title || "",

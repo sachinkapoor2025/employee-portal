@@ -171,6 +171,7 @@ function seedTaskActivity(ddb, taskId, timestamp, extra = {}) {
     detail: extra.detail || "Changed",
     actorEmail: extra.actorEmail || CALLER,
     timestamp,
+    ...(extra.assignmentEmail ? { assignmentEmail: extra.assignmentEmail } : {}),
   });
 }
 
@@ -386,6 +387,46 @@ function authEvent(email, query = {}) {
     assert.strictEqual(mine.activity.length, ACTIVITY_PER_TASK);
     assert.ok(mine.activity.every((row) => companyDateKey(row.timestamp) === TODAY));
     assert.ok(mine.activity.some((row) => row.actorEmail === ADMIN));
+  }
+
+  // 9b. assignment-specific activity is employee-scoped; task-wide remains
+  {
+    const ddb = baseSeed();
+    seedEntityTask(ddb, { taskId: "task-shared", title: "Shared" });
+    seedAssignment(ddb, "task-shared", CALLER, { status: "IN_PROGRESS" });
+    seedTaskActivity(ddb, "task-shared", "2026-09-25T10:00:00+05:30", {
+      id: "created",
+      action: "task_created",
+      detail: "Task created",
+      actorEmail: ADMIN,
+    });
+    seedTaskActivity(ddb, "task-shared", "2026-09-25T10:05:00+05:30", {
+      id: "mine",
+      action: "status_changed",
+      detail: "Priya in progress",
+      actorEmail: CALLER,
+      assignmentEmail: CALLER,
+    });
+    seedTaskActivity(ddb, "task-shared", "2026-09-25T10:10:00+05:30", {
+      id: "theirs",
+      action: "BLOCKER_REPORTED",
+      detail: "Lead blocker",
+      actorEmail: LEAD,
+      assignmentEmail: LEAD,
+    });
+    seedTaskActivity(ddb, "task-shared", "2026-09-25T10:15:00+05:30", {
+      id: "deadline",
+      action: "deadline_changed",
+      detail: "Deadline changed",
+      actorEmail: ADMIN,
+    });
+    const res = await getMine(ddb, { date: TODAY });
+    const mine = res.body.tasks.find((task) => task.taskId === "task-shared");
+    const details = mine.activity.map((row) => row.detail);
+    assert.ok(details.includes("Task created"));
+    assert.ok(details.includes("Priya in progress"));
+    assert.ok(details.includes("Deadline changed"));
+    assert.ok(!details.includes("Lead blocker"));
   }
 
   // 10. presence is date-scoped
