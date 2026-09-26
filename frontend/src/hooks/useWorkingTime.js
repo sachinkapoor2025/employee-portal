@@ -5,11 +5,10 @@ import {
   fetchAttendance,
 } from "../services/api";
 
-function localDateKey(date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+const COMPANY_TZ = "Asia/Kolkata";
+
+function companyTodayKey(date = new Date()) {
+  return date.toLocaleDateString("en-CA", { timeZone: COMPANY_TZ });
 }
 
 function parseTs(value) {
@@ -45,29 +44,37 @@ function computeElapsedSeconds(checkInTime, checkOutTime, nowMs) {
 }
 
 const EMPTY_SESSION = {
-  checkInTime: null,
-  checkOutTime: null,
+  actualCheckInTime: null,
+  actualCheckOutTime: null,
+  expectedEndTime: null,
+  status: null,
+  submittedAt: null,
 };
 
 /**
- * Working Time from attendance records.
- * Live clock uses browser `new Date()`; persistence uses backend timestamps.
- * API failures fall back to a clean default UI (no user-facing error text).
+ * Working Time from actual punch fields.
+ * Persistence uses server timestamps; client clocks are display-only.
  */
 export function useWorkingTime() {
-  const [checkInTime, setCheckInTime] = useState(null);
-  const [checkOutTime, setCheckOutTime] = useState(null);
+  const [actualCheckInTime, setActualCheckInTime] = useState(null);
+  const [actualCheckOutTime, setActualCheckOutTime] = useState(null);
+  const [expectedEndTime, setExpectedEndTime] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [submittedAt, setSubmittedAt] = useState(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const applySession = useCallback((session = EMPTY_SESSION) => {
-    setCheckInTime(session.checkInTime || null);
-    setCheckOutTime(session.checkOutTime || null);
+    setActualCheckInTime(session.actualCheckInTime || null);
+    setActualCheckOutTime(session.actualCheckOutTime || null);
+    setExpectedEndTime(session.expectedEndTime || null);
+    setStatus(session.status || null);
+    setSubmittedAt(session.submittedAt || null);
   }, []);
 
   const refresh = useCallback(async () => {
-    const date = localDateKey();
+    const date = companyTodayKey();
     try {
       const list = await fetchAttendance(date, date);
       const today = Array.isArray(list)
@@ -75,11 +82,13 @@ export function useWorkingTime() {
         : null;
 
       applySession({
-        checkInTime: today?.checkInTime || null,
-        checkOutTime: today?.checkOutTime || null,
+        actualCheckInTime: today?.actualCheckInTime || null,
+        actualCheckOutTime: today?.actualCheckOutTime || null,
+        expectedEndTime: today?.expectedEndTime || null,
+        status: today?.status || null,
+        submittedAt: today?.submittedAt || null,
       });
     } catch (err) {
-      // Technical detail for developers only — never surface to the UI
       console.warn("Working time attendance fetch failed:", err);
       applySession(EMPTY_SESSION);
     } finally {
@@ -104,96 +113,108 @@ export function useWorkingTime() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refresh]);
 
-  const isCheckedIn = !!checkInTime;
-  const isCheckedOut = !!checkOutTime;
+  const isWorking = status === "Working" && !!submittedAt;
+  const isCheckedIn = !!actualCheckInTime;
+  const isCheckedOut = !!actualCheckOutTime;
   const isActive = isCheckedIn && !isCheckedOut;
 
-  const status = !isCheckedIn
+  const statusLabel = !isWorking
     ? { key: "idle", label: "Not Checked In" }
-    : isCheckedOut
-      ? { key: "out", label: "Checked Out" }
-      : { key: "active", label: "Active" };
+    : !isCheckedIn
+      ? { key: "idle", label: "Not Checked In" }
+      : isCheckedOut
+        ? { key: "out", label: "Checked Out" }
+        : { key: "active", label: "Active" };
 
   const elapsedSeconds = computeElapsedSeconds(
-    checkInTime,
-    checkOutTime,
+    actualCheckInTime,
+    actualCheckOutTime,
     nowMs
   );
 
-  const canCheckIn = !isCheckedIn;
-  const canCheckOut = isActive;
+  const pastExpectedEnd =
+    !!expectedEndTime && Number.isFinite(parseTs(expectedEndTime))
+      ? nowMs > parseTs(expectedEndTime)
+      : false;
+
+  const canCheckIn = isWorking && !isCheckedIn;
+  const canCheckOut = isWorking && isActive;
 
   const checkIn = useCallback(async () => {
     if (busy || !canCheckIn) return;
     setBusy(true);
-    const date = localDateKey();
-    const checkInTimeIso = new Date().toISOString();
+    const date = companyTodayKey();
     try {
-      const res = await attendanceCheckIn({
-        date,
-        checkInTime: checkInTimeIso,
-      });
+      const res = await attendanceCheckIn({ date });
       const saved = res?.attendance;
       applySession({
-        checkInTime: saved?.checkInTime || checkInTimeIso,
-        checkOutTime: saved?.checkOutTime || null,
+        actualCheckInTime: saved?.actualCheckInTime || null,
+        actualCheckOutTime: saved?.actualCheckOutTime || null,
+        expectedEndTime: saved?.expectedEndTime || expectedEndTime,
+        status: saved?.status || "Working",
+        submittedAt: saved?.submittedAt || submittedAt,
       });
       setNowMs(Date.now());
     } catch (err) {
       console.warn("Check-in failed:", err);
-      // Optimistic local session so the widget stays usable if API is down
-      applySession({
-        checkInTime: checkInTimeIso,
-        checkOutTime: null,
-      });
-      setNowMs(Date.now());
     } finally {
       setBusy(false);
     }
-  }, [applySession, busy, canCheckIn]);
+  }, [applySession, busy, canCheckIn, expectedEndTime, submittedAt]);
 
-  const checkOut = useCallback(async () => {
-    if (busy || !canCheckOut) return;
-    setBusy(true);
-    const date = localDateKey();
-    const checkOutTimeIso = new Date().toISOString();
-    try {
-      const res = await attendanceCheckOut({
-        date,
-        checkOutTime: checkOutTimeIso,
-      });
-      const saved = res?.attendance;
-      applySession({
-        checkInTime: saved?.checkInTime || checkInTime,
-        checkOutTime: saved?.checkOutTime || checkOutTimeIso,
-      });
-      setNowMs(Date.now());
-    } catch (err) {
-      console.warn("Check-out failed:", err);
-      applySession({
-        checkInTime,
-        checkOutTime: checkOutTimeIso,
-      });
-      setNowMs(Date.now());
-    } finally {
-      setBusy(false);
-    }
-  }, [applySession, busy, canCheckOut, checkInTime]);
+  const checkOut = useCallback(
+    async ({ workedBeyondReason } = {}) => {
+      if (busy || !canCheckOut) return;
+      setBusy(true);
+      const date = companyTodayKey();
+      try {
+        const res = await attendanceCheckOut({
+          date,
+          workedBeyondReason,
+        });
+        const saved = res?.attendance;
+        applySession({
+          actualCheckInTime: saved?.actualCheckInTime || actualCheckInTime,
+          actualCheckOutTime: saved?.actualCheckOutTime || null,
+          expectedEndTime: saved?.expectedEndTime || expectedEndTime,
+          status: saved?.status || "Working",
+          submittedAt: saved?.submittedAt || submittedAt,
+        });
+        setNowMs(Date.now());
+      } catch (err) {
+        console.warn("Check-out failed:", err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      actualCheckInTime,
+      applySession,
+      busy,
+      canCheckOut,
+      expectedEndTime,
+      submittedAt,
+    ]
+  );
 
   return {
     loading,
     busy,
-    status,
+    status: statusLabel,
     isActive,
     isLive: isActive,
     canCheckIn,
     canCheckOut,
-    checkInTime,
-    checkOutTime,
+    pastExpectedEnd,
+    checkInTime: actualCheckInTime,
+    checkOutTime: actualCheckOutTime,
+    actualCheckInTime,
+    actualCheckOutTime,
+    expectedEndTime,
     elapsedSeconds,
     formattedElapsed: formatDuration(elapsedSeconds),
-    formattedCheckIn: formatTimeOfDay(checkInTime),
-    formattedCheckOut: formatTimeOfDay(checkOutTime),
+    formattedCheckIn: formatTimeOfDay(actualCheckInTime),
+    formattedCheckOut: formatTimeOfDay(actualCheckOutTime),
     checkIn,
     checkOut,
     refresh,

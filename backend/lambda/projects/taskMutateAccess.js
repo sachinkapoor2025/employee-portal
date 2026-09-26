@@ -23,7 +23,11 @@ const {
 } = require("./taskReadAccess");
 
 const CODE_ASSIGNEE_NOT_MEMBER = "ASSIGNEE_NOT_MEMBER";
-const ASSIGNEE_ONLY_FIELDS = new Set(["status", "assignmentEmail"]);
+const ASSIGNEE_ONLY_FIELDS = new Set([
+  "status",
+  "assignmentEmail",
+  "completionRemark",
+]);
 
 function accessActive(accessRow) {
   return String(accessRow?.status || "").toUpperCase() === "ACTIVE";

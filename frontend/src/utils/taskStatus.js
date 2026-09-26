@@ -567,7 +567,10 @@ export function friendlyActivityText(ev, users) {
     return detail || "Deadline changed";
   }
   if (action === "task_completed") {
-    return detail || `Task completed by ${actor}`;
+    const remark = String(ev?.completionRemark || "").trim();
+    const base = detail || `Task completed by ${actor}`;
+    if (remark && !base.includes(remark)) return `${base} — ${remark}`;
+    return base;
   }
   if (action === "status_changed") {
     const m = detail.match(/→\s*(.+)$/i);

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
-import { fetchMyLeave, applyLeave } from "../services/api";
+import { fetchMyLeave, applyLeave, cancelLeave } from "../services/api";
 import {
   colors,
   pageCard,
@@ -85,6 +85,13 @@ function typeLabel(row) {
   return map[row?.type] || row?.type || "Leave";
 }
 
+function canCancelLeave(row) {
+  const s = String(row?.status || "").toUpperCase();
+  if (s !== "APPROVED" && s !== "PLANNED_OFF") return false;
+  const until = daysUntil(row.fromDate || row.startDate);
+  return until != null && until >= 0;
+}
+
 const choiceCard = (active) => ({
   flex: 1,
   minWidth: 220,
@@ -103,6 +110,7 @@ export default function Leave() {
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [cancellingId, setCancellingId] = useState("");
   const [planned, setPlanned] = useState({
     date: "",
     reason: "",
@@ -126,6 +134,25 @@ export default function Leave() {
   const leaveDays = daysInclusive(leaveForm.fromDate, leaveForm.toDate);
   const leaveUntil = daysUntil(leaveForm.fromDate);
   const leaveNeedsEmergency = leaveDays > 1 && leaveUntil != null && leaveUntil < 3;
+
+  const cancelRequest = async (row) => {
+    if (!canCancelLeave(row)) return;
+    if (!window.confirm("Cancel this leave request? It will be kept as CANCELLED.")) {
+      return;
+    }
+    setError("");
+    setMsg("");
+    setCancellingId(row.leaveId);
+    try {
+      await cancelLeave(row.leaveId);
+      setMsg("Leave request cancelled.");
+      await load();
+    } catch (err) {
+      setError(err.message || "Unable to cancel leave request.");
+    } finally {
+      setCancellingId("");
+    }
+  };
 
   const submitPlanned = async () => {
     setError("");
@@ -345,6 +372,7 @@ export default function Leave() {
                 <th>Status</th>
                 <th>Approved / Rejected By</th>
                 <th>Action Date</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -367,7 +395,24 @@ export default function Leave() {
                       : l.approvedBy || l.rejectedBy || l.reviewedBy || "—"}
                   </td>
                   <td>
-                    {formatDateTime(l.approvedAt || l.rejectedAt || l.reviewedAt)}
+                    {formatDateTime(
+                      l.cancelledAt || l.approvedAt || l.rejectedAt || l.reviewedAt
+                    )}
+                  </td>
+                  <td>
+                    {canCancelLeave(l) ? (
+                      <button
+                        type="button"
+                        className="dgv-btn dgv-btn--outline"
+                        style={{ padding: "4px 12px", fontSize: 13 }}
+                        disabled={cancellingId === l.leaveId}
+                        onClick={() => cancelRequest(l)}
+                      >
+                        Cancel
+                      </button>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                 </tr>
               ))}

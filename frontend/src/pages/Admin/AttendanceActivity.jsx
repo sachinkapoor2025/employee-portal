@@ -7,6 +7,7 @@ import {
   fetchTasks,
   fetchAllLeave,
   fetchUserProfile,
+  fetchEmployeeShift,
 } from "../../services/api";
 import {
   colors,
@@ -21,6 +22,12 @@ import Button from "../../components/ui/Button";
 import { formatTaskDuration, personLabel } from "../../utils/taskStatus";
 import { todayKeyIST, displayNameFromEmail } from "../../utils/meetings";
 import { getWeeklyDisplayStatus } from "../../components/WeeklyAttendanceHistory";
+import {
+  COMPLIANCE,
+  attendanceCompliance,
+  formatInstant,
+  lateByLabel,
+} from "../../utils/attendanceCompliance";
 
 const HISTORY_START = "2020-01-01";
 
@@ -136,14 +143,17 @@ async function enrichUsers(list) {
   );
 }
 
-export function buildDayRows(users, records, leaves, day) {
+export function buildDayRows(users, records, leaves, day, options = {}) {
   const byEmail = {};
   (records || []).forEach((row) => {
     const email = String(row.email || "").toLowerCase();
     if (!email) return;
     const prev = byEmail[email];
-    if (!prev || row.checkInTime) byEmail[email] = row;
+    if (!prev || row.actualCheckInTime || row.checkInTime) byEmail[email] = row;
   });
+  const todayKey = options.todayKey || day;
+  const shiftsByEmail = options.shiftsByEmail || {};
+  const nowMs = options.nowMs;
   return (users || [])
     .filter((u) => u.email)
     .map((u) => {
@@ -153,10 +163,19 @@ export function buildDayRows(users, records, leaves, day) {
         rec || { email: u.email, date: day },
         u
       );
+      const compliance = attendanceCompliance({
+        dateKey: day,
+        todayKey,
+        record: rec,
+        leaveLabel,
+        shift: shiftsByEmail[u.email] || null,
+        nowMs,
+      });
       return {
         ...merged,
         date: rec?.date || day,
         dayStatus: resolveDayStatus(rec, leaveLabel),
+        compliance,
       };
     })
     .sort((a, b) =>
@@ -167,10 +186,14 @@ export function buildDayRows(users, records, leaves, day) {
 function withActivityStatus(row, user) {
   let activityStatus = row.activityStatus || row.sessionStatus;
   if (!activityStatus) {
-    if (row.checkInTime && !row.checkOutTime) activityStatus = "Active";
-    else if (row.checkOutTime) activityStatus = "Checked Out";
+    if (row.actualCheckInTime && !row.actualCheckOutTime) activityStatus = "Active";
+    else if (row.actualCheckOutTime) activityStatus = "Checked Out";
     else if (row.status === "Working") activityStatus = "Present";
     else activityStatus = row.status || null;
+  } else if (row.actualCheckInTime && !row.actualCheckOutTime) {
+    activityStatus = "Active";
+  } else if (row.actualCheckOutTime) {
+    activityStatus = "Checked Out";
   }
   return {
     ...row,
@@ -213,29 +236,35 @@ const STATUS_BADGE = {
   "Planned Off": "dgv-badge dgv-badge--info",
   Absent: "dgv-badge dgv-badge--neutral",
   "Weekly Off": "dgv-badge dgv-badge--neutral",
+  [COMPLIANCE.ON_TIME]: "dgv-badge dgv-badge--success",
+  [COMPLIANCE.LATE]: "dgv-badge dgv-badge--danger",
+  [COMPLIANCE.NOT_MARKED]: "dgv-badge dgv-badge--info",
+  [COMPLIANCE.LEAVE]: "dgv-badge dgv-badge--danger",
+  [COMPLIANCE.WEEK_OFF]: "dgv-badge dgv-badge--info",
+  [COMPLIANCE.HOLIDAY]: "dgv-badge dgv-badge--neutral",
+  [COMPLIANCE.UPCOMING]: "dgv-badge dgv-badge--neutral",
 };
 
-function formatTime(iso) {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(t));
+function complianceOf(row) {
+  if (row?.compliance) return row.compliance;
+  return attendanceCompliance({
+    dateKey: row?.date,
+    todayKey: todayKeyIST(),
+    record: row,
+  });
 }
 
 function statusLabel(row, historyMode) {
-  if (historyMode) {
-    return (
-      row.dayStatus ||
-      row.activityStatus ||
-      getWeeklyDisplayStatus(row) ||
-      "—"
-    );
+  if (!historyMode) {
+    return row.compliance?.status || COMPLIANCE.NOT_MARKED;
   }
-  return row.dayStatus || "Absent";
+  return (
+    complianceOf(row).status ||
+    row.dayStatus ||
+    row.activityStatus ||
+    getWeeklyDisplayStatus(row) ||
+    "—"
+  );
 }
 
 export default function AttendanceActivity() {
@@ -277,6 +306,18 @@ export default function AttendanceActivity() {
       const emails = users
         .map((u) => String(u.email || "").toLowerCase())
         .filter(Boolean);
+
+      const shiftsByEmail = {};
+      await Promise.all(
+        emails.map(async (email) => {
+          try {
+            const res = await fetchEmployeeShift(email);
+            shiftsByEmail[email] = res?.shift || null;
+          } catch {
+            shiftsByEmail[email] = null;
+          }
+        })
+      );
 
       let records = [];
       try {
@@ -321,7 +362,10 @@ export default function AttendanceActivity() {
         records = Object.values(byEmail);
       }
 
-      const rows = buildDayRows(users, records, leaves, day);
+      const rows = buildDayRows(users, records, leaves, day, {
+        todayKey: todayKeyIST(),
+        shiftsByEmail,
+      });
       setItems(rows);
 
       try {
@@ -414,7 +458,7 @@ export default function AttendanceActivity() {
         return true;
       }
       if (q && !matchesEmployee(row, q)) return false;
-      if (status && row.dayStatus !== status) return false;
+      if (status && (row.compliance?.status || row.dayStatus) !== status) return false;
       return true;
     });
   }, [sourceRows, q, status, historyMode]);
@@ -435,7 +479,8 @@ export default function AttendanceActivity() {
       <div style={{ ...pageCard, maxWidth: 1100 }}>
         <h2 style={pageTitle}>Attendance Activity</h2>
         <p style={pageSubtitle}>
-          Live check-in / check-out records from the Employee Portal.
+          Attendance-marking rule compliance for the selected date. This is not
+          work-hours tracking.
         </p>
 
         <div
@@ -476,10 +521,13 @@ export default function AttendanceActivity() {
               aria-label="Filter by status"
             >
               <option value="">All statuses</option>
-              <option value="Present">Present</option>
-              <option value="Absent">Absent</option>
-              <option value="On Leave">On Leave</option>
-              <option value="Planned Off">Planned Off</option>
+              <option value={COMPLIANCE.ON_TIME}>ON TIME</option>
+              <option value={COMPLIANCE.LATE}>LATE</option>
+              <option value={COMPLIANCE.NOT_MARKED}>NOT MARKED</option>
+              <option value={COMPLIANCE.LEAVE}>LEAVE</option>
+              <option value={COMPLIANCE.WEEK_OFF}>WEEK OFF</option>
+              <option value={COMPLIANCE.HOLIDAY}>HOLIDAY</option>
+              <option value={COMPLIANCE.UPCOMING}>UPCOMING</option>
             </select>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -603,17 +651,17 @@ export default function AttendanceActivity() {
                 <thead>
                   <tr>
                     <th>Employee Name</th>
-                    <th>Employee ID</th>
-                    <th>Date</th>
-                    <th>Check-In</th>
-                    <th>Check-Out</th>
-                    <th>Working Time</th>
+                    <th>Shift</th>
                     <th>Status</th>
+                    <th>Marked At</th>
+                    <th>Expected By</th>
+                    <th>Late By</th>
                     {!historyMode ? <th>Action</th> : null}
                   </tr>
                 </thead>
                 <tbody>
                   {visibleRows.map((row) => {
+                    const compliance = complianceOf(row);
                     const label = statusLabel(row, historyMode);
                     return (
                       <tr key={row.attendanceId || `${row.email}-${row.date}`}>
@@ -625,16 +673,7 @@ export default function AttendanceActivity() {
                             {row.email}
                           </div>
                         </td>
-                        <td>{row.employeeId || "—"}</td>
-                        <td>{row.date || "—"}</td>
-                        <td>{formatTime(row.checkInTime)}</td>
-                        <td>{formatTime(row.checkOutTime)}</td>
-                        <td style={{ fontVariantNumeric: "tabular-nums" }}>
-                          {row.workingTime ||
-                            (row.activityStatus === "Active"
-                              ? "In progress"
-                              : "—")}
-                        </td>
+                        <td>{compliance.shiftLabel || "—"}</td>
                         <td>
                           <span
                             className={
@@ -643,6 +682,21 @@ export default function AttendanceActivity() {
                           >
                             {label}
                           </span>
+                        </td>
+                        <td>
+                          {compliance.markedAtMs
+                            ? formatInstant(compliance.markedAtMs)
+                            : "—"}
+                        </td>
+                        <td>
+                          {compliance.expectedByMs
+                            ? formatInstant(compliance.expectedByMs)
+                            : "—"}
+                        </td>
+                        <td>
+                          {label === COMPLIANCE.LATE
+                            ? lateByLabel(compliance.lateMinutes) || "—"
+                            : "—"}
                         </td>
                         {!historyMode ? (
                           <td>

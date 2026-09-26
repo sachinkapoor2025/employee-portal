@@ -9,9 +9,27 @@ import {
   displayNameFromEmail,
 } from "../utils/meetings";
 
-const API =
-  process.env.REACT_APP_API_URL ||
+const DEPLOYED_API_URL =
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
+
+/** Deployed AWS API Gateway. Never uses localhost, even if CRA env points at local-api. */
+export function getApiBaseUrl(raw = process.env.REACT_APP_API_URL) {
+  const fromEnv = String(raw || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!fromEnv) return DEPLOYED_API_URL;
+  try {
+    const host = new URL(fromEnv).hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
+      return DEPLOYED_API_URL;
+    }
+  } catch {
+    return DEPLOYED_API_URL;
+  }
+  return fromEnv;
+}
+
+const API = getApiBaseUrl();
 
 function parseJwtPayload(token) {
   try {
@@ -47,18 +65,58 @@ async function errorFromResponse(res, fallback = "API request failed") {
   const text = await res.text();
   let message = fallback;
   let code;
+  let activeTasks;
+  let attendance;
   try {
     const data = JSON.parse(text);
     if (typeof data === "string" && data.trim()) message = data;
     else if (data?.error) message = data.error;
     else if (data?.message) message = data.message;
     if (data && typeof data === "object" && data.code) code = data.code;
+    if (Array.isArray(data?.activeTasks)) activeTasks = data.activeTasks;
+    if (data && typeof data === "object" && data.attendance) {
+      attendance = data.attendance;
+    }
   } catch {
     if (text?.trim()) message = text.trim();
   }
-  const err = new Error(message);
+  const err = new Error(sanitizeApiErrorMessage(message, res.status, fallback));
   err.status = res.status;
   if (code) err.code = code;
+  if (activeTasks) err.activeTasks = activeTasks;
+  if (attendance) err.attendance = attendance;
+  return err;
+}
+
+function fallbackForStatus(status) {
+  if (status === 401) return "Authentication required. Please sign in again.";
+  if (status === 403) {
+    return "You do not have permission to access this resource.";
+  }
+  if (status === 404) {
+    return "This API endpoint is not available on the deployed backend.";
+  }
+  if (status === 413) return "This file is too large to send through the server.";
+  if (status >= 500) {
+    return "The deployed backend returned a server error. Please try again.";
+  }
+  return "API request failed";
+}
+
+function sanitizeApiErrorMessage(message, status, fallback) {
+  const text = String(message || "").trim();
+  if (!text || /local api/i.test(text)) {
+    return fallback || fallbackForStatus(status);
+  }
+  return text;
+}
+
+function networkApiError(networkErr) {
+  const err = new Error(
+    "Unable to reach the deployed AWS API. Check your connection and try again."
+  );
+  err.cause = networkErr;
+  err.isNetworkError = true;
   return err;
 }
 
@@ -86,12 +144,7 @@ export const api = async (path, method = "GET", body) => {
             : null,
     });
   } catch (networkErr) {
-    // Browser reports CORS/network/offline as TypeError: Failed to fetch
-    const err = new Error(
-      "Unable to reach the server. Check your connection and try again."
-    );
-    err.cause = networkErr;
-    err.isNetworkError = true;
+    const err = networkApiError(networkErr);
     console.warn("API network error:", path, networkErr);
     throw err;
   }
@@ -104,11 +157,7 @@ export const api = async (path, method = "GET", body) => {
   if (!res.ok) {
     const err = await errorFromResponse(
       res,
-      res.status === 403
-        ? "You do not have permission to access this resource."
-        : res.status === 413
-          ? "This file is too large to send through the server."
-          : "API request failed"
+      fallbackForStatus(res.status)
     );
     console.error("API error:", res.status, err.message);
     throw err;
@@ -140,26 +189,11 @@ export const apiOptional = async (path, method = "GET", body) => {
             : null,
     });
   } catch (networkErr) {
-    const err = new Error(
-      "Unable to reach the server. Check your connection and try again."
-    );
-    err.cause = networkErr;
-    err.isNetworkError = true;
-    throw err;
+    throw networkApiError(networkErr);
   }
 
   if (!res.ok) {
-    const text = await res.text();
-    let message = "API request failed";
-    try {
-      const data = JSON.parse(text);
-      if (typeof data === "string" && data.trim()) message = data;
-      else if (data?.error) message = data.error;
-      else if (data?.message) message = data.message;
-    } catch {
-      if (text?.trim()) message = text.trim();
-    }
-    throw new Error(message);
+    throw await errorFromResponse(res, fallbackForStatus(res.status));
   }
 
   return res.json();
@@ -213,6 +247,13 @@ export const getProfileImageUploadUrl = (file, email) =>
 export const logActivity = (payload) => api("/activity", "POST", payload);
 export const fetchMyActivityToday = (date) =>
   api(`/activity/today${date ? `?date=${date}` : ""}`, "GET");
+/** Composed employee My Activity for one company date. Never send email. */
+export const fetchMyDayActivity = (date) => {
+  const qs = new URLSearchParams();
+  if (date) qs.set("date", date);
+  const query = qs.toString();
+  return api(`/me/activity${query ? `?${query}` : ""}`, "GET");
+};
 export const fetchAdminActivity = (date, email) => {
   const qs = new URLSearchParams();
   if (date) qs.set("date", date);
@@ -230,6 +271,18 @@ export const fetchProjects = (params = {}) => {
   const query = qs.toString();
   return api(`/projects${query ? `?${query}` : ""}`, "GET");
 };
+
+/* ================= SHIFTS ================= */
+
+export const fetchShifts = () => api("/shifts", "GET");
+export const createShift = (data) => api("/shifts", "POST", data);
+export const updateShift = (shiftId, data) =>
+  api(`/shifts/${encodeURIComponent(shiftId)}`, "PATCH", data);
+export const fetchEmployeeShift = (email) =>
+  api(`/employees/${encodeURIComponent(email)}/shift`, "GET");
+export const assignEmployeeShift = (email, data) =>
+  api(`/employees/${encodeURIComponent(email)}/shift`, "PUT", data);
+
 export const createProject = (data) => api("/projects", "POST", data);
 export const updateProject = (projectId, data) =>
   api(`/projects/${encodeURIComponent(projectId)}`, "PATCH", data);
@@ -304,6 +357,12 @@ export const postTaskComment = (taskId, text) =>
   api(`/tasks/${encodeURIComponent(taskId)}/comments`, "POST", { text });
 export const fetchTaskActivity = (taskId) =>
   api(`/tasks/${encodeURIComponent(taskId)}/activity`, "GET");
+export const reportTaskBlocker = (taskId, remark) =>
+  api(`/tasks/${encodeURIComponent(taskId)}/blocker`, "POST", { remark });
+export const resolveTaskBlocker = (taskId, assignmentEmail) =>
+  api(`/tasks/${encodeURIComponent(taskId)}/blocker/resolve`, "POST", {
+    assignmentEmail,
+  });
 export const fetchTaskAttachments = (taskId) =>
   api(`/tasks/${encodeURIComponent(taskId)}/attachments`, "GET");
 export const getTaskAttachmentUploadUrl = (taskId, fileName, contentType, fileSize) =>
@@ -335,6 +394,8 @@ export const markNotificationRead = (sk) =>
 export const applyLeave = (data) => api("/leave", "POST", data);
 export const reviewLeave = (leaveId, status, rejectionReason) =>
   api("/leave", "PUT", { leaveId, status, rejectionReason });
+export const cancelLeave = (leaveId) =>
+  api("/leave", "PUT", { leaveId, status: "CANCELLED" });
 
 /* ================= RESIGNATION ================= */
 
@@ -763,13 +824,17 @@ export const fetchAttendance = (startDate, endDate, email) => {
 export const saveAttendance = (records) =>
   api("/attendance", "POST", records);
 
-/** Browser-time check-in persisted on today's attendance record */
-export const attendanceCheckIn = ({ date, checkInTime }) =>
-  api("/attendance", "POST", { action: "checkIn", date, checkInTime });
+/** Server-authoritative check-in; client timestamps are ignored. */
+export const attendanceCheckIn = ({ date } = {}) =>
+  api("/attendance", "POST", { action: "checkIn", date });
 
-/** Browser-time check-out persisted on today's attendance record */
-export const attendanceCheckOut = ({ date, checkOutTime }) =>
-  api("/attendance", "POST", { action: "checkOut", date, checkOutTime });
+/** Server-authoritative check-out; client timestamps are ignored. */
+export const attendanceCheckOut = ({ date, workedBeyondReason } = {}) =>
+  api("/attendance", "POST", {
+    action: "checkOut",
+    date,
+    ...(workedBeyondReason ? { workedBeyondReason } : {}),
+  });
 
 /** Admin: all employees' check-in / check-out activity */
 export const fetchAttendanceActivity = (params = {}) => {

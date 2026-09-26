@@ -1,4 +1,5 @@
 const { ROLES, normalizeRole } = require("../common/roles");
+const { overlayStatusForConfirmedLeave } = require("../leave/materialize");
 const DEFAULT_TZ = "Asia/Kolkata";
 const LOOKBACK_DAYS = 21;
 
@@ -63,17 +64,13 @@ function isPresent(record) {
 
 function overlayStatusForDate(dateKey, leaves) {
   for (const leave of leaves || []) {
+    const overlay = overlayStatusForConfirmedLeave(leave);
+    if (!overlay) continue;
     const from = leave.fromDate || leave.startDate;
     const to = leave.toDate || leave.endDate || from;
     if (!from || !to) continue;
-    const planned =
-      leave.status === "PLANNED_OFF" ||
-      leave.category === "PLANNED_OFF" ||
-      String(leave.type || "").toUpperCase() === "PLANNED_OFF";
-    const approved = String(leave.status || "").toUpperCase() === "APPROVED";
-    if (!planned && !approved) continue;
     if (dateKey >= from && dateKey <= to) {
-      return planned ? "PlannedOff" : "Leave";
+      return overlay;
     }
   }
   return null;

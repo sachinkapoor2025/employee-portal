@@ -1,7 +1,7 @@
 const { GetCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { adminNotifyRecipientsForTask } = require("./workflowAccess");
 const { dispatchNotification } = require("../common/notify");
-const { activeSuperAdminEmailsFromAccess } = require("../common/roles");
+const { activeSuperAdminEmailsFromAccess, activeCompletionAdminEmailsFromAccess } = require("../common/roles");
 const { notifyFromAddress, notifyFromName } = require("./notifyFrom");
 const escalation = require("./escalation");
 
@@ -149,6 +149,14 @@ async function listSuperAdminEmails({ ddb, accessTable, listAccessRows }) {
       ? await listAccessRows()
       : await scanAccessRows(ddb, accessTable);
   return activeSuperAdminEmailsFromAccess(rows);
+}
+
+async function listPortalAdminEmails({ ddb, accessTable, listAccessRows }) {
+  const rows =
+    typeof listAccessRows === "function"
+      ? await listAccessRows()
+      : await scanAccessRows(ddb, accessTable);
+  return activeCompletionAdminEmailsFromAccess(rows);
 }
 
 function employeeCopy({ title, batchId, kind }) {
@@ -375,5 +383,6 @@ module.exports = {
   getAccessRow,
   isActiveAccess,
   listSuperAdminEmails,
+  listPortalAdminEmails,
   notifyExcelAssignment,
 };

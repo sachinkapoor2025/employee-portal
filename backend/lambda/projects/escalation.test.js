@@ -176,6 +176,33 @@ assert.strictEqual(byEmail["priya@mydgv.com"].zone, ZONES.ORANGE);
 assert.strictEqual(byEmail["dev@mydgv.com"].zone, ZONES.RED);
 assert.strictEqual(deriveParentStatus(task.assignments), "TODO");
 assert.strictEqual(decorated.myAssignment.email, "amit@mydgv.com");
+assert.strictEqual(decorated.myAssignment.blockerStatus, null);
+assert.strictEqual(byEmail["rahul@mydgv.com"].blockerStatus, null);
+
+const blockedDecorated = decorateTask(
+  {
+    ...task,
+    assignments: task.assignments.map((a) =>
+      a.email === "amit@mydgv.com"
+        ? {
+            ...a,
+            blockerStatus: "ACTIVE",
+            blockerRemark: "Waiting on copy",
+            blockerReportedAt: "2026-09-25T10:00:00.000Z",
+          }
+        : a
+    ),
+  },
+  nowAll,
+  "amit@mydgv.com"
+);
+assert.strictEqual(blockedDecorated.myAssignment.blockerStatus, "ACTIVE");
+assert.strictEqual(blockedDecorated.myAssignment.blockerRemark, "Waiting on copy");
+assert.strictEqual(
+  blockedDecorated.assignments.find((a) => a.email === "rahul@mydgv.com")
+    .blockerStatus,
+  null
+);
 
 // Legacy single-assignee task still works
 const legacy = synthesizeAssignments({

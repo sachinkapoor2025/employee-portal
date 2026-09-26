@@ -29,6 +29,29 @@ assert.strictEqual(
   ]),
   "PlannedOff"
 );
+assert.strictEqual(
+  overlayStatusForDate("2026-08-11", [
+    {
+      fromDate: "2026-08-11",
+      toDate: "2026-08-11",
+      status: "CANCELLED",
+      category: "LEAVE",
+    },
+  ]),
+  null
+);
+assert.strictEqual(
+  overlayStatusForDate("2026-08-11", [
+    {
+      fromDate: "2026-08-11",
+      toDate: "2026-08-11",
+      status: "CANCELLED",
+      category: "PLANNED_OFF",
+      type: "PLANNED_OFF",
+    },
+  ]),
+  null
+);
 
 // Weekend is not a required working day unless present
 assert.strictEqual(isRequiredWorkingDay("2026-08-15", null, []), false);
@@ -131,6 +154,39 @@ assert.strictEqual(
     ],
   });
   assert.strictEqual(planned.shouldNotify, false);
+}
+
+{
+  const cancelledLeave = findMissedWorkingStreak({
+    todayKey: "2026-08-12",
+    recordsByDate: {},
+    lookbackDays: 3,
+    leaves: [
+      {
+        fromDate: "2026-08-10",
+        toDate: "2026-08-11",
+        status: "CANCELLED",
+        category: "LEAVE",
+      },
+    ],
+  });
+  assert.strictEqual(cancelledLeave.shouldNotify, true);
+
+  const cancelledPlanned = findMissedWorkingStreak({
+    todayKey: "2026-08-12",
+    recordsByDate: {},
+    lookbackDays: 3,
+    leaves: [
+      {
+        fromDate: "2026-08-10",
+        toDate: "2026-08-11",
+        status: "CANCELLED",
+        category: "PLANNED_OFF",
+        type: "PLANNED_OFF",
+      },
+    ],
+  });
+  assert.strictEqual(cancelledPlanned.shouldNotify, true);
 }
 
 // Pending leave is not an excuse

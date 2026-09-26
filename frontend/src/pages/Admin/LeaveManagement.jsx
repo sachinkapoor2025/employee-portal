@@ -49,8 +49,9 @@ function isPlannedOff(row) {
 }
 
 function displayStatus(row) {
-  if (isPlannedOff(row)) return "PLANNED OFF";
   const s = String(row?.status || "").toUpperCase();
+  if (s === "CANCELLED") return "CANCELLED";
+  if (isPlannedOff(row)) return "PLANNED OFF";
   if (s === "PENDING" || s === "PENDING_APPROVAL") return "PENDING APPROVAL";
   return s || "—";
 }
@@ -285,10 +286,16 @@ export default function LeaveManagement() {
                   <td>{l.emergencyReason || "—"}</td>
                   <td>{formatDateTime(l.submittedAt || l.createdAt)}</td>
                   <td>
-                    <span className="dgv-badge dgv-badge--success">PLANNED OFF</span>
-                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-                      No approval required
-                    </div>
+                    {String(l.status || "").toUpperCase() === "CANCELLED" ? (
+                      <span className="dgv-badge dgv-badge--danger">CANCELLED</span>
+                    ) : (
+                      <>
+                        <span className="dgv-badge dgv-badge--success">PLANNED OFF</span>
+                        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                          No approval required
+                        </div>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}

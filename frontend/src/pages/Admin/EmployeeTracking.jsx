@@ -8,10 +8,25 @@ import {
   fetchTasks,
   fetchAllLeave,
   fetchAdminActivity,
+  fetchEmployeeShift,
+  fetchTaskActivity,
 } from "../../services/api";
 import { roleLabel } from "../../constants/roles";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
+import ZoneBadge from "../../components/ZoneBadge";
 import { getWeeklyDisplayStatus } from "../../components/WeeklyAttendanceHistory";
+import {
+  COMPLIANCE,
+  attendanceCompliance,
+  formatInstant,
+  lateByLabel,
+} from "../../utils/attendanceCompliance";
+import {
+  formatTaskDateTime,
+  friendlyActivityText,
+  getAssignmentZone,
+  statusLabel,
+} from "../../utils/taskStatus";
 
 const TABS = [
   "Overview",
@@ -44,17 +59,6 @@ function formatWhen(iso) {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return String(iso);
   return new Date(t).toLocaleString();
-}
-
-function formatTime(iso) {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  }).format(new Date(t));
 }
 
 function leaveOnDate(dateKey, leaves) {
@@ -121,6 +125,8 @@ export default function EmployeeTracking() {
   const [tasks, setTasks] = useState(null);
   const [leaveRows, setLeaveRows] = useState(null);
   const [activity, setActivity] = useState(null);
+  const [assignedShift, setAssignedShift] = useState(null);
+  const [shiftConflicts, setShiftConflicts] = useState(null);
 
   useEffect(() => {
     setTab(TABS.includes(requestedTab) ? requestedTab : "Overview");
@@ -132,9 +138,10 @@ export default function EmployeeTracking() {
       setLoading(true);
       setError("");
       try {
-        const [p, users] = await Promise.all([
+        const [p, users, shiftResult] = await Promise.all([
           fetchUserProfile(email),
           fetchUsers(),
+          fetchEmployeeShift(email).catch(() => ({ shift: null })),
         ]);
         if (cancelled) return;
         setProfile(p || {});
@@ -143,6 +150,7 @@ export default function EmployeeTracking() {
             (u) => u.email?.toLowerCase() === email
           ) || null
         );
+        setAssignedShift(shiftResult?.shift || null);
       } catch (err) {
         if (!cancelled) setError(err.message || "Failed to load employee");
       } finally {
@@ -156,7 +164,7 @@ export default function EmployeeTracking() {
 
   useEffect(() => {
     if (!email) return;
-    if (!["Overview", "Attendance", "Activity"].includes(tab)) return;
+    if (!["Overview", "Attendance"].includes(tab)) return;
     let cancelled = false;
     const { start, end } = dateRange(14);
     Promise.all([
@@ -177,18 +185,28 @@ export default function EmployeeTracking() {
 
   useEffect(() => {
     if (!email) return;
-    if (!["Overview", "Tasks"].includes(tab)) return;
+    if (!["Overview", "Tasks", "Activity"].includes(tab)) return;
     let cancelled = false;
-    fetchTasks({})
+    fetchTasks({ assignee: email, includePendingShiftConflicts: true })
       .then((list) => {
         if (cancelled) return;
-        const mine = (Array.isArray(list) ? list : []).filter(
-          (t) => String(t.assignee || "").toLowerCase() === email
+        const rows = Array.isArray(list) ? list : [];
+        const mine = rows.filter((t) => assignmentForEmployee(t, email));
+        const assignedIds = new Set(mine.map((t) => t.taskId).filter(Boolean));
+        const conflicts = rows.filter(
+          (t) =>
+            isTrackingShiftConflict(t, email) &&
+            !assignedIds.has(t.taskId) &&
+            !assignmentForEmployee(t, email)
         );
         setTasks(mine);
+        setShiftConflicts(conflicts);
       })
       .catch(() => {
-        if (!cancelled) setTasks([]);
+        if (!cancelled) {
+          setTasks([]);
+          setShiftConflicts([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -274,6 +292,8 @@ export default function EmployeeTracking() {
               <Meta label="Role" value={roleLabel(access?.role)} />
             </div>
 
+            <CurrentShiftSummary shift={assignedShift} />
+
             <div
               style={{
                 display: "flex",
@@ -319,9 +339,18 @@ export default function EmployeeTracking() {
                   skill={profile?.skill}
                 />
               ) : tab === "Attendance" ? (
-                <AttendancePanel rows={attendance} leaves={leaveRows} />
+                <AttendancePanel
+                  rows={attendance}
+                  leaves={leaveRows}
+                  assignedShift={assignedShift}
+                />
               ) : tab === "Tasks" ? (
-                <TasksPanel rows={tasks} />
+                <TasksPanel
+                  rows={tasks}
+                  conflicts={shiftConflicts}
+                  email={email}
+                  assignedShift={assignedShift}
+                />
               ) : tab === "Documents" ? (
                 <EmployeeDocumentsPanel email={email} />
               ) : tab === "Leave" ? (
@@ -334,7 +363,7 @@ export default function EmployeeTracking() {
                   designation={profile?.designation}
                 />
               ) : (
-                <ActivityPanel data={activity} />
+                <ActivityPanel data={activity} tasks={tasks} email={email} />
               )}
             </div>
           </>
@@ -368,7 +397,7 @@ function OverviewPanel({ attendance, tasks, leaveRows, activity, skill }) {
   );
 }
 
-function AttendancePanel({ rows, leaves }) {
+function AttendancePanel({ rows, leaves, assignedShift }) {
   if (!rows) {
     return (
       <>
@@ -384,13 +413,29 @@ function AttendancePanel({ rows, leaves }) {
     if (r.date) byDate[r.date] = r;
   });
   const { start, end } = dateRange(14);
+  const todayKey = new Date().toLocaleDateString("en-CA", {
+    timeZone: "Asia/Kolkata",
+  });
   const days = [];
   let cursor = start;
   while (cursor <= end) {
     const rec = byDate[cursor] || null;
-    const overlay = leaveOnDate(cursor, leaves);
-    const display = overlay || getWeeklyDisplayStatus(rec);
-    days.push({ date: cursor, rec, display });
+    const overlay = rec?.status ? null : leaveOnDate(cursor, leaves);
+    const leaveLabel =
+      overlay === "Planned Off"
+        ? "Planned Off"
+        : overlay === "On Leave" || overlay === "Leave"
+          ? "On Leave"
+          : overlay;
+    const compliance = attendanceCompliance({
+      dateKey: cursor,
+      todayKey,
+      record: rec,
+      leaveLabel,
+      shift: assignedShift,
+      useAssignedShiftName: false,
+    });
+    days.push({ date: cursor, rec, display: compliance.status, compliance });
     const [y, m, d] = cursor.split("-").map(Number);
     const next = new Date(y, m - 1, d + 1);
     cursor = ymd(next);
@@ -399,41 +444,196 @@ function AttendancePanel({ rows, leaves }) {
   return (
     <>
       <h3 style={{ marginTop: 0 }}>Attendance</h3>
-      {days.every((d) => d.display === "Not Marked") ? (
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No attendance records for this employee in the last 14 days.
-        </p>
-      ) : (
-        <div className="dgv-table-wrap">
-          <table className="dgv-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Status</th>
-                <th>Check-in</th>
-                <th>Check-out</th>
-                <th>Working time</th>
+      <div className="dgv-table-wrap">
+        <table className="dgv-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Shift</th>
+              <th>Status</th>
+              <th>Marked At</th>
+              <th>Expected By</th>
+              <th>Late By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {days.map((d) => (
+              <tr key={d.date}>
+                <td>{d.date}</td>
+                <td>{d.compliance.shiftLabel || "—"}</td>
+                <td>{d.display}</td>
+                <td>
+                  {d.compliance.markedAtMs
+                    ? formatInstant(d.compliance.markedAtMs)
+                    : "—"}
+                </td>
+                <td>
+                  {d.compliance.expectedByMs
+                    ? formatInstant(d.compliance.expectedByMs)
+                    : "—"}
+                </td>
+                <td>
+                  {d.display === COMPLIANCE.LATE
+                    ? lateByLabel(d.compliance.lateMinutes) || "—"
+                    : "—"}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {days.map((d) => (
-                <tr key={d.date}>
-                  <td>{d.date}</td>
-                  <td>{d.display}</td>
-                  <td>{formatTime(d.rec?.checkInTime)}</td>
-                  <td>{formatTime(d.rec?.checkOutTime)}</td>
-                  <td>{d.rec?.workingTime || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-function TasksPanel({ rows }) {
+function normalizeTrackingEmail(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+/** Non-removed assignment row for the tracked employee. Never uses assignee[0]. */
+export function assignmentForEmployee(task, email) {
+  const target = normalizeTrackingEmail(email);
+  if (!target || !task) return null;
+  const rows = Array.isArray(task.assignments) ? task.assignments : [];
+  return (
+    rows.find(
+      (row) =>
+        row && !row.removed && normalizeTrackingEmail(row.email) === target
+    ) || null
+  );
+}
+
+function pendingIncludesEmployee(task, email) {
+  const target = normalizeTrackingEmail(email);
+  if (!target || !task) return false;
+  return (task.pendingAssignees || []).some(
+    (value) => normalizeTrackingEmail(value) === target
+  );
+}
+
+function shiftFitForEmployee(task, email) {
+  const target = normalizeTrackingEmail(email);
+  const map = task?.lastShiftFitByEmail || {};
+  if (map[target]) return String(map[target]).toUpperCase();
+  const hit = Object.entries(map).find(
+    ([key]) => normalizeTrackingEmail(key) === target
+  );
+  return hit ? String(hit[1]).toUpperCase() : "";
+}
+
+export function isTrackingShiftConflict(task, email) {
+  if (!task || task.archived) return false;
+  if (!pendingIncludesEmployee(task, email)) return false;
+  const fit = shiftFitForEmployee(task, email);
+  return fit === "SHIFT_CONFLICT" || fit === "NO_SHIFT";
+}
+
+function conflictTypeLabel(fit) {
+  if (fit === "NO_SHIFT") return "No Shift Assigned";
+  if (fit === "SHIFT_CONFLICT") return "Shift Conflict";
+  return fit || "—";
+}
+
+function assignmentOverdue(assignment) {
+  if (assignment?.overdue === true) return true;
+  const zone = String(assignment?.zone || "").toUpperCase();
+  return zone === "ORANGE" || zone === "RED";
+}
+
+function UnresolvedShiftConflictsSection({ rows, email, assignedShift }) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!rows) return null;
+  if (list.length === 0) return null;
+  return (
+    <section
+      aria-labelledby="tracking-shift-conflicts"
+      style={{ marginBottom: 24 }}
+    >
+      <h3 id="tracking-shift-conflicts" style={{ marginTop: 0, marginBottom: 8 }}>
+        Unresolved shift conflicts
+      </h3>
+      <p style={{ color: colors.textMuted, fontSize: 13, margin: "0 0 12px" }}>
+        These scheduled tasks are not assigned. Open a task to edit or reassign.
+      </p>
+      <div style={{ display: "grid", gap: 12 }}>
+        {list.map((task) => {
+          const fit = shiftFitForEmployee(task, email);
+          const title = task.title || task.taskId || "Task";
+          const headingId = `shift-conflict-${task.taskId || title}`;
+          return (
+            <article
+              key={task.taskId || title}
+              aria-labelledby={headingId}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: `1px solid ${colors.border}`,
+                background: "var(--dgv-surface-solid)",
+              }}
+            >
+              <h4 id={headingId} style={{ margin: "0 0 8px", fontSize: 16 }}>
+                {task.taskId ? (
+                  <Link
+                    to={`/admin/tasks/${encodeURIComponent(task.taskId)}`}
+                    style={{ color: "var(--dgv-accent)", fontWeight: 700 }}
+                  >
+                    {title}
+                  </Link>
+                ) : (
+                  title
+                )}
+              </h4>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: 10,
+                }}
+              >
+                <Meta label="Project" value={task.projectId} />
+                <Meta label="Employee" value={email} />
+                <Meta label="Conflict type" value={conflictTypeLabel(fit)} />
+                <Meta label="Start" value={formatTaskDateTime(task.startDate)} />
+                <Meta
+                  label="Due"
+                  value={formatTaskDateTime(task.dueDate || task.endDate)}
+                />
+              </div>
+              {fit === "NO_SHIFT" ? (
+                <p style={{ color: colors.textMuted, fontSize: 13, margin: "10px 0 0" }}>
+                  This employee has no applicable assigned shift for this task.
+                </p>
+              ) : assignedShift?.name || assignedShift?.startTime ? (
+                <p style={{ color: colors.textMuted, fontSize: 13, margin: "10px 0 0" }}>
+                  Current assigned shift: {assignedShift.name || assignedShift.shiftId}
+                  {assignedShift.startTime || assignedShift.endTime
+                    ? ` · ${formatHm(assignedShift.startTime)} — ${formatHm(
+                        assignedShift.endTime
+                      )}${assignedShift.crossesMidnight ? " (overnight)" : ""}`
+                    : ""}
+                </p>
+              ) : null}
+              {task.taskId ? (
+                <p style={{ margin: "10px 0 0" }}>
+                  <Link
+                    to={`/admin/tasks/${encodeURIComponent(task.taskId)}`}
+                    style={{ color: "var(--dgv-accent)", fontWeight: 600, fontSize: 13 }}
+                  >
+                    Edit / Reassign
+                  </Link>
+                </p>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function TasksPanel({ rows, conflicts, email, assignedShift }) {
   if (!rows) {
     return (
       <>
@@ -444,10 +644,17 @@ function TasksPanel({ rows }) {
   }
   return (
     <>
+      <UnresolvedShiftConflictsSection
+        rows={conflicts || []}
+        email={email}
+        assignedShift={assignedShift}
+      />
       <h3 style={{ marginTop: 0 }}>Tasks</h3>
       {rows.length === 0 ? (
         <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No tasks assigned to this employee.
+          {conflicts?.length
+            ? "No normally assigned tasks."
+            : "No tasks assigned to this employee."}
         </p>
       ) : (
         <div className="dgv-table-wrap">
@@ -455,18 +662,78 @@ function TasksPanel({ rows }) {
             <thead>
               <tr>
                 <th>Title</th>
-                <th>Status</th>
-                <th>Due</th>
+                <th>Project</th>
+                <th>Task status</th>
+                <th>Assignment</th>
+                <th>Schedule</th>
+                <th>Zone</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => (
-                <tr key={t.taskId || t.title}>
-                  <td>{t.title || "—"}</td>
-                  <td>{t.status || "—"}</td>
-                  <td>{t.dueDate || "—"}</td>
-                </tr>
-              ))}
+              {rows.map((t) => {
+                const mine = assignmentForEmployee(t, email);
+                const zone = getAssignmentZone(mine, t.dueDate);
+                const timing = mine?.timing || "";
+                const overdue = assignmentOverdue(mine);
+                const title = t.title || t.taskId || "—";
+                return (
+                  <tr key={t.taskId || t.title}>
+                    <td>
+                      {t.taskId ? (
+                        <Link
+                          to={`/admin/tasks/${encodeURIComponent(t.taskId)}`}
+                          style={{ color: "var(--dgv-accent)", fontWeight: 700 }}
+                        >
+                          {title}
+                        </Link>
+                      ) : (
+                        title
+                      )}
+                    </td>
+                    <td>{t.projectId || "—"}</td>
+                    <td>{statusLabel(t.status || t.taskStatus)}</td>
+                    <td>
+                      <div>{statusLabel(mine?.status)}</div>
+                      <div style={{ fontSize: 12, color: colors.textMuted }}>
+                        Assigned {formatTaskDateTime(mine?.assignedAt)}
+                      </div>
+                      {mine?.completedAt ? (
+                        <div style={{ fontSize: 12, color: colors.textMuted }}>
+                          Completed {formatTaskDateTime(mine.completedAt)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      <div style={{ fontSize: 12 }}>
+                        Start {formatTaskDateTime(t.startDate)}
+                      </div>
+                      <div style={{ fontSize: 12 }}>
+                        Due {formatTaskDateTime(t.dueDate)}
+                      </div>
+                    </td>
+                    <td>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                        }}
+                      >
+                        <ZoneBadge zone={zone} status={mine?.status} />
+                        {overdue ? (
+                          <span className="dgv-badge dgv-badge--danger">Overdue</span>
+                        ) : null}
+                      </div>
+                      {timing ? (
+                        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+                          {timing}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -549,32 +816,62 @@ function PerformancePanel({ skill, designation }) {
   );
 }
 
-function ActivityPanel({ data }) {
+function presenceLastSeen(data) {
+  const events = data?.events || [];
+  let latest = data?.lastSeen || data?.summary?.lastSeen || "";
+  for (const ev of events) {
+    if (ev?.timestamp && (!latest || String(ev.timestamp) > String(latest))) {
+      latest = ev.timestamp;
+    }
+  }
+  return latest;
+}
+
+function presenceEventCount(data) {
+  const events = data?.events || [];
+  if (events.length) return events.length;
+  const counted = Number(data?.summary?.eventCount);
+  return Number.isFinite(counted) ? counted : 0;
+}
+
+function PortalPresenceSection({ data }) {
   if (!data) {
     return (
-      <>
-        <h3 style={{ marginTop: 0 }}>Activity</h3>
+      <section aria-labelledby="tracking-portal-presence">
+        <h3 id="tracking-portal-presence" style={{ marginTop: 0 }}>
+          Portal presence
+        </h3>
         <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          Loading activity…
+          Loading portal presence…
         </p>
-      </>
+      </section>
     );
   }
   const events = data.events || [];
+  const lastSeen = presenceLastSeen(data);
+  const eventCount = presenceEventCount(data);
   return (
-    <>
-      <h3 style={{ marginTop: 0 }}>Activity</h3>
-      {data.summary ? (
-        <p style={{ color: colors.textMuted }}>
-          Events: {data.summary.eventCount || events.length}
-          {data.summary.totalMinutes
-            ? ` · Session minutes: ${data.summary.totalMinutes}`
-            : ""}
-        </p>
-      ) : null}
+    <section aria-labelledby="tracking-portal-presence" style={{ marginBottom: 28 }}>
+      <h3 id="tracking-portal-presence" style={{ marginTop: 0, marginBottom: 8 }}>
+        Portal presence
+      </h3>
+      <p style={{ color: colors.textMuted, fontSize: 13, margin: "0 0 16px" }}>
+        Portal presence is not working hours.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+          gap: 10,
+          marginBottom: 12,
+        }}
+      >
+        <Meta label="Last seen" value={lastSeen ? formatWhen(lastSeen) : "—"} />
+        <Meta label="Event count" value={String(eventCount)} />
+      </div>
       {events.length === 0 ? (
         <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No portal activity recorded for this employee yet.
+          No portal presence events recorded for this employee yet.
         </p>
       ) : (
         <div className="dgv-table-wrap">
@@ -602,7 +899,199 @@ function ActivityPanel({ data }) {
           </table>
         </div>
       )}
+    </section>
+  );
+}
+
+function normalizeActivityList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.activity)) return payload.activity;
+  return [];
+}
+
+function activityForEmployee(events, email) {
+  const target = normalizeTrackingEmail(email);
+  return (events || []).filter((ev) => {
+    const assigned = normalizeTrackingEmail(ev?.assignmentEmail);
+    if (assigned) return assigned === target;
+    return true;
+  });
+}
+
+function TaskActivitySection({ tasks, email }) {
+  const [byTask, setByTask] = useState(null);
+
+  useEffect(() => {
+    if (!tasks) {
+      setByTask(null);
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.all(
+      tasks.map((task) => {
+        if (!task?.taskId) {
+          return Promise.resolve({ task, events: [] });
+        }
+        return fetchTaskActivity(task.taskId)
+          .then((rows) => ({
+            task,
+            events: activityForEmployee(normalizeActivityList(rows), email).sort(
+              (a, b) =>
+                String(b.timestamp || "").localeCompare(String(a.timestamp || ""))
+            ),
+          }))
+          .catch(() => ({ task, events: [] }));
+      })
+    ).then((list) => {
+      if (!cancelled) setByTask(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tasks, email]);
+
+  return (
+    <section aria-labelledby="tracking-task-activity">
+      <h3 id="tracking-task-activity" style={{ marginTop: 0, marginBottom: 8 }}>
+        Task activity
+      </h3>
+      {!tasks || !byTask ? (
+        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
+          Loading task activity…
+        </p>
+      ) : byTask.length === 0 ? (
+        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
+          No tasks assigned to this employee.
+        </p>
+      ) : (
+        <div style={{ display: "grid", gap: 16 }}>
+          {byTask.map(({ task, events }) => {
+            const title = task.title || task.taskId || "Task";
+            const headingId = `task-activity-${task.taskId || title}`;
+            return (
+              <article
+                key={task.taskId || title}
+                aria-labelledby={headingId}
+                style={{
+                  paddingTop: 4,
+                  borderTop: "1px solid var(--dgv-border)",
+                }}
+              >
+                <h4 id={headingId} style={{ margin: "12px 0 8px", fontSize: 16 }}>
+                  {task.taskId ? (
+                    <Link
+                      to={`/admin/tasks/${encodeURIComponent(task.taskId)}`}
+                      style={{ color: "var(--dgv-accent)", fontWeight: 700 }}
+                    >
+                      {title}
+                    </Link>
+                  ) : (
+                    title
+                  )}
+                </h4>
+                {events.length === 0 ? (
+                  <p style={{ color: colors.textMuted, fontSize: 13, margin: 0 }}>
+                    No activity recorded
+                  </p>
+                ) : (
+                  <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                    {events.map((ev, index) => (
+                      <li
+                        key={ev.activityId || ev.SK || `${ev.timestamp}-${index}`}
+                        style={{
+                          fontSize: 13,
+                          color: colors.textSecondary,
+                          padding: "6px 0",
+                          borderTop: index ? "1px solid var(--dgv-border)" : "none",
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, color: "var(--dgv-text)" }}>
+                          {formatTaskDateTime(ev.timestamp)}
+                        </span>
+                        {` · ${friendlyActivityText(ev, [])}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ActivityPanel({ data, tasks, email }) {
+  return (
+    <>
+      <PortalPresenceSection data={data} />
+      <TaskActivitySection tasks={tasks} email={email} />
     </>
+  );
+}
+
+function formatHm(hhmm) {
+  if (!hhmm) return "—";
+  const d = new Date(`1970-01-01T${hhmm}:00+05:30`);
+  if (!Number.isFinite(d.getTime())) return hhmm;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(d);
+}
+
+function hasAssignedShift(shift) {
+  return Boolean(shift?.name || shift?.shiftId || shift?.startTime || shift?.endTime);
+}
+
+function CurrentShiftSummary({ shift }) {
+  return (
+    <section
+      aria-labelledby="tracking-current-shift"
+      style={{
+        marginBottom: 20,
+        padding: 16,
+        borderRadius: 12,
+        border: `1px solid ${colors.border}`,
+        background: "var(--dgv-surface-solid)",
+      }}
+    >
+      <h3 id="tracking-current-shift" style={{ marginTop: 0, marginBottom: 12 }}>
+        Current assigned shift
+      </h3>
+      {!hasAssignedShift(shift) ? (
+        <p style={{ color: colors.textMuted, margin: 0 }}>No shift assigned</p>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+            gap: 10,
+          }}
+        >
+          <Meta label="Shift" value={shift.name || shift.shiftId} />
+          <Meta label="Start" value={formatHm(shift.startTime)} />
+          <Meta
+            label="End"
+            value={
+              shift.crossesMidnight
+                ? `${formatHm(shift.endTime)} (next day)`
+                : formatHm(shift.endTime)
+            }
+          />
+          {shift.graceMinutes != null && shift.graceMinutes !== "" ? (
+            <Meta label="Grace" value={`${Number(shift.graceMinutes) || 0} min`} />
+          ) : null}
+          {shift.crossesMidnight ? (
+            <Meta label="Overnight" value="Yes" />
+          ) : null}
+        </div>
+      )}
+    </section>
   );
 }
 

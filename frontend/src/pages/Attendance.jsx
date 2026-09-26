@@ -1,12 +1,21 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "../components/Layout";
 import WeeklyAttendanceHistory from "../components/WeeklyAttendanceHistory";
+import WorkingTimeWidget from "../components/WorkingTimeWidget";
 import Button from "../components/ui/Button";
 import { pageCard, pageTitle, colors } from "../theme";
 import {
   fetchAttendance as fetchAttendanceApi,
+  fetchEmployeeShift,
   saveAttendance,
 } from "../services/api";
+import { getLoggedInEmail } from "../services/auth";
+import {
+  COMPLIANCE,
+  attendanceCompliance,
+  formatInstant,
+  lateByLabel,
+} from "../utils/attendanceCompliance";
 
 const COMPANY_TZ = "Asia/Kolkata";
 
@@ -18,23 +27,27 @@ const STATUS_CLASS = {
 };
 
 const TAKER_STATUSES = ["Working", "Leave", "Holiday", "WeeklyOff"];
-const SHIFTS = ["Morning Shift", "Afternoon Shift", "Evening Shift"];
-const SHIFT_TIMES = {
-  "Full Day": {
-    "Morning Shift": { in: "11:00", out: "20:00", label: "11:00 AM — 08:00 PM" },
-    "Afternoon Shift": { in: "14:00", out: "23:00", label: "02:00 PM — 11:00 PM" },
-    "Evening Shift": { in: "17:00", out: "23:00", label: "05:00 PM — 11:00 PM" },
-  },
-  "Half Day": {
-    "Morning Shift": { in: "11:00", out: "15:30", label: "11:00 AM — 03:30 PM" },
-    "Afternoon Shift": { in: "14:00", out: "18:30", label: "02:00 PM — 06:30 PM" },
-    "Evening Shift": { in: "17:00", out: "20:30", label: "05:00 PM — 08:30 PM" },
-  },
+const WORK_PERIOD_OPTIONS = [
+  { value: "FULL_DAY", label: "Full Day" },
+  { value: "FIRST_HALF", label: "First Half" },
+  { value: "SECOND_HALF", label: "Second Half" },
+];
+const WORK_PERIOD_LABELS = {
+  FULL_DAY: "Full Day",
+  FIRST_HALF: "First Half",
+  SECOND_HALF: "Second Half",
 };
 
-function getShiftTiming(dayType, shift) {
-  return SHIFT_TIMES[dayType]?.[shift] || null;
+function assignmentAllowsHalfDay(shift) {
+  return shift?.halfDayEnabled === true;
 }
+
+function visibleWorkPeriodOptions(shift) {
+  if (assignmentAllowsHalfDay(shift)) return WORK_PERIOD_OPTIONS;
+  return WORK_PERIOD_OPTIONS.filter((item) => item.value === "FULL_DAY");
+}
+const NO_SHIFT_MESSAGE =
+  "Working attendance cannot be submitted until an administrator assigns your shift.";
 
 const DAY_NAMES = [
   "Sunday",
@@ -92,21 +105,43 @@ function formatClock(iso) {
   }).format(new Date(t));
 }
 
-function combineDateAndTime(dateKey, hhmm) {
-  if (!dateKey || !hhmm) return null;
-  const d = new Date(`${dateKey}T${hhmm}:00+05:30`);
-  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+function formatHm(hhmm) {
+  if (!hhmm) return "—";
+  const d = new Date(`1970-01-01T${hhmm}:00+05:30`);
+  return Number.isFinite(d.getTime()) ? formatClock(d.toISOString()) : hhmm;
+}
+
+function workPeriodLabel(record) {
+  if (record?.workPeriod && WORK_PERIOD_LABELS[record.workPeriod]) {
+    return WORK_PERIOD_LABELS[record.workPeriod];
+  }
+  return record?.dayType || null;
 }
 
 function submittedRowFromSave(todayKey, payload, apiItem) {
-  const fromApi = apiItem ? recordFromApi({ ...apiItem, date: apiItem.date || todayKey }) : null;
+  const fromApi = apiItem
+    ? recordFromApi({ ...apiItem, date: apiItem.date || todayKey })
+    : null;
   const working = payload.status === "Working";
-  const timing = working ? getShiftTiming(payload.dayType, payload.shift) : null;
   return {
     status: fromApi?.status || payload.status,
     hours: fromApi?.hours ?? null,
-    dayType: working ? payload.dayType || fromApi?.dayType || null : null,
-    shift: working ? payload.shift || fromApi?.shift || null : null,
+    dayType: working ? fromApi?.dayType || null : null,
+    shift: working ? fromApi?.shiftName || fromApi?.shift || null : null,
+    shiftId: fromApi?.shiftId || null,
+    shiftName: fromApi?.shiftName || null,
+    expectedStartTime: fromApi?.expectedStartTime || null,
+    expectedEndTime: fromApi?.expectedEndTime || null,
+    actualCheckInTime: fromApi?.actualCheckInTime || null,
+    actualCheckOutTime: fromApi?.actualCheckOutTime || null,
+    workedBeyondShift: fromApi?.workedBeyondShift ?? null,
+    workedBeyondReason: fromApi?.workedBeyondReason || null,
+    graceMinutes: fromApi?.graceMinutes ?? null,
+    crossesMidnight: fromApi?.crossesMidnight ?? null,
+    workPeriod: working ? payload.workPeriod || fromApi?.workPeriod || null : null,
+    timingStatus: fromApi?.timingStatus || null,
+    lateMinutes: fromApi?.lateMinutes ?? null,
+    attendanceSubmittedAt: fromApi?.attendanceSubmittedAt || null,
     reason:
       fromApi?.reason ||
       payload.reason ||
@@ -114,12 +149,8 @@ function submittedRowFromSave(todayKey, payload, apiItem) {
         ? payload.status
         : null),
     submittedAt: fromApi?.submittedAt || new Date().toISOString(),
-    checkInTime:
-      fromApi?.checkInTime ||
-      (timing ? combineDateAndTime(todayKey, timing.in) : null),
-    checkOutTime:
-      fromApi?.checkOutTime ||
-      (timing ? combineDateAndTime(todayKey, timing.out) : null),
+    checkInTime: fromApi?.checkInTime || null,
+    checkOutTime: fromApi?.checkOutTime || null,
     workingTime: fromApi?.workingTime || null,
     workingSeconds: fromApi?.workingSeconds ?? null,
     sessionStatus:
@@ -133,7 +164,8 @@ function resultLabel(record) {
   if (record.status === "Holiday") return "Absent — Holiday";
   if (record.status === "WeeklyOff") return "Weekly Off";
   if (record.status === "Working") {
-    return record.dayType ? `Working / ${record.dayType}` : "Working";
+    const period = workPeriodLabel(record);
+    return period ? `Working / ${period}` : "Working";
   }
   return record.status;
 }
@@ -145,7 +177,21 @@ function recordFromApi(item) {
     status: item.status || null,
     hours: item.hours ?? null,
     dayType: item.dayType || null,
-    shift: item.shift || null,
+    shift: item.shiftName || item.shift || null,
+    shiftId: item.shiftId || null,
+    shiftName: item.shiftName || null,
+    expectedStartTime: item.expectedStartTime || null,
+    expectedEndTime: item.expectedEndTime || null,
+    graceMinutes: item.graceMinutes ?? null,
+    crossesMidnight: item.crossesMidnight ?? null,
+    workPeriod: item.workPeriod || null,
+    timingStatus: item.timingStatus || null,
+    lateMinutes: item.lateMinutes ?? null,
+    attendanceSubmittedAt: item.attendanceSubmittedAt || null,
+    actualCheckInTime: item.actualCheckInTime || null,
+    actualCheckOutTime: item.actualCheckOutTime || null,
+    workedBeyondShift: item.workedBeyondShift ?? null,
+    workedBeyondReason: item.workedBeyondReason || null,
     reason: item.reason || null,
     submittedAt: item.submittedAt || null,
     checkInTime: item.checkInTime || null,
@@ -154,6 +200,60 @@ function recordFromApi(item) {
     workingSeconds: item.workingSeconds ?? null,
     sessionStatus: item.sessionStatus || null,
   };
+}
+
+function AssignedShiftReadOnly({ shift, loadError, dateKey }) {
+  if (loadError) {
+    return (
+      <div className="dgv-attendance-taker__field">
+        <div className="dgv-attendance-taker__label">Assigned Shift</div>
+        <div className="dgv-attendance-taker__value">{loadError}</div>
+      </div>
+    );
+  }
+  if (!shift?.name) {
+    return (
+      <div className="dgv-attendance-taker__field">
+        <div className="dgv-attendance-taker__label">Assigned Shift</div>
+        <div className="dgv-attendance-taker__value">Not assigned</div>
+      </div>
+    );
+  }
+  const grace = Number(shift.graceMinutes) || 0;
+  const expected = attendanceCompliance({
+    dateKey,
+    todayKey: dateKey,
+    shift,
+  });
+  return (
+    <>
+      <div className="dgv-attendance-taker__field">
+        <div className="dgv-attendance-taker__label">Assigned Shift</div>
+        <div className="dgv-attendance-taker__value">{shift.name}</div>
+      </div>
+      <div className="dgv-attendance-taker__field">
+        <div className="dgv-attendance-taker__label">Shift Timing</div>
+        <div className="dgv-attendance-taker__value">
+          {formatHm(shift.startTime)} — {formatHm(shift.endTime)}
+          {shift.crossesMidnight ? " (overnight)" : ""}
+        </div>
+      </div>
+      {grace > 0 ? (
+        <div className="dgv-attendance-taker__field">
+          <div className="dgv-attendance-taker__label">Grace Period</div>
+          <div className="dgv-attendance-taker__value">{grace} min</div>
+        </div>
+      ) : null}
+      {expected.expectedByMs ? (
+        <div className="dgv-attendance-taker__field">
+          <div className="dgv-attendance-taker__label">Expected By</div>
+          <div className="dgv-attendance-taker__value">
+            {formatInstant(expected.expectedByMs)}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 export default function Attendance() {
@@ -165,10 +265,13 @@ export default function Attendance() {
   const [loadingWeek, setLoadingWeek] = useState(true);
   const [weekError, setWeekError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [assignedShift, setAssignedShift] = useState(null);
+  const [shiftLoadError, setShiftLoadError] = useState("");
+  const [shiftReady, setShiftReady] = useState(false);
+  const [formError, setFormError] = useState("");
 
   const [status, setStatus] = useState("");
-  const [dayType, setDayType] = useState("");
-  const [shift, setShift] = useState("");
+  const [workPeriod, setWorkPeriod] = useState("");
 
   const todayRecord = attendanceData[todayKey] || {};
   const submitted = !!todayRecord.submittedAt;
@@ -183,6 +286,33 @@ export default function Attendance() {
       });
     }
     return obj;
+  }, []);
+
+  const loadAssignedShift = useCallback(async () => {
+    setShiftReady(false);
+    try {
+      const email = getLoggedInEmail();
+      if (!email) {
+        setAssignedShift(null);
+        setShiftLoadError("");
+        return;
+      }
+      const res = await fetchEmployeeShift(email);
+      const next = res?.shift || null;
+      setAssignedShift(next);
+      setShiftLoadError("");
+      if (!assignmentAllowsHalfDay(next)) {
+        setWorkPeriod((prev) =>
+          prev === "FIRST_HALF" || prev === "SECOND_HALF" ? "FULL_DAY" : prev
+        );
+      }
+    } catch (err) {
+      console.error("Fetch assigned shift error:", err);
+      setAssignedShift(null);
+      setShiftLoadError(err?.message || "Unable to load assigned shift.");
+    } finally {
+      setShiftReady(true);
+    }
   }, []);
 
   const loadAttendance = useCallback(async ({ silent = false } = {}) => {
@@ -212,6 +342,15 @@ export default function Attendance() {
             submittedAt: next[today].submittedAt || locked.submittedAt,
             checkInTime: next[today].checkInTime || locked.checkInTime,
             checkOutTime: next[today].checkOutTime || locked.checkOutTime,
+            timingStatus: next[today].timingStatus || locked.timingStatus,
+            lateMinutes:
+              next[today].lateMinutes ?? locked.lateMinutes ?? null,
+            workPeriod: next[today].workPeriod || locked.workPeriod,
+            shiftName: next[today].shiftName || locked.shiftName,
+            expectedStartTime:
+              next[today].expectedStartTime || locked.expectedStartTime,
+            expectedEndTime:
+              next[today].expectedEndTime || locked.expectedEndTime,
           };
         }
         return next;
@@ -231,19 +370,52 @@ export default function Attendance() {
   }, [loadAttendance]);
 
   useEffect(() => {
+    loadAssignedShift();
+  }, [loadAssignedShift]);
+
+  useEffect(() => {
+    if (assignmentAllowsHalfDay(assignedShift)) return;
+    setWorkPeriod((prev) =>
+      prev === "FIRST_HALF" || prev === "SECOND_HALF" ? "FULL_DAY" : prev
+    );
+  }, [assignedShift]);
+
+  useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         loadAttendance({ silent: true });
+        loadAssignedShift();
       }
     };
-    const onFocus = () => loadAttendance({ silent: true });
+    const onFocus = () => {
+      loadAttendance({ silent: true });
+      loadAssignedShift();
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onFocus);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
     };
-  }, [loadAttendance]);
+  }, [loadAttendance, loadAssignedShift]);
+
+  const selectStatus = (item) => {
+    setStatus(item);
+    setFormError("");
+    if (item !== "Working") {
+      setWorkPeriod("");
+      return;
+    }
+    if (shiftReady && !assignedShift) {
+      setFormError(NO_SHIFT_MESSAGE);
+    }
+    setWorkPeriod((prev) =>
+      assignmentAllowsHalfDay(assignedShift) &&
+      (prev === "FIRST_HALF" || prev === "SECOND_HALF")
+        ? prev
+        : "FULL_DAY"
+    );
+  };
 
   const submitAttendance = async () => {
     if (submitted || submitting) {
@@ -255,16 +427,12 @@ export default function Attendance() {
       return;
     }
     if (status === "Working") {
-      if (!dayType) {
-        alert("Please select Full Day or Half Day.");
+      if (!assignedShift) {
+        setFormError(NO_SHIFT_MESSAGE);
         return;
       }
-      if (!shift) {
-        alert("Please select a shift.");
-        return;
-      }
-      if (!getShiftTiming(dayType, shift)) {
-        alert("Please select a valid shift.");
+      if (!workPeriod) {
+        alert("Please select Full Day, First Half, or Second Half.");
         return;
       }
     }
@@ -274,8 +442,7 @@ export default function Attendance() {
       status,
     };
     if (status === "Working") {
-      payload.dayType = dayType;
-      payload.shift = shift;
+      payload.workPeriod = workPeriod;
     } else if (status === "Leave") {
       payload.reason = "Leave";
     } else if (status === "Holiday") {
@@ -283,19 +450,20 @@ export default function Attendance() {
     }
 
     setSubmitting(true);
+    setFormError("");
     try {
       const res = await saveAttendance([payload]);
       const savedRow = submittedRowFromSave(todayKey, payload, res?.attendance);
       setAttendanceData((prev) => ({ ...prev, [todayKey]: savedRow }));
       setStatus("");
-      setDayType("");
-      setShift("");
+      setWorkPeriod("");
       await loadAttendance({ silent: true });
     } catch (err) {
       console.error("Submit error:", err);
       const already = /already been submitted|already submitted/i.test(
         String(err.message || "")
       );
+      const noShift = /no shift is assigned/i.test(String(err.message || ""));
       if (already) {
         if (err.attendance) {
           const lockedRow = recordFromApi({
@@ -308,7 +476,11 @@ export default function Attendance() {
         }
         await loadAttendance({ silent: true });
       }
-      alert(err.message || "Failed to submit attendance");
+      if (noShift) {
+        setFormError(NO_SHIFT_MESSAGE);
+      } else {
+        alert(err.message || "Failed to submit attendance");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -322,7 +494,12 @@ export default function Attendance() {
     setHistoryWeekStart(startOfWeekKey(companyTodayKey()));
 
   const working = status === "Working";
-  const shiftTiming = working ? getShiftTiming(dayType, shift) : null;
+  const workingBlocked = working && shiftReady && !assignedShift;
+  const lockedShiftName =
+    todayRecord.shiftName || todayRecord.shift || assignedShift?.name;
+  const lockedTiming = `${formatClock(
+    todayRecord.expectedStartTime || todayRecord.checkInTime
+  )} — ${formatClock(todayRecord.expectedEndTime || todayRecord.checkOutTime)}`;
 
   return (
     <Layout>
@@ -373,22 +550,61 @@ export default function Attendance() {
                   <div>
                     <div className="dgv-attendance-taker__label">Working Type</div>
                     <div className="dgv-attendance-taker__value">
-                      ✓ {todayRecord.dayType || "—"}
+                      ✓ {workPeriodLabel(todayRecord) || "—"}
                     </div>
                   </div>
                   <div>
                     <div className="dgv-attendance-taker__label">Shift</div>
                     <div className="dgv-attendance-taker__value">
-                      ✓ {todayRecord.shift || "—"}
+                      ✓ {lockedShiftName || "—"}
                     </div>
                   </div>
                   <div>
                     <div className="dgv-attendance-taker__label">Shift Timing</div>
-                    <div className="dgv-attendance-taker__value">
-                      {getShiftTiming(todayRecord.dayType, todayRecord.shift)?.label ||
-                        `${formatClock(todayRecord.checkInTime)} — ${formatClock(todayRecord.checkOutTime)}`}
-                    </div>
+                    <div className="dgv-attendance-taker__value">{lockedTiming}</div>
                   </div>
+                  {(() => {
+                    const compliance = attendanceCompliance({
+                      dateKey: todayKey,
+                      todayKey,
+                      record: todayRecord,
+                      shift: assignedShift,
+                    });
+                    return (
+                      <>
+                        <div>
+                          <div className="dgv-attendance-taker__label">
+                            Expected By
+                          </div>
+                          <div className="dgv-attendance-taker__value">
+                            {compliance.expectedByMs
+                              ? formatInstant(compliance.expectedByMs)
+                              : "—"}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="dgv-attendance-taker__label">
+                            Marked At
+                          </div>
+                          <div className="dgv-attendance-taker__value">
+                            {compliance.markedAtMs
+                              ? formatInstant(compliance.markedAtMs)
+                              : "—"}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="dgv-attendance-taker__label">Timing</div>
+                          <div className="dgv-attendance-taker__value">
+                            {compliance.status}
+                            {compliance.status === COMPLIANCE.LATE &&
+                            compliance.lateMinutes != null
+                              ? ` · ${lateByLabel(compliance.lateMinutes)} late`
+                              : ""}
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </>
               ) : null}
               <p className="dgv-attendance-taker__hint" style={{ gridColumn: "1 / -1" }}>
@@ -417,13 +633,7 @@ export default function Attendance() {
                       <button
                         key={item}
                         type="button"
-                        onClick={() => {
-                          setStatus(item);
-                          if (item !== "Working") {
-                            setDayType("");
-                            setShift("");
-                          }
-                        }}
+                        onClick={() => selectStatus(item)}
                         className={`dgv-status-badge ${STATUS_CLASS[item]} ${
                           status === item ? "is-active" : ""
                         }`}
@@ -434,6 +644,14 @@ export default function Attendance() {
                     ))}
                   </div>
                 </div>
+              </div>
+
+              <div className="dgv-attendance-taker__grid">
+                <AssignedShiftReadOnly
+                  shift={assignedShift}
+                  loadError={shiftLoadError}
+                  dateKey={todayKey}
+                />
               </div>
 
               {status === "Leave" ? (
@@ -458,61 +676,47 @@ export default function Attendance() {
                         Working Type
                       </span>
                       <div className="dgv-attendance-taker__statuses">
-                        {["Full Day", "Half Day"].map((item) => (
+                        {visibleWorkPeriodOptions(assignedShift).map((item) => (
                           <button
-                            key={item}
+                            key={item.value}
                             type="button"
-                            onClick={() => setDayType(item)}
+                            onClick={() => {
+                              setWorkPeriod(item.value);
+                              setFormError("");
+                            }}
                             className={`dgv-status-badge dgv-status-badge--working ${
-                              dayType === item ? "is-active" : ""
+                              workPeriod === item.value ? "is-active" : ""
                             }`}
-                            aria-pressed={dayType === item}
+                            aria-pressed={workPeriod === item.value}
+                            disabled={workingBlocked}
                           >
-                            {item}
+                            {item.label}
                           </button>
                         ))}
                       </div>
                     </div>
-                    <div className="dgv-attendance-taker__field">
-                      <label className="dgv-attendance-taker__label" htmlFor="att-shift">
-                        Shift
-                      </label>
-                      <select
-                        id="att-shift"
-                        className="dgv-select"
-                        value={shift}
-                        onChange={(e) => setShift(e.target.value)}
-                      >
-                        <option value="">Select shift</option>
-                        {SHIFTS.map((item) => (
-                          <option key={item} value={item}>
-                            {item}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    {shiftTiming ? (
-                      <div className="dgv-attendance-taker__field">
-                        <div className="dgv-attendance-taker__label">
-                          Shift Timing
-                        </div>
-                        <div className="dgv-attendance-taker__value">
-                          {shiftTiming.label}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
-                  <p className="dgv-attendance-taker__hint">
-                    Shift timing is automatically assigned based on your selected shift.
-                  </p>
+                  {workingBlocked || formError ? (
+                    <p className="dgv-attendance-taker__hint" role="alert">
+                      {formError || NO_SHIFT_MESSAGE}
+                    </p>
+                  ) : (
+                    <p className="dgv-attendance-taker__hint">
+                      Shift timing comes from your Admin-assigned shift.
+                    </p>
+                  )}
                 </>
+              ) : formError ? (
+                <p className="dgv-attendance-taker__hint" role="alert">
+                  {formError}
+                </p>
               ) : null}
 
               <div className="dgv-attendance-taker__actions">
                 <Button
                   type="button"
                   onClick={submitAttendance}
-                  disabled={submitting || submitted}
+                  disabled={submitting || submitted || workingBlocked}
                 >
                   {submitting ? "Submitting..." : "Submit Attendance"}
                 </Button>
@@ -521,6 +725,12 @@ export default function Attendance() {
           )}
         </section>
 
+        {submitted && todayRecord.status === "Working" ? (
+          <div style={{ marginTop: 20 }}>
+            <WorkingTimeWidget />
+          </div>
+        ) : null}
+
         <div style={{ marginTop: 36 }}>
           <WeeklyAttendanceHistory
             weekStart={historyWeekStart}
@@ -528,6 +738,7 @@ export default function Attendance() {
             loading={loadingWeek}
             error={weekError}
             todayKey={todayKey}
+            assignedShift={assignedShift}
             onPreviousWeek={goToPreviousWeek}
             onCurrentWeek={goToCurrentWeek}
             onNextWeek={goToNextWeek}

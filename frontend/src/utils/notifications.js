@@ -15,6 +15,11 @@ export function isRedZoneNotification(item) {
 }
 
 export function notificationTaskPath(item, employeeView) {
+  const type = String(item?.type || "").toUpperCase();
+  const explicitPath = String(item?.path || "").trim();
+  if (type === "TASK_BLOCKER_REPORTED" || explicitPath === "/admin/blockers") {
+    return employeeView ? "" : "/admin/blockers";
+  }
   const taskId = item?.taskId;
   if (!taskId) return "";
   return employeeView

@@ -11,6 +11,7 @@ jest.mock("../../services/api", () => ({
   fetchTasks: jest.fn(),
   fetchAllLeave: jest.fn(),
   fetchUserProfile: jest.fn(),
+  fetchEmployeeShift: jest.fn(),
 }));
 
 import {
@@ -133,4 +134,82 @@ test("Attendance Sheet filter does not mutate or delete historical attendance re
   expect(records.find((row) => row.attendanceId === "hist-1")).toEqual(
     recordsSnapshot[0]
   );
+});
+
+test("buildDayRows derives ON TIME LATE NOT MARKED LEAVE WEEK OFF HOLIDAY and UPCOMING", () => {
+  const roster = [
+    { email: "priya@mydgv.com", name: "Priya" },
+    { email: "rahul@mydgv.com", name: "Rahul" },
+    { email: "amit@mydgv.com", name: "Amit" },
+    { email: "neha@mydgv.com", name: "Neha" },
+    { email: "vikas@mydgv.com", name: "Vikas" },
+    { email: "sara@mydgv.com", name: "Sara" },
+    { email: "future@mydgv.com", name: "Future" },
+  ];
+  const day = "2026-09-26";
+  const records = [
+    {
+      email: "priya@mydgv.com",
+      date: day,
+      status: "Working",
+      shiftName: "Morning Shift",
+      expectedStartTime: "2026-09-26T11:00:00+05:30",
+      expectedEndTime: "2026-09-26T20:00:00+05:30",
+      graceMinutes: 5,
+      attendanceSubmittedAt: "2026-09-26T10:58:00+05:30",
+    },
+    {
+      email: "rahul@mydgv.com",
+      date: day,
+      status: "Working",
+      shiftName: "Morning Shift",
+      expectedStartTime: "2026-09-26T11:00:00+05:30",
+      expectedEndTime: "2026-09-26T20:00:00+05:30",
+      graceMinutes: 5,
+      attendanceSubmittedAt: "2026-09-26T11:18:00+05:30",
+    },
+    { email: "neha@mydgv.com", date: day, status: "Leave" },
+    { email: "vikas@mydgv.com", date: day, status: "WeeklyOff" },
+    { email: "sara@mydgv.com", date: day, status: "Holiday" },
+  ];
+  const shifts = {
+    "amit@mydgv.com": {
+      name: "Morning Shift",
+      startTime: "11:00",
+      endTime: "20:00",
+      graceMinutes: 5,
+    },
+    "future@mydgv.com": {
+      name: "Morning Shift",
+      startTime: "11:00",
+      endTime: "20:00",
+      graceMinutes: 5,
+    },
+  };
+  const todayRows = buildDayRows(roster, records, [], day, {
+    todayKey: day,
+    shiftsByEmail: shifts,
+  });
+  expect(todayRows.find((r) => r.email === "priya@mydgv.com").compliance.status).toBe("ON TIME");
+  expect(todayRows.find((r) => r.email === "rahul@mydgv.com").compliance.status).toBe("LATE");
+  expect(todayRows.find((r) => r.email === "rahul@mydgv.com").compliance.lateMinutes).toBe(13);
+  expect(todayRows.find((r) => r.email === "amit@mydgv.com").compliance.status).toBe("NOT MARKED");
+  expect(todayRows.find((r) => r.email === "amit@mydgv.com").compliance.shiftLabel).toMatch(
+    /Morning Shift/
+  );
+  expect(todayRows.find((r) => r.email === "priya@mydgv.com").compliance.shiftLabel).toMatch(
+    /11:00/
+  );
+  expect(todayRows.find((r) => r.email === "neha@mydgv.com").compliance.status).toBe("LEAVE");
+  expect(todayRows.find((r) => r.email === "vikas@mydgv.com").compliance.status).toBe("WEEK OFF");
+  expect(todayRows.find((r) => r.email === "sara@mydgv.com").compliance.status).toBe("HOLIDAY");
+
+  const futureRows = buildDayRows(
+    [{ email: "future@mydgv.com", name: "Future" }],
+    [],
+    [],
+    "2026-09-28",
+    { todayKey: day, shiftsByEmail: shifts }
+  );
+  expect(futureRows[0].compliance.status).toBe("UPCOMING");
 });

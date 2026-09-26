@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from "./api";
+
 const domain =
   process.env.REACT_APP_COGNITO_DOMAIN ||
   "https://mydgv-portal-auth.auth.ap-south-1.amazoncognito.com";
@@ -5,9 +7,7 @@ const clientId =
   process.env.REACT_APP_COGNITO_CLIENT_ID || "5q797v9k55ad1q36mol3glhecf";
 const redirectUri = `${window.location.origin}/callback`;
 
-const apiUrl =
-  process.env.REACT_APP_API_URL ||
-  "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
+const apiUrl = getApiBaseUrl();
 
 export const PORTAL_INTENT_KEY = "portalIntent";
 export const ACTUAL_ROLE_KEY = "actualRole";

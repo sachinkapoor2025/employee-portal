@@ -43,6 +43,12 @@ function postponeEmails() {
   );
 }
 
+function shiftConflictEmails() {
+  return emailCalls.filter((call) =>
+    /scheduled task shift conflict/i.test(String(call.subject || ""))
+  );
+}
+
 const {
   META_SK,
   TYPE_TASK_IMPORT,
@@ -703,6 +709,7 @@ function attendanceEnv() {
   const ddb = createMemoryDdb();
   seedProjects(ddb);
   seedAccess(ddb);
+  seedDefaultAssignedShifts(ddb);
   return { ddb };
 }
 
@@ -749,6 +756,55 @@ function seedAttendance(ddb, email, date, extra = {}) {
     date,
     ...extra,
   });
+}
+
+function seedCurrentShift(ddb, email, extra = {}) {
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  ddb.seed(WORK_TABLE, {
+    PK: `USER#${normalized}`,
+    SK: "SHIFT#CURRENT",
+    shiftId: extra.shiftId || "morning",
+    name: extra.name || "Morning Shift",
+    startTime: extra.startTime || "11:00",
+    endTime: extra.endTime || "20:00",
+    graceMinutes: extra.graceMinutes ?? 0,
+    crossesMidnight: extra.crossesMidnight === true,
+    ...extra,
+  });
+}
+
+function seedDefaultAssignedShifts(ddb) {
+  seedCurrentShift(ddb, "priya@mydgv.com");
+  seedCurrentShift(ddb, "rahul@mydgv.com");
+}
+
+function makeImportedScheduledFittable(ddb, email = "priya@mydgv.com") {
+  const task = entityTasks(ddb)[0];
+  const start = task.scheduledAssignAt || "2026-10-15T10:00:00+05:30";
+  const due = "2026-10-15T10:30:00+05:30";
+  const next = {
+    ...task,
+    startDate: start,
+    dueDate: due,
+    scheduledAssignAt: start,
+  };
+  ddb.seed(WORK_TABLE, next);
+  if (next.projectId) {
+    ddb.seed(WORK_TABLE, {
+      ...next,
+      PK: `PROJECT#${next.projectId}`,
+      SK: `TASK#${next.taskId}`,
+    });
+  }
+  seedCurrentShift(ddb, email, {
+    shiftId: "day",
+    name: "Day Shift",
+    startTime: "09:00",
+    endTime: "18:00",
+  });
+  return next;
 }
 
 function trackAttendanceWrites(ddb) {
@@ -1204,6 +1260,7 @@ async function run() {
     emailCalls.length = 0;
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     const result = await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const taskId = result.body.tasks[0].taskId;
     const task = entityTasks(env.ddb)[0];
     assert.strictEqual(result.body.tasks[0].status, "SCHEDULED");
@@ -1523,6 +1580,7 @@ async function run() {
   await test("PENDING to ASSIGNING is conditional and exclusive", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const first = assignDueScheduledTasks({
       ddb: env.ddb,
@@ -1572,6 +1630,7 @@ async function run() {
     emailCalls.length = 0;
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const task = entityTasks(env.ddb)[0];
     env.ddb.seed(WORK_TABLE, {
@@ -1610,6 +1669,7 @@ async function run() {
   await test("scheduled persist conflict remains recoverable", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
@@ -1650,6 +1710,7 @@ async function run() {
   await test("failed scheduled assignment remains recoverable", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
@@ -1874,6 +1935,7 @@ async function run() {
   await test("scheduled assignment failure does not change COMPLETED audit eligibility", async () => {
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     assert.strictEqual(metaItem(env.ddb).auditEligibility, AUDIT_ELIGIBILITY.ELIGIBLE);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const orig = env.ddb.send.bind(env.ddb);
@@ -2096,6 +2158,7 @@ async function run() {
     emailCalls.length = 0;
     const env = readyEnv({ rows: [TASK_IMPORT_COLUMNS, SCHEDULED_ROW] });
     await confirm(env);
+    makeImportedScheduledFittable(env.ddb);
     const dueMs = SCHEDULED_DUE_MS + 5 * 60 * 1000;
     const orig = env.ddb.send.bind(env.ddb);
     env.ddb.send = async (command) => {
@@ -2284,7 +2347,7 @@ async function run() {
     );
   });
 
-  await test("A no attendance record + multi-day task assigns", async () => {
+  await test("A no attendance record + multi-day task is a shift conflict, not assigned or postponed", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
     const created = seedScheduledTask(env.ddb, {
@@ -2295,14 +2358,18 @@ async function run() {
     const writes = trackAttendanceWrites(env.ddb);
     await runAssign(env.ddb, Date.parse("2026-09-22T11:35:00+05:30"));
     const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
-    assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "SHIFT_CONFLICT");
     assert.strictEqual(task.startDate, created.startDate);
     assert.strictEqual(task.dueDate, created.dueDate);
+    assert.strictEqual(task.scheduledAssignAt, created.scheduledAssignAt);
+    assert.strictEqual(task.postponementCount, undefined);
+    assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 0);
     assert.strictEqual(writes(), 0);
     assert.strictEqual(postponeEmails().length, 0);
   });
 
-  await test("B/P Working multi-day deadline outside assignment-day shift assigns", async () => {
+  await test("B/P Working multi-day deadline outside assignment-day shift is SHIFT_CONFLICT", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
     const created = seedScheduledTask(env.ddb, {
@@ -2317,13 +2384,14 @@ async function run() {
     });
     await runAssign(env.ddb, Date.parse("2026-09-22T11:35:00+05:30"));
     const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
-    assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "SHIFT_CONFLICT");
     assert.strictEqual(task.dueDate, created.dueDate);
-    assert.notStrictEqual(task.lastPostponementReason, "OUTSIDE_SHIFT");
+    assert.strictEqual(task.scheduledAssignAt, created.scheduledAssignAt);
     assert.strictEqual(postponeEmails().length, 0);
   });
 
-  await test("C Working multi-day task starting near shift end assigns", async () => {
+  await test("C Working multi-day task starting near shift end is SHIFT_CONFLICT", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
     const created = seedScheduledTask(env.ddb, {
@@ -2338,11 +2406,12 @@ async function run() {
     });
     await runAssign(env.ddb, Date.parse("2026-09-22T19:50:00+05:30"));
     const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
-    assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "SHIFT_CONFLICT");
     assert.strictEqual(postponeEmails().length, 0);
   });
 
-  await test("L Evening shift + valid multi-day start assigns", async () => {
+  await test("L Evening shift + multi-day start is SHIFT_CONFLICT", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
     const created = seedScheduledTask(env.ddb, {
@@ -2355,12 +2424,19 @@ async function run() {
       dayType: "Full Day",
       shift: "Evening Shift",
     });
+    seedCurrentShift(env.ddb, "priya@mydgv.com", {
+      shiftId: "evening",
+      name: "Evening Shift",
+      startTime: "17:00",
+      endTime: "23:00",
+    });
     await runAssign(env.ddb, Date.parse("2026-09-22T17:35:00+05:30"));
     assert.strictEqual(
       entityTasks(env.ddb).find((item) => item.taskId === created.taskId)
         .assignmentState,
-      ASSIGNMENT_ASSIGNED
+      ASSIGNMENT_PENDING
     );
+    assert.strictEqual(postponeEmails().length, 0);
   });
 
   await test("M Evening shift + same-day task outside window postpones", async () => {
@@ -2411,13 +2487,9 @@ async function run() {
   await test("N repeated postponement rechecks attendance on the new scheduled date", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
-    const created = seedScheduledTask(env.ddb, {
-      startDate: "2026-09-22T11:30:00+05:30",
-      dueDate: "2026-10-03T18:00:00+05:30",
-      scheduledAssignAt: "2026-09-22T11:30:00+05:30",
-    });
+    const created = seedScheduledTask(env.ddb);
     seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-22", { status: "Leave" });
-    await runAssign(env.ddb, Date.parse("2026-09-22T11:35:00+05:30"));
+    await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
     let task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
     assert.strictEqual(task.postponementCount, 1);
     seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-23", {
@@ -2426,20 +2498,17 @@ async function run() {
       shift: "Morning Shift",
     });
     emailCalls.length = 0;
-    await runAssign(env.ddb, Date.parse("2026-09-23T11:35:00+05:30"));
+    await runAssign(env.ddb, Date.parse("2026-09-23T14:05:00+05:30"));
     task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
     assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
     assert.strictEqual(task.postponementCount, 1);
     assert.strictEqual(postponeEmails().length, 0);
   });
 
-  await test("Q multi-assignee Working multi-day vs Leave keeps leftover pending", async () => {
+  await test("Q multi-assignee Working vs Leave keeps leftover pending", async () => {
     emailCalls.length = 0;
     const env = attendanceEnv();
     const created = seedScheduledTask(env.ddb, {
-      startDate: "2026-09-22T11:30:00+05:30",
-      dueDate: "2026-10-03T18:00:00+05:30",
-      scheduledAssignAt: "2026-09-22T11:30:00+05:30",
       pendingAssignees: ["rahul@mydgv.com", "priya@mydgv.com"],
     });
     seedAttendance(env.ddb, "rahul@mydgv.com", "2026-09-22", {
@@ -2448,7 +2517,7 @@ async function run() {
       shift: "Morning Shift",
     });
     seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-22", { status: "Leave" });
-    await runAssign(env.ddb, Date.parse("2026-09-22T11:35:00+05:30"));
+    await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
     const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
     assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
     assert.deepStrictEqual(
@@ -2745,6 +2814,258 @@ async function run() {
     );
     assert.strictEqual(beforeDue, "GREEN");
     assert.notStrictEqual(afterDue, "GREEN");
+  });
+
+  await test("4C FIT assigns the scheduled employee", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T20:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 1);
+    assert.ok(assignmentEmails().some((call) => call.to === "priya@mydgv.com"));
+    assert.strictEqual(isPendingScheduledTask(task), false);
+  });
+
+  await test("4C SHIFT_CONFLICT does not assign and does not +24h postpone", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T21:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.deepStrictEqual(task.pendingAssignees, ["priya@mydgv.com"]);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "SHIFT_CONFLICT");
+    assert.strictEqual(task.scheduledAssignAt, created.scheduledAssignAt);
+    assert.strictEqual(task.startDate, created.startDate);
+    assert.strictEqual(task.dueDate, created.dueDate);
+    assert.strictEqual(task.postponementCount, undefined);
+    assert.ok(!task.lastPostponementReason);
+    assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 0);
+    assert.strictEqual(postponeEmails().length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
+    assert.ok(isPendingScheduledTask(task));
+  });
+
+  await test("4C NO_SHIFT does not assign and does not +24h postpone", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    await env.ddb.send(
+      new DeleteCommand({
+        TableName: WORK_TABLE,
+        Key: { PK: "USER#priya@mydgv.com", SK: "SHIFT#CURRENT" },
+      })
+    );
+    const created = seedScheduledTask(env.ddb);
+    await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "NO_SHIFT");
+    assert.strictEqual(task.scheduledAssignAt, created.scheduledAssignAt);
+    assert.strictEqual(task.startDate, created.startDate);
+    assert.strictEqual(task.dueDate, created.dueDate);
+    assert.strictEqual(task.postponementCount, undefined);
+    assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 0);
+    assert.strictEqual(postponeEmails().length, 0);
+    assert.ok(isPendingScheduledTask(task));
+  });
+
+  await test("4C Leave still postpones +24h before shift-fit", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb);
+    seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-22", { status: "Leave" });
+    await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.strictEqual(task.lastPostponementReason, "LEAVE");
+    assert.strictEqual(
+      Date.parse(task.scheduledAssignAt) - Date.parse(created.scheduledAssignAt),
+      24 * 60 * 60 * 1000
+    );
+    assert.ok(!task.lastShiftFitByEmail);
+    assert.strictEqual(postponeEmails().length, 1);
+  });
+
+  await test("4C Holiday and Weekly Off still postpone +24h", async () => {
+    for (const [status, reason] of [
+      ["Holiday", "HOLIDAY"],
+      ["WeeklyOff", "WEEKLY_OFF"],
+    ]) {
+      emailCalls.length = 0;
+      const env = attendanceEnv();
+      const created = seedScheduledTask(env.ddb);
+      seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-22", { status });
+      await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
+      const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+      assert.strictEqual(task.lastPostponementReason, reason, status);
+      assert.strictEqual(
+        Date.parse(task.startDate) - Date.parse(created.startDate),
+        24 * 60 * 60 * 1000
+      );
+      assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 0);
+    }
+  });
+
+  await test("4C multi-assignee FIT + SHIFT_CONFLICT assigns only the FIT employee", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T20:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+      pendingAssignees: ["rahul@mydgv.com", "priya@mydgv.com"],
+    });
+    seedCurrentShift(env.ddb, "priya@mydgv.com", {
+      shiftId: "day",
+      name: "Day Shift",
+      startTime: "09:00",
+      endTime: "17:00",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_ASSIGNED);
+    assert.deepStrictEqual(
+      assignmentItems(env.ddb, created.taskId).map((item) => item.email),
+      ["rahul@mydgv.com"]
+    );
+    assert.deepStrictEqual(task.pendingAssignees, ["priya@mydgv.com"]);
+    assert.strictEqual(task.lastShiftFitByEmail["priya@mydgv.com"], "SHIFT_CONFLICT");
+    assert.strictEqual(task.lastShiftFitByEmail["rahul@mydgv.com"], "FIT");
+    assert.strictEqual(task.scheduledAssignAt, created.scheduledAssignAt);
+    assert.strictEqual(task.startDate, created.startDate);
+    assert.strictEqual(task.dueDate, created.dueDate);
+    assert.strictEqual(task.postponementCount, undefined);
+    assert.strictEqual(postponeEmails().length, 0);
+    assert.ok(assignmentEmails().some((call) => call.to === "rahul@mydgv.com"));
+    assert.ok(!assignmentEmails().some((call) => call.to === "priya@mydgv.com"));
+  });
+
+  await test("4C conflict stays out of Orange/Red escalation", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T21:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const task = entityTasks(env.ddb).find((item) => item.taskId === created.taskId);
+    const laterMs = Date.parse("2026-09-23T22:00:00+05:30");
+    const zone = escalation.zoneAt(Date.parse(task.dueDate), laterMs);
+    assert.ok(isPendingScheduledTask(task));
+    assert.notStrictEqual(zone, "GREEN");
+    assert.strictEqual(assignmentItems(env.ddb, created.taskId).length, 0);
+    assert.strictEqual(task.assignmentState, ASSIGNMENT_PENDING);
+    assert.notStrictEqual(task.status, "ASSIGNED");
+  });
+
+  await test("4E SHIFT_CONFLICT notifies Admin and Super Admin once", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    const created = seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T21:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const first = shiftConflictEmails();
+    assert.ok(first.length >= 2);
+    assert.ok(first.some((call) => call.to === "super@mydgv.com"));
+    assert.ok(first.some((call) => call.to === "admin@mydgv.com"));
+    assert.ok(first.every((call) => /SHIFT_CONFLICT/.test(call.text)));
+    assert.ok(first.every((call) => /priya@mydgv.com/.test(call.text)));
+    assert.ok(!first.some((call) => call.to === "priya@mydgv.com"));
+    assert.strictEqual(postponeEmails().length, 0);
+    const count = first.length;
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:10:00+05:30"));
+    assert.strictEqual(shiftConflictEmails().length, count);
+    assert.strictEqual(
+      entityTasks(env.ddb).find((item) => item.taskId === created.taskId)
+        .assignmentState,
+      ASSIGNMENT_PENDING
+    );
+  });
+
+  await test("4E NO_SHIFT notifies Admin and Super Admin", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    await env.ddb.send(
+      new DeleteCommand({
+        TableName: WORK_TABLE,
+        Key: { PK: "USER#priya@mydgv.com", SK: "SHIFT#CURRENT" },
+      })
+    );
+    seedScheduledTask(env.ddb);
+    await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
+    const mail = shiftConflictEmails();
+    assert.ok(mail.length >= 2);
+    assert.ok(mail.every((call) => /NO_SHIFT/.test(call.text)));
+    assert.ok(mail.every((call) => /Assigned shift: none/.test(call.text)));
+    assert.ok(mail.some((call) => call.to === "admin@mydgv.com"));
+    assert.ok(mail.some((call) => call.to === "super@mydgv.com"));
+  });
+
+  await test("4E FIT produces no conflict notification", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T20:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+    });
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    assert.strictEqual(shiftConflictEmails().length, 0);
+    assert.ok(assignmentEmails().some((call) => call.to === "priya@mydgv.com"));
+  });
+
+  await test("4E Leave/Holiday/Weekly Off postponement notifications remain unchanged", async () => {
+    for (const status of ["Leave", "Holiday", "WeeklyOff"]) {
+      emailCalls.length = 0;
+      const env = attendanceEnv();
+      seedScheduledTask(env.ddb);
+      seedAttendance(env.ddb, "priya@mydgv.com", "2026-09-22", { status });
+      await runAssign(env.ddb, Date.parse("2026-09-22T14:05:00+05:30"));
+      assert.strictEqual(postponeEmails().length, 1, status);
+      assert.ok(postponeEmails().every((call) => call.to === "super@mydgv.com"), status);
+      assert.ok(!postponeEmails().some((call) => call.to === "admin@mydgv.com"), status);
+      assert.ok(!postponeEmails().some((call) => call.to === "priya@mydgv.com"), status);
+      assert.strictEqual(shiftConflictEmails().length, 0, status);
+    }
+  });
+
+  await test("4E different employee conflicts notify independently", async () => {
+    emailCalls.length = 0;
+    const env = attendanceEnv();
+    seedScheduledTask(env.ddb, {
+      startDate: "2026-09-22T18:00:00+05:30",
+      dueDate: "2026-09-22T21:00:00+05:30",
+      scheduledAssignAt: "2026-09-22T18:00:00+05:30",
+      pendingAssignees: ["rahul@mydgv.com", "priya@mydgv.com"],
+    });
+    await env.ddb.send(
+      new DeleteCommand({
+        TableName: WORK_TABLE,
+        Key: { PK: "USER#rahul@mydgv.com", SK: "SHIFT#CURRENT" },
+      })
+    );
+    await runAssign(env.ddb, Date.parse("2026-09-22T18:05:00+05:30"));
+    const mail = shiftConflictEmails();
+    assert.ok(mail.some((call) => /priya@mydgv.com/.test(call.text)));
+    assert.ok(mail.some((call) => /rahul@mydgv.com/.test(call.text)));
+    assert.ok(mail.some((call) => /SHIFT_CONFLICT/.test(call.text)));
+    assert.ok(mail.some((call) => /NO_SHIFT/.test(call.text)));
+    assert.strictEqual(postponeEmails().length, 0);
+    assert.strictEqual(assignmentEmails().length, 0);
   });
 }
 

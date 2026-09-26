@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Button from "../../components/ui/Button";
 import {
@@ -8,6 +8,9 @@ import {
   fetchUserProfile,
   saveUserProfile,
   updateUserRole,
+  fetchShifts,
+  fetchEmployeeShift,
+  assignEmployeeShift,
 } from "../../services/api";
 import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole, resolveActorRoleFromUsers } from "../../constants/roles";
 import { getLoggedInEmail, PORTAL_ROLE_KEY } from "../../services/auth";
@@ -31,6 +34,12 @@ const emptyForm = {
 function displayValue(value) {
   const text = String(value ?? "").trim();
   return text || "—";
+}
+
+function shiftLabel(shift) {
+  if (!shift?.name) return "";
+  const overnight = shift.crossesMidnight ? " · overnight" : "";
+  return `${shift.name} (${shift.startTime} – ${shift.endTime}${overnight})`;
 }
 
 function profileInitials(name, email) {
@@ -82,6 +91,13 @@ export default function AdminEmployeeProfile() {
       ? localStorage.getItem(PORTAL_ROLE_KEY) || ""
       : ""
   );
+  const [assignedShift, setAssignedShift] = useState(null);
+  const [shiftOptions, setShiftOptions] = useState([]);
+  const [selectedShiftId, setSelectedShiftId] = useState("");
+  const [shiftSaving, setShiftSaving] = useState(false);
+  const [shiftError, setShiftError] = useState("");
+  const [activeTasks, setActiveTasks] = useState([]);
+  const [shiftCatalogError, setShiftCatalogError] = useState("");
 
   const storedPortalRole = () =>
     typeof localStorage !== "undefined"
@@ -130,9 +146,15 @@ export default function AdminEmployeeProfile() {
     setLoading(true);
     setError("");
     try {
-      const [data, users] = await Promise.all([
+      const [data, users, shiftResult, catalogResult] = await Promise.all([
         fetchUserProfile(lookupEmail),
         fetchUsers().catch(() => []),
+        fetchEmployeeShift(lookupEmail)
+          .then((res) => ({ ok: true, res }))
+          .catch((err) => ({ ok: false, err })),
+        fetchShifts()
+          .then((res) => ({ ok: true, res }))
+          .catch((err) => ({ ok: false, err })),
       ]);
       const row = (Array.isArray(users) ? users : []).find(
         (u) => String(u.email || "").toLowerCase() === lookupEmail
@@ -160,6 +182,41 @@ export default function AdminEmployeeProfile() {
       };
       setProfile(next);
       setDraft(next);
+      const current = shiftResult.ok ? shiftResult.res?.shift || null : null;
+      setAssignedShift(current);
+      const catalog = catalogResult.ok
+        ? Array.isArray(catalogResult.res?.shifts)
+          ? catalogResult.res.shifts
+          : []
+        : [];
+      const activeOptions = catalog.filter(
+        (s) => String(s.status).toUpperCase() === "ACTIVE"
+      );
+      if (
+        current?.shiftId &&
+        !activeOptions.some((s) => s.shiftId === current.shiftId)
+      ) {
+        activeOptions.unshift({
+          ...current,
+          status: current.status || "INACTIVE",
+        });
+      }
+      setShiftOptions(activeOptions);
+      setSelectedShiftId(current?.shiftId || "");
+      setActiveTasks([]);
+      setShiftError("");
+      const loadNotes = [];
+      if (!shiftResult.ok) {
+        loadNotes.push(
+          shiftResult.err?.message || "Unable to load the assigned shift."
+        );
+      }
+      if (!catalogResult.ok) {
+        loadNotes.push(
+          catalogResult.err?.message || "Unable to load available shifts."
+        );
+      }
+      setShiftCatalogError(loadNotes.join(" "));
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to load profile");
@@ -262,6 +319,31 @@ export default function AdminEmployeeProfile() {
       setError(err?.message || "Failed to save employee.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveShift = async () => {
+    if (!lookupEmail || !selectedShiftId) {
+      setShiftError("Select a shift to assign.");
+      return;
+    }
+    setShiftSaving(true);
+    setShiftError("");
+    setActiveTasks([]);
+    setMessage("");
+    try {
+      const res = await assignEmployeeShift(lookupEmail, { shiftId: selectedShiftId });
+      setAssignedShift(res?.shift || null);
+      setMessage(
+        res?.unchanged
+          ? "This employee is already on that shift."
+          : "Employee shift updated."
+      );
+    } catch (err) {
+      setShiftError(err?.message || "Unable to assign shift.");
+      setActiveTasks(Array.isArray(err?.activeTasks) ? err.activeTasks : []);
+    } finally {
+      setShiftSaving(false);
     }
   };
 
@@ -450,6 +532,87 @@ export default function AdminEmployeeProfile() {
             </div>
           </div>
         </section>
+
+        {!isCreate ? (
+          <section className="dgv-profile-block">
+            <h2>Assigned Shift</h2>
+            <p className="dgv-profile-section-desc">
+              Assign an active company shift. If this employee has open tasks,
+              complete or reassign those tasks before changing the shift.
+            </p>
+            <div className="dgv-profile-card">
+              {shiftCatalogError ? (
+                <div style={{ ...alertError, marginTop: 0, marginBottom: 16 }}>
+                  {shiftCatalogError}
+                </div>
+              ) : null}
+              <div className="dgv-profile-grid">
+                <Field label="Current shift">
+                  {renderValue(
+                    assignedShift ? shiftLabel(assignedShift) : "Not assigned"
+                  )}
+                </Field>
+                <Field label="New shift" htmlFor="admin-profile-shift">
+                  <select
+                    id="admin-profile-shift"
+                    value={selectedShiftId}
+                    onChange={(e) => setSelectedShiftId(e.target.value)}
+                    disabled={shiftSaving}
+                  >
+                    <option value="">Select shift</option>
+                    {shiftOptions.map((s) => (
+                      <option key={s.shiftId} value={s.shiftId}>
+                        {shiftLabel(s)}
+                        {String(s.status || "").toUpperCase() === "INACTIVE"
+                          ? " (inactive)"
+                          : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <Button
+                  onClick={saveShift}
+                  loading={shiftSaving}
+                  disabled={
+                    !selectedShiftId ||
+                    selectedShiftId === assignedShift?.shiftId
+                  }
+                >
+                  Assign Shift
+                </Button>
+              </div>
+              {shiftError || activeTasks.length ? (
+                <div style={{ ...alertError, marginTop: 16, marginBottom: 0 }}>
+                  <div>
+                    {shiftError ||
+                      "This employee's shift cannot be changed while they have active tasks."}
+                  </div>
+                  {activeTasks.length ? (
+                    <>
+                      <p style={{ margin: "8px 0 6px" }}>
+                        Complete or reassign these tasks first:
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {activeTasks.map((task) => (
+                          <li key={task.taskId}>
+                            <Link
+                              to={`/admin/tasks/${encodeURIComponent(task.taskId)}`}
+                            >
+                              {task.title || task.taskId}
+                            </Link>
+                            {task.status ? ` · ${task.status}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
 
         <section className="dgv-profile-block">
           <h2>Account / Access Information</h2>

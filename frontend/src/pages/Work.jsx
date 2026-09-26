@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
-import { fetchTaskList, updateTask } from "../services/api";
-import { canAccessAdmin } from "../services/auth";
+import { fetchTaskList } from "../services/api";
 import {
   formatTaskDateTime,
   formatTaskDuration,
   getTaskTiming,
   getTaskZone,
-  employeeCanChangeStatus,
-  priorityLabel,
   applyClientZoneFilter,
   countZones,
   emptyZoneMessage,
   taskMatchesSearch,
+  priorityLabel,
+  statusLabel,
 } from "../utils/taskStatus";
 import { displayNameFromEmail } from "../utils/meetings";
 import ZoneBadge from "../components/ZoneBadge";
@@ -25,16 +25,21 @@ import {
   buttonPrimary,
 } from "../theme";
 
-const STATUSES = ["TODO", "IN_PROGRESS", "REVIEW", "DONE"];
 const ZONE_KEY = "dgv.mytasks.zone";
 const SEARCH_KEY = "dgv.mytasks.search";
+const MY_TASK_ZONES = ["GREEN", "ORANGE", "RED", "COMPLETED"];
 
-function readStored(key, fallback) {
+function readStored(key, fallback = "") {
   try {
     return sessionStorage.getItem(key) || fallback;
   } catch {
     return fallback;
   }
+}
+
+function normalizeZone(value) {
+  const key = String(value || "").trim().toUpperCase();
+  return MY_TASK_ZONES.includes(key) ? key : "GREEN";
 }
 
 export default function Work() {
@@ -47,7 +52,7 @@ export default function Work() {
     COMPLETED: 0,
   });
   const [loading, setLoading] = useState(true);
-  const [zone, setZone] = useState(() => readStored(ZONE_KEY, "ALL"));
+  const [zone, setZone] = useState(() => normalizeZone(readStored(ZONE_KEY)));
   const [search, setSearch] = useState(() => readStored(SEARCH_KEY, ""));
   const [searchInput, setSearchInput] = useState(() =>
     readStored(SEARCH_KEY, "")
@@ -55,10 +60,11 @@ export default function Work() {
 
   const load = useCallback(() => {
     setLoading(true);
+    const selectedZone = normalizeZone(zone);
     return fetchTaskList({
       mine: "true",
       ...(search.trim() ? { q: search.trim() } : {}),
-      ...(zone && zone !== "ALL" ? { zone } : {}),
+      zone: selectedZone,
     })
       .then((list) => {
         const raw = Array.isArray(list.tasks) ? list.tasks : [];
@@ -66,7 +72,7 @@ export default function Work() {
         const myEmail =
           scoped.find((t) => t.myAssignment)?.myAssignment?.email || "";
         setZoneCounts(list.zoneCounts || countZones(scoped, myEmail));
-        const filtered = applyClientZoneFilter(scoped, zone, myEmail);
+        const filtered = applyClientZoneFilter(scoped, selectedZone, myEmail);
         filtered.sort((left, right) => {
           const leftMs = Date.parse(left.createdAt || 0);
           const rightMs = Date.parse(right.createdAt || 0);
@@ -90,8 +96,7 @@ export default function Work() {
 
   useEffect(() => {
     try {
-      if (!zone || zone === "ALL") sessionStorage.removeItem(ZONE_KEY);
-      else sessionStorage.setItem(ZONE_KEY, zone);
+      sessionStorage.setItem(ZONE_KEY, normalizeZone(zone));
       if (!search) sessionStorage.removeItem(SEARCH_KEY);
       else sessionStorage.setItem(SEARCH_KEY, search);
     } catch {
@@ -99,40 +104,8 @@ export default function Work() {
     }
   }, [zone, search]);
 
-  const changeStatus = async (task, status) => {
-    const mine = task.myAssignment;
-    if (
-      !canAccessAdmin() &&
-      !employeeCanChangeStatus(mine || task, task.dueDate)
-    ) {
-      alert("Red Zone tasks can only be updated by an administrator.");
-      return;
-    }
-    if (status === "DONE") {
-      const ok = window.confirm(
-        "Mark this task as completed? Once completed it will stay completed and will not move to Orange or Red."
-      );
-      if (!ok) return;
-    }
-    if (mine && String(mine.status).toUpperCase() === "DONE" && status !== "DONE") {
-      alert("Completed assignments cannot be reopened.");
-      return;
-    }
-    try {
-      await updateTask({
-        taskId: task.taskId,
-        projectId: task.projectId,
-        status,
-        assignmentEmail: mine?.email,
-      });
-      load();
-    } catch (err) {
-      alert(err.message || "Failed to update task status.");
-    }
-  };
-
   const clearFilters = () => {
-    setZone("ALL");
+    setZone("GREEN");
     setSearch("");
     setSearchInput("");
   };
@@ -160,17 +133,17 @@ export default function Work() {
 
         <label style={formLabel}>Zone</label>
         <ZoneFilter
-          value={zone}
-          onChange={setZone}
+          value={normalizeZone(zone)}
+          onChange={(next) => setZone(normalizeZone(next))}
+          includeAll={false}
           counts={{
-            ALL: zoneCounts.ALL,
             GREEN: zoneCounts.GREEN,
             ORANGE: zoneCounts.ORANGE,
             RED: zoneCounts.RED,
             COMPLETED: zoneCounts.COMPLETED,
           }}
         />
-        {zone !== "ALL" || searchInput.trim() ? (
+        {normalizeZone(zone) !== "GREEN" || searchInput.trim() ? (
           <button
             type="button"
             onClick={clearFilters}
@@ -189,19 +162,13 @@ export default function Work() {
       </div>
 
       {tasks.length === 0 ? (
-        <p style={{ color: colors.textMuted }}>
-          {search || zone !== "ALL"
-            ? emptyZoneMessage(zone)
-            : "No tasks assigned yet. Your admin will assign tasks from Manage Tasks."}
-        </p>
+        <p style={{ color: colors.textMuted }}>{emptyZoneMessage(zone)}</p>
       ) : (
         tasks.map((task) => {
           const mine = task.myAssignment || task.matchedAssignments?.[0];
           const status = mine?.status || task.status || "TODO";
           const taskZone = mine?.zone || getTaskZone(task);
           const timing = mine?.timing || getTaskTiming(task);
-          const allowStatusChange =
-            canAccessAdmin() || employeeCanChangeStatus(mine || task, task.dueDate);
           const zoneClass =
             String(status).toUpperCase() === "DONE"
               ? ""
@@ -211,9 +178,17 @@ export default function Work() {
                   ? " is-orange"
                   : "";
           return (
-            <div
+            <Link
               key={task.taskId}
+              to={`/work/${task.taskId}`}
               className={`dgv-task-card${zoneClass}`}
+              aria-label={`View task ${task.title || task.taskId}`}
+              style={{
+                display: "block",
+                textDecoration: "none",
+                color: "inherit",
+                cursor: "pointer",
+              }}
             >
               <h3 className="dgv-task-card__title">{task.title}</h3>
               {task.description ? (
@@ -248,6 +223,9 @@ export default function Work() {
                   <strong>Priority</strong> {priorityLabel(task.priority)}
                 </span>
                 <span>
+                  <strong>Status</strong> {statusLabel(status)}
+                </span>
+                <span>
                   <strong>Deadline</strong>{" "}
                   {task.dueDate ? formatTaskDateTime(task.dueDate) : "—"}
                 </span>
@@ -267,29 +245,7 @@ export default function Work() {
                   </span>
                 ) : null}
               </div>
-              <div className="dgv-task-card__actions">
-                <select
-                  className="dgv-select"
-                  value={status}
-                  onChange={(e) => changeStatus(task, e.target.value)}
-                  style={{ maxWidth: 240, marginBottom: 0 }}
-                  disabled={
-                    String(status).toUpperCase() === "DONE" || !allowStatusChange
-                  }
-                  aria-label="Update task status"
-                >
-                  {STATUSES.map((s) => (
-                    <option
-                      key={s}
-                      value={s}
-                      disabled={!allowStatusChange}
-                    >
-                      {s.replace("_", " ")}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            </Link>
           );
         })
       )}

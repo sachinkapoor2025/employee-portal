@@ -1,4 +1,4 @@
-import { api, fetchTaskById, isTokenExpired } from "./api";
+import { api, fetchTaskById, getApiBaseUrl, isTokenExpired } from "./api";
 
 function tokenWithExp(expSecondsFromNow) {
   const payload = {
@@ -77,6 +77,30 @@ describe("api auth error handling", () => {
 
     expect(fetch).not.toHaveBeenCalled();
     expect(replace).toHaveBeenCalledWith("/login");
+  });
+
+  test("does not present a 404 as a local API error", async () => {
+    fetch.mockResolvedValue(
+      jsonResponse(404, { error: "Not found on local API" })
+    );
+
+    await expect(api("/employees/priya@mydgv.com/shift", "GET")).rejects.toMatchObject({
+      status: 404,
+      message: "This API endpoint is not available on the deployed backend.",
+    });
+  });
+});
+
+describe("getApiBaseUrl", () => {
+  const deployed = "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
+
+  test("uses the deployed AWS API instead of localhost", () => {
+    expect(getApiBaseUrl("http://localhost:3001")).toBe(deployed);
+    expect(getApiBaseUrl("http://127.0.0.1:3001")).toBe(deployed);
+  });
+
+  test("keeps a non-local API URL", () => {
+    expect(getApiBaseUrl(deployed)).toBe(deployed);
   });
 });
 

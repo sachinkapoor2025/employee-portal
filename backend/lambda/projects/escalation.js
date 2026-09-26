@@ -505,6 +505,47 @@ function worstOpenZone(assignments, dueDate, nowMs = Date.now()) {
   return worst;
 }
 
+const BLOCKER_ACTIVE = "ACTIVE";
+const BLOCKER_RESOLVED = "RESOLVED";
+const ASSIGNMENT_BLOCKER_ATTRS = [
+  "blockerStatus",
+  "blockerRemark",
+  "blockerReportedAt",
+  "blockerResolvedAt",
+  "blockerResolvedBy",
+];
+
+function normalizeBlockerStatus(value) {
+  const status = String(value || "").trim().toUpperCase();
+  if (status === BLOCKER_ACTIVE || status === BLOCKER_RESOLVED) return status;
+  return null;
+}
+
+function assignmentHasBlockerFields(assignment) {
+  if (!assignment || typeof assignment !== "object") return false;
+  return ASSIGNMENT_BLOCKER_ATTRS.some((key) =>
+    Object.prototype.hasOwnProperty.call(assignment, key)
+  );
+}
+
+function assignmentBlockerFields(assignment = {}, options = {}) {
+  if (options.omitIfAbsent && !assignmentHasBlockerFields(assignment)) {
+    return {};
+  }
+  return {
+    blockerStatus: normalizeBlockerStatus(assignment.blockerStatus),
+    blockerRemark:
+      assignment.blockerRemark == null || assignment.blockerRemark === ""
+        ? null
+        : String(assignment.blockerRemark),
+    blockerReportedAt: assignment.blockerReportedAt || null,
+    blockerResolvedAt: assignment.blockerResolvedAt || null,
+    blockerResolvedBy: assignment.blockerResolvedBy
+      ? normalizeEmail(assignment.blockerResolvedBy)
+      : null,
+  };
+}
+
 function decorateAssignment(assignment, dueDate, nowMs) {
   const view = computeAssignmentView(assignment, dueDate, nowMs);
   return {
@@ -514,6 +555,8 @@ function decorateAssignment(assignment, dueDate, nowMs) {
     completedAt: assignment.completedAt || null,
     completedDate: assignment.completedDate || null,
     completedZone: isComplete(view.status) ? view.zone : null,
+    completionRemark: assignment.completionRemark || null,
+    ...assignmentBlockerFields(assignment),
     highestZone: maxZone(assignment.highestZone, view.zone),
     zone: view.zone,
     displayZone: view.displayZone,
@@ -813,6 +856,11 @@ module.exports = {
   synthesizeAssignments,
   deriveParentStatus,
   worstOpenZone,
+  BLOCKER_ACTIVE,
+  BLOCKER_RESOLVED,
+  ASSIGNMENT_BLOCKER_ATTRS,
+  normalizeBlockerStatus,
+  assignmentBlockerFields,
   decorateAssignment,
   decorateTask,
   taskAssignedTo,

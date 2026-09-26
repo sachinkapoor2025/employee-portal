@@ -970,6 +970,7 @@ Resources:
           TASK_SCHEDULED_ASSIGN_LEASE_MS: "180000"
           TASK_IMPORT_HOLD_RETENTION_DAYS: !Ref TaskImportHoldRetentionDays
           ATTENDANCE_TABLE: !Ref AttendanceTable
+          ACTIVITY_TABLE: !Ref ActivityLogTable
           COMPANY_TIMEZONE: Asia/Kolkata
           COMPANY_TZ_OFFSET: "+05:30"
           TASK_ORANGE_MS: "86400000"
@@ -989,6 +990,8 @@ Resources:
             TableName: !Ref UserAccessTable
         - DynamoDBReadPolicy:
             TableName: !Ref AttendanceTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ActivityLogTable
         - S3CrudPolicy:
             BucketName: !Ref ProfileImagesBucket
         - S3WritePolicy:
@@ -1008,6 +1011,42 @@ Resources:
                 - !Sub "arn:aws:s3:::${DocumentsBucket}/task-imports/tmp/*"
                 - !Sub "arn:aws:s3:::${DocumentsBucket}/task-imports/hold/*"
       Events:
+        MeActivityGetApi:
+          Type: Api
+          Properties:
+            Path: /me/activity
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ShiftsGetApi:
+          Type: Api
+          Properties:
+            Path: /shifts
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ShiftsPostApi:
+          Type: Api
+          Properties:
+            Path: /shifts
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        ShiftsPatchApi:
+          Type: Api
+          Properties:
+            Path: /shifts/{shiftId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        EmployeeShiftGetApi:
+          Type: Api
+          Properties:
+            Path: /employees/{email}/shift
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        EmployeeShiftPutApi:
+          Type: Api
+          Properties:
+            Path: /employees/{email}/shift
+            Method: PUT
+            RestApiId: !Ref ApiGateway
         ProjectsGetApi:
           Type: Api
           Properties:
@@ -1115,6 +1154,18 @@ Resources:
           Properties:
             Path: /tasks/{taskId}/activity
             Method: GET
+            RestApiId: !Ref ApiGateway
+        TaskBlockerPostApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/blocker
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        TaskBlockerResolvePostApi:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/blocker/resolve
+            Method: POST
             RestApiId: !Ref ApiGateway
         TaskAttachmentsGetApi:
           Type: Api

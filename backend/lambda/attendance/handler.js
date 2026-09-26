@@ -10,14 +10,23 @@ const {
   ScanCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { isSuperAdminRole } = require("../common/roles");
+const { companyTodayKey } = require("../common/shiftWindows");
 const {
-  companyTodayKey,
-  resolveShiftTimes,
-} = require("../common/shiftWindows");
+  resolveWorkPeriod,
+  workPeriodEligibility,
+  buildWorkingAttendanceShift,
+  loadCurrentAssignedShift,
+} = require("./assignedShift");
+const {
+  findConfirmedLeaveCoveringDate,
+  isEffectiveLeaveLock,
+  overlayStatusForConfirmedLeave,
+} = require("../leave/materialize");
 
 let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
+let nowMs = () => Date.now();
 
 const EMPLOYEE_STATUSES = new Set([
   "Working",
@@ -25,7 +34,6 @@ const EMPLOYEE_STATUSES = new Set([
   "Holiday",
   "WeeklyOff",
 ]);
-const DAY_TYPES = new Set(["Full Day", "Half Day"]);
 
 function isValidDateKey(key) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(key || ""));
@@ -81,6 +89,21 @@ function toPublicRecord(item) {
     sessionStatus: item.sessionStatus || null,
     createdAt: item.createdAt || null,
     updatedAt: item.updatedAt || null,
+    shiftId: item.shiftId || null,
+    shiftName: item.shiftName || null,
+    expectedStartTime: item.expectedStartTime || null,
+    expectedEndTime: item.expectedEndTime || null,
+    graceMinutes: item.graceMinutes ?? null,
+    crossesMidnight: item.crossesMidnight ?? null,
+    workPeriod: item.workPeriod || null,
+    timeSource: item.timeSource || null,
+    attendanceSubmittedAt: item.attendanceSubmittedAt || null,
+    timingStatus: item.timingStatus || null,
+    lateMinutes: item.lateMinutes ?? null,
+    actualCheckInTime: item.actualCheckInTime || null,
+    actualCheckOutTime: item.actualCheckOutTime || null,
+    workedBeyondShift: item.workedBeyondShift ?? null,
+    workedBeyondReason: item.workedBeyondReason || null,
   };
 }
 
@@ -226,6 +249,21 @@ async function attendanceExemptResponse(email) {
 
 function isEmployeeLocked(item) {
   return Boolean(item?.submittedAt);
+}
+
+const WORKED_BEYOND_REASON_MAX = 500;
+
+function normalizeWorkedBeyondReason(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  return text.slice(0, WORKED_BEYOND_REASON_MAX);
+}
+
+function isWorkedBeyond(actualOutIso, expectedEndIso) {
+  const actual = Date.parse(actualOutIso);
+  const expected = Date.parse(expectedEndIso);
+  if (!Number.isFinite(actual) || !Number.isFinite(expected)) return false;
+  return actual > expected;
 }
 
 function isConditionalCheckFailed(err) {
@@ -415,50 +453,59 @@ exports.handler = async (event) => {
 
       const body = JSON.parse(event.body || "null");
 
-      // ---- Check-In ----
+      // ---- Check-In (server time → actualCheckInTime) ----
       if (body && !Array.isArray(body) && body.action === "checkIn") {
-        const date = body.date;
-        const checkInTime = body.checkInTime;
-        if (!date || !checkInTime) {
-          return json(400, { error: "date and checkInTime are required" });
+        const submittedMs = nowMs();
+        const nowIso = new Date(submittedMs).toISOString();
+        const todayKey = companyTodayKey(new Date(submittedMs));
+        if (body.date && isValidDateKey(body.date) && body.date !== todayKey) {
+          return json(400, { error: "Attendance can only be punched for today." });
         }
 
-        const existing = await getDayRecord(user.email, date);
-        if (isEmployeeLocked(existing)) {
-          return json(409, {
-            error: "Today's attendance has already been submitted.",
-            attendance: toPublicRecord(existing),
+        const existing = await getDayRecord(user.email, todayKey);
+        if (!existing || existing.status !== "Working") {
+          return json(400, {
+            error: "Submit Working attendance before checking in.",
           });
         }
-        if (existing?.checkInTime && !existing?.checkOutTime) {
+        if (existing.actualCheckInTime) {
           return json(200, {
             message: "Already checked in",
             attendance: toPublicRecord(existing),
           });
         }
 
-        const profile = await getProfile(user.email);
-        const nowIso = new Date().toISOString();
-        const attendanceId = existing?.attendanceId || randomUUID();
+        const assignment = await loadCurrentAssignedShift(
+          ddb,
+          process.env.WORK_TABLE,
+          user.email
+        );
+        if (!assignment && !existing.shiftId) {
+          return json(400, {
+            error:
+              "No shift is assigned. Ask an admin to assign your shift before checking in.",
+          });
+        }
 
         const item = {
+          ...existing,
           PK: user.email,
-          SK: date,
+          SK: todayKey,
           email: user.email,
-          date,
-          attendanceId,
-          employeeId: profile.employeeId,
-          employeeName: profile.employeeName,
+          date: todayKey,
           status: "Working",
           sessionStatus: "Active",
-          checkInTime,
-          checkOutTime: null,
-          workingTime: null,
-          workingSeconds: null,
-          hours: null,
-          createdAt: existing?.createdAt || nowIso,
+          actualCheckInTime: nowIso,
+          checkInTime: existing.checkInTime,
+          checkOutTime: existing.checkOutTime,
+          expectedStartTime: existing.expectedStartTime,
+          expectedEndTime: existing.expectedEndTime,
           updatedAt: nowIso,
-          ...buildDateKeys(date, checkInTime, user.email),
+          ...buildDateKeys(
+            todayKey,
+            existing.checkInTime || nowIso,
+            user.email
+          ),
         };
 
         await putRecord(item);
@@ -469,57 +516,65 @@ exports.handler = async (event) => {
         });
       }
 
-      // ---- Check-Out ----
+      // ---- Check-Out (server time → actualCheckOutTime; allowed after submittedAt) ----
       if (body && !Array.isArray(body) && body.action === "checkOut") {
-        const date = body.date;
-        const checkOutTime = body.checkOutTime;
-        if (!date || !checkOutTime) {
-          return json(400, { error: "date and checkOutTime are required" });
+        const submittedMs = nowMs();
+        const nowIso = new Date(submittedMs).toISOString();
+        const todayKey = companyTodayKey(new Date(submittedMs));
+        if (body.date && isValidDateKey(body.date) && body.date !== todayKey) {
+          return json(400, { error: "Attendance can only be punched for today." });
         }
 
-        const existing = await getDayRecord(user.email, date);
-        if (isEmployeeLocked(existing)) {
-          return json(409, {
-            error: "Today's attendance has already been submitted.",
-            attendance: toPublicRecord(existing),
+        const existing = await getDayRecord(user.email, todayKey);
+        if (!existing || existing.status !== "Working") {
+          return json(400, {
+            error: "Only Working attendance can be checked out.",
           });
         }
-        if (!existing?.checkInTime) {
+        if (!existing.actualCheckInTime) {
           return json(400, { error: "Cannot check out before check-in" });
         }
-        if (existing.checkOutTime) {
+        if (existing.actualCheckOutTime) {
           return json(200, {
             message: "Already checked out",
             attendance: toPublicRecord(existing),
           });
         }
 
-        const profile = await getProfile(user.email);
-        const { workingSeconds, workingTime, hours } = formatWorkingTime(
-          existing.checkInTime,
-          checkOutTime
+        const workedBeyondShift = isWorkedBeyond(
+          nowIso,
+          existing.expectedEndTime
         );
-        const nowIso = new Date().toISOString();
+        const workedBeyondReason = workedBeyondShift
+          ? normalizeWorkedBeyondReason(body.workedBeyondReason)
+          : null;
 
         const item = {
           ...existing,
           PK: user.email,
-          SK: date,
+          SK: todayKey,
           email: user.email,
-          date,
-          attendanceId: existing.attendanceId || randomUUID(),
-          employeeId: existing.employeeId || profile.employeeId,
-          employeeName: existing.employeeName || profile.employeeName,
-          status: existing.status || "Working",
+          date: todayKey,
+          status: "Working",
           sessionStatus: "Checked Out",
+          actualCheckInTime: existing.actualCheckInTime,
+          actualCheckOutTime: nowIso,
+          workedBeyondShift,
+          workedBeyondReason,
           checkInTime: existing.checkInTime,
-          checkOutTime,
-          workingTime,
-          workingSeconds,
-          hours,
-          createdAt: existing.createdAt || nowIso,
+          checkOutTime: existing.checkOutTime,
+          expectedStartTime: existing.expectedStartTime,
+          expectedEndTime: existing.expectedEndTime,
+          workingTime: existing.workingTime,
+          workingSeconds: existing.workingSeconds,
+          hours: existing.hours,
+          reason: existing.reason,
           updatedAt: nowIso,
-          ...buildDateKeys(date, existing.checkInTime, user.email),
+          ...buildDateKeys(
+            todayKey,
+            existing.checkInTime || existing.actualCheckInTime,
+            user.email
+          ),
         };
 
         await putRecord(item);
@@ -538,9 +593,10 @@ exports.handler = async (event) => {
         });
       }
 
-      const todayKey = companyTodayKey();
+      const submittedMs = nowMs();
+      const nowIso = new Date(submittedMs).toISOString();
+      const todayKey = companyTodayKey(new Date(submittedMs));
       const profile = await getProfile(user.email);
-      const nowIso = new Date().toISOString();
 
       for (const entry of attendanceData) {
         if (entry.date && isValidDateKey(entry.date) && entry.date !== todayKey) {
@@ -555,16 +611,34 @@ exports.handler = async (event) => {
         }
 
         const existing = await getDayRecord(user.email, todayKey);
+        const working = status === "Working";
+        if (working) {
+          if (isEffectiveLeaveLock(existing)) {
+            return json(409, {
+              error:
+                "Working attendance is not allowed because approved leave or Planned Off covers today.",
+              attendance: toPublicRecord(existing),
+            });
+          }
+          const covering = await findConfirmedLeaveCoveringDate(
+            ddb,
+            process.env.WORK_TABLE,
+            user.email,
+            todayKey
+          );
+          if (covering) {
+            return json(409, {
+              error:
+                "Working attendance is not allowed because approved leave or Planned Off covers today.",
+            });
+          }
+        }
         if (isEmployeeLocked(existing)) {
           return json(409, {
             error: "Today's attendance has already been submitted.",
             attendance: toPublicRecord(existing),
           });
         }
-
-        const working = status === "Working";
-        const dayType = working ? String(entry.dayType || "").trim() : null;
-        const shift = working ? String(entry.shift || "").trim() : null;
         const reason =
           status === "Leave"
             ? "Leave"
@@ -572,27 +646,50 @@ exports.handler = async (event) => {
               ? "Holiday"
               : null;
 
-        let assignedTimes = null;
+        let snapshot = null;
         if (working) {
-          if (!DAY_TYPES.has(dayType)) {
+          const workPeriod = resolveWorkPeriod(entry);
+          if (!workPeriod) {
             return json(400, {
-              error: "Please select Full Day or Half Day.",
+              error: "Please select Full Day, First Half, or Second Half.",
             });
           }
-          assignedTimes = resolveShiftTimes(dayType, shift, todayKey);
-          if (!assignedTimes) {
+          const assignment = await loadCurrentAssignedShift(
+            ddb,
+            process.env.WORK_TABLE,
+            user.email
+          );
+          if (!assignment) {
             return json(400, {
-              error: "Please select a valid shift.",
+              error:
+                "No shift is assigned. Ask an admin to assign your shift before marking Working attendance.",
+            });
+          }
+          const eligibility = workPeriodEligibility(assignment, workPeriod);
+          if (!eligibility.ok) {
+            return json(400, { error: eligibility.error });
+          }
+          snapshot = buildWorkingAttendanceShift(assignment, {
+            dateKey: todayKey,
+            workPeriod,
+            submittedMs,
+          });
+          if (!snapshot) {
+            return json(400, {
+              error: "Assigned shift times are invalid.",
             });
           }
         }
 
+        // Compatibility only: expected window for scheduler fallback, not punches.
         const checkInTime = working
-          ? assignedTimes.checkInTime
+          ? snapshot.checkInTime
           : existing?.checkInTime || null;
         const checkOutTime = working
-          ? assignedTimes.checkOutTime
+          ? snapshot.checkOutTime
           : existing?.checkOutTime || null;
+        const dayType = working ? snapshot.dayType : null;
+        const shift = working ? snapshot.shift : null;
 
         let sessionStatus = existing?.sessionStatus || null;
         if (working) {
@@ -632,6 +729,21 @@ exports.handler = async (event) => {
           hours,
           createdAt: existing?.createdAt || nowIso,
           updatedAt: nowIso,
+          ...(working
+            ? {
+                shiftId: snapshot.shiftId,
+                shiftName: snapshot.shiftName,
+                expectedStartTime: snapshot.expectedStartTime,
+                expectedEndTime: snapshot.expectedEndTime,
+                graceMinutes: snapshot.graceMinutes,
+                crossesMidnight: snapshot.crossesMidnight,
+                workPeriod: snapshot.workPeriod,
+                timeSource: snapshot.timeSource,
+                attendanceSubmittedAt: snapshot.attendanceSubmittedAt,
+                timingStatus: snapshot.timingStatus,
+                lateMinutes: snapshot.lateMinutes,
+              }
+            : {}),
           ...buildDateKeys(
             todayKey,
             checkInTime || nowIso,
@@ -701,6 +813,21 @@ exports.handler = async (event) => {
         attendanceId: item.attendanceId || null,
         employeeId: item.employeeId || null,
         employeeName: item.employeeName || null,
+        shiftId: item.shiftId || null,
+        shiftName: item.shiftName || null,
+        expectedStartTime: item.expectedStartTime || null,
+        expectedEndTime: item.expectedEndTime || null,
+        graceMinutes: item.graceMinutes ?? null,
+        crossesMidnight: item.crossesMidnight ?? null,
+        workPeriod: item.workPeriod || null,
+        timeSource: item.timeSource || null,
+        attendanceSubmittedAt: item.attendanceSubmittedAt || null,
+        timingStatus: item.timingStatus || null,
+        lateMinutes: item.lateMinutes ?? null,
+        actualCheckInTime: item.actualCheckInTime || null,
+        actualCheckOutTime: item.actualCheckOutTime || null,
+        workedBeyondShift: item.workedBeyondShift ?? null,
+        workedBeyondReason: item.workedBeyondReason || null,
       }));
 
       // Overlay Planned Off / Approved Leave so calendar never shows those days as Absent
@@ -722,14 +849,11 @@ exports.handler = async (event) => {
           });
           const inRange = (key) => key >= startDate && key <= endDate;
           for (const leave of leaveRes.Items || []) {
+            const overlayStatus = overlayStatusForConfirmedLeave(leave);
+            if (!overlayStatus) continue;
             const from = leave.fromDate || leave.startDate;
             const to = leave.toDate || leave.endDate || from;
             if (!from || !to) continue;
-            const planned =
-              leave.status === "PLANNED_OFF" || leave.category === "PLANNED_OFF";
-            const approved = String(leave.status || "").toUpperCase() === "APPROVED";
-            if (!planned && !approved) continue;
-            const overlayStatus = planned ? "PlannedOff" : "Leave";
             let t = Date.parse(`${from}T00:00:00Z`);
             const end = Date.parse(`${to}T00:00:00Z`);
             if (!Number.isFinite(t) || !Number.isFinite(end)) continue;
@@ -766,4 +890,8 @@ exports.handler = async (event) => {
 
 exports.setDocumentClientForTests = (client) => {
   ddb = client;
+};
+
+exports.setNowMsForTests = (fn) => {
+  nowMs = typeof fn === "function" ? fn : () => Date.now();
 };

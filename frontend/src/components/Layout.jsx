@@ -28,6 +28,8 @@ import {
   FileText,
   Video,
   FolderKanban,
+  Clock,
+  Construction,
 } from "lucide-react";
 import {
   logout,
@@ -55,6 +57,7 @@ import Footer from "./Footer";
 const EMPLOYEE_NAV = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Attendance", path: "/attendance", icon: CalendarCheck },
+  { label: "My Activity", path: "/my-activity", icon: Activity },
   { label: "Training", path: "/training", icon: GraduationCap },
   { label: "My Tasks", path: "/work", icon: ListTodo },
   { label: "Leave", path: "/leave", icon: CalendarDays },
@@ -76,12 +79,16 @@ const ADMIN_NAV_SECTIONS = [
   },
   {
     title: "People",
-    items: [{ label: "Employees", path: "/admin/employees", icon: Users }],
+    items: [
+      { label: "Employees", path: "/admin/employees", icon: Users },
+      { label: "Shifts", path: "/admin/shifts", icon: Clock },
+    ],
   },
   {
     title: "Work Management",
     items: [
       { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
+      { label: "🚧 Blockers", path: "/admin/blockers", icon: Construction },
       { label: "Projects", path: "/admin/projects", icon: FolderKanban },
       {
         label: "Attendance",

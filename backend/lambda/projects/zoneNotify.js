@@ -1,4 +1,5 @@
 const escalation = require("./escalation");
+const { buildProfessionalEmail } = require("../common/emailLayout");
 
 const TZ = () => process.env.COMPANY_TIMEZONE || "Asia/Kolkata";
 
@@ -15,14 +16,6 @@ function formatWhen(value, timeZone = TZ()) {
     minute: "2-digit",
     hour12: true,
   }).format(new Date(ms));
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function orangePeriodLabel() {
@@ -47,15 +40,6 @@ function textField(label, value) {
   const text = optionalText(value);
   if (!text) return "";
   return `${label}:\n${text}\n\n`;
-}
-
-function htmlRow(label, value) {
-  const text = optionalText(value);
-  if (!text) return "";
-  return `<tr>
-      <td style="padding:8px 0;color:#6b7280;vertical-align:top;width:160px">${escapeHtml(label)}</td>
-      <td style="padding:8px 0;color:#111827;font-weight:600;white-space:pre-wrap">${escapeHtml(text)}</td>
-    </tr>`;
 }
 
 function redAdminNotifyCopy({
@@ -103,32 +87,33 @@ function redAdminNotifyCopy({
     `ACTION REQUIRED\n\n${action}` +
     (link ? `\n\nView Task:\n${link}` : "");
 
-  const html =
-    `<div style="font-family:Arial,sans-serif;color:#111827;max-width:640px">` +
-    `<div style="background:#991b1b;color:#fff;padding:16px 20px;border-radius:8px 8px 0 0">` +
-    `<h1 style="margin:0;font-size:20px">🔴 TASK ENTERED RED ZONE</h1>` +
-    `</div>` +
-    `<div style="border:1px solid #fecaca;border-top:none;padding:20px;border-radius:0 0 8px 8px">` +
-    `<p style="margin:0 0 16px;color:#4b5563;line-height:1.5">${escapeHtml(intro)}</p>` +
-    `<h2 style="margin:0 0 12px;font-size:14px;letter-spacing:0.04em;color:#991b1b">TASK DETAILS</h2>` +
-    `<table style="width:100%;border-collapse:collapse;font-size:14px">` +
-    htmlRow("Task", taskName) +
-    htmlRow("Project", projectName) +
-    htmlRow("Assigned To", person) +
-    htmlRow("Employee Email", employeeEmail) +
-    htmlRow("Current Status", status) +
-    htmlRow("Original Deadline", deadlineLabel) +
-    htmlRow("Red Zone Started", redStartedLabel) +
-    htmlRow("Overdue", overdueLabel) +
-    htmlRow("Priority", priority) +
-    htmlRow("Description", description) +
-    `</table>` +
-    `<h2 style="margin:20px 0 8px;font-size:14px;letter-spacing:0.04em;color:#991b1b">ACTION REQUIRED</h2>` +
-    `<p style="margin:0 0 16px;color:#4b5563;line-height:1.5">${escapeHtml(action)}</p>` +
-    (link
-      ? `<p style="margin:0"><a href="${escapeHtml(link)}" style="display:inline-block;background:#991b1b;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:700">VIEW TASK</a></p>`
-      : "") +
-    `</div></div>`;
+  const html = buildProfessionalEmail({
+    variant: "urgent",
+    title: "🔴 TASK ENTERED RED ZONE",
+    intro,
+    sections: [
+      {
+        heading: "TASK DETAILS",
+        rows: [
+          { label: "Task", value: taskName },
+          { label: "Project", value: projectName },
+          { label: "Assigned To", value: person },
+          { label: "Employee Email", value: employeeEmail },
+          { label: "Current Status", value: status },
+          { label: "Original Deadline", value: deadlineLabel },
+          { label: "Red Zone Started", value: redStartedLabel },
+          { label: "Overdue", value: overdueLabel },
+          { label: "Priority", value: priority },
+          { label: "Description", value: description },
+        ],
+      },
+      {
+        heading: "ACTION REQUIRED",
+        body: action,
+      },
+    ],
+    cta: link ? { href: link, label: "VIEW TASK" } : undefined,
+  });
 
   return {
     type: "TASK_RED_ADMIN",

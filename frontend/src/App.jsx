@@ -27,6 +27,7 @@ import ManageUsers from "./pages/Admin/ManageUsers";
 import AdminEmployeeProfile from "./pages/Admin/AdminEmployeeProfile";
 import ManageTasks from "./pages/Admin/ManageTasks";
 import ManageProjects from "./pages/Admin/ManageProjects";
+import Blockers from "./pages/Admin/Blockers";
 import TaskImportHistory from "./pages/Admin/TaskImportHistory";
 import TaskImportBatch from "./pages/Admin/TaskImportBatch";
 import TaskDetails from "./pages/Admin/TaskDetails";
@@ -40,7 +41,9 @@ import AttendanceActivity from "./pages/Admin/AttendanceActivity";
 import EmployeeTracking from "./pages/Admin/EmployeeTracking";
 import EmployeeTrackingHub from "./pages/Admin/EmployeeTrackingHub";
 import ComingSoon from "./pages/Admin/ComingSoon";
+import ManageShifts from "./pages/Admin/ManageShifts";
 import Leave from "./pages/Leave";
+import MyActivity from "./pages/MyActivity";
 import SoftwareCenter from "./pages/SoftwareCenter";
 import ConsentGate from "./components/ConsentGate";
 import ActivityTracker from "./components/ActivityTracker";
@@ -112,6 +115,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Attendance />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/my-activity"
+          element={
+            <RequireAuth>
+              <MyActivity />
             </RequireAuth>
           }
         />
@@ -268,6 +279,14 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/shifts"
+          element={
+            <RequireAuth adminOnly>
+              <ManageShifts />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/admin/employees/new"
           element={
             <RequireAuth adminOnly>
@@ -348,6 +367,14 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ManageTasks />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/blockers"
+          element={
+            <RequireAuth adminOnly>
+              <Blockers />
             </RequireAuth>
           }
         />

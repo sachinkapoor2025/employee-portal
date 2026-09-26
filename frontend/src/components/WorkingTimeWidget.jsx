@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Clock } from "lucide-react";
 import { useWorkingTime } from "../hooks/useWorkingTime";
+import Button from "./ui/Button";
 
 const STATUS_BADGE = {
   active: "dgv-badge dgv-badge--success",
@@ -8,7 +10,24 @@ const STATUS_BADGE = {
 };
 
 export default function WorkingTimeWidget() {
-  const { loading, status, isActive, formattedElapsed } = useWorkingTime();
+  const {
+    loading,
+    busy,
+    status,
+    isActive,
+    canCheckIn,
+    canCheckOut,
+    pastExpectedEnd,
+    formattedElapsed,
+    checkIn,
+    checkOut,
+  } = useWorkingTime();
+  const [beyondReason, setBeyondReason] = useState("");
+
+  const onCheckOut = () =>
+    checkOut({
+      workedBeyondReason: pastExpectedEnd ? beyondReason : undefined,
+    });
 
   return (
     <section
@@ -45,14 +64,45 @@ export default function WorkingTimeWidget() {
       {loading ? (
         <p className="dgv-work-card__loading">Loading attendance…</p>
       ) : (
-        <div className="dgv-work-card__timer-block">
-          <div
-            className={`dgv-work-card__timer ${isActive ? "is-live" : ""}`}
-            aria-label={`Working time ${formattedElapsed}`}
-          >
-            {formattedElapsed}
+        <>
+          <div className="dgv-work-card__timer-block">
+            <div
+              className={`dgv-work-card__timer ${isActive ? "is-live" : ""}`}
+              aria-label={`Working time ${formattedElapsed}`}
+            >
+              {formattedElapsed}
+            </div>
           </div>
-        </div>
+
+          {canCheckOut && pastExpectedEnd ? (
+            <label className="dgv-work-card__subtitle" htmlFor="worked-beyond-reason">
+              Worked beyond shift (optional)
+              <textarea
+                id="worked-beyond-reason"
+                className="dgv-input"
+                rows={2}
+                value={beyondReason}
+                onChange={(e) => setBeyondReason(e.target.value)}
+                style={{ display: "block", width: "100%", marginTop: 8 }}
+              />
+            </label>
+          ) : null}
+
+          {canCheckIn || canCheckOut ? (
+            <div className="dgv-work-card__actions">
+              {canCheckIn ? (
+                <Button type="button" onClick={checkIn} disabled={busy} loading={busy}>
+                  Check In
+                </Button>
+              ) : null}
+              {canCheckOut ? (
+                <Button type="button" onClick={onCheckOut} disabled={busy} loading={busy}>
+                  Check Out
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );

@@ -8,7 +8,10 @@ const {
   isActiveAccess,
   AccessLookupError,
   notifyExcelAssignment,
+  TYPE_EMPLOYEE_EMAIL,
 } = require("./taskImportAssignNotify");
+
+assert.strictEqual(TYPE_EMPLOYEE_EMAIL, "TASK_IMPORT_ASSIGNED_EMAIL");
 
 assert.strictEqual(
   assignedNotifyKey("task-1", "Rahul@mydgv.com"),

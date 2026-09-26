@@ -64,6 +64,14 @@ assert.ok(adminCopy.message.includes("Update homepage banner and CTA."));
 assert.ok(adminCopy.message.includes("https://login.mydgv.com/admin/tasks/task-1"));
 assert.ok(adminCopy.html.includes("VIEW TASK"));
 assert.ok(adminCopy.html.includes("Website Homepage Update"));
+assert.ok(adminCopy.html.includes("background:#991b1b"));
+assert.ok(adminCopy.html.includes("border:1px solid #fecaca"));
+assert.ok(adminCopy.html.includes("font-family:Arial,sans-serif"));
+assert.ok(
+  adminCopy.html.includes('href="https://login.mydgv.com/admin/tasks/task-1"')
+);
+assert.ok(!adminCopy.html.includes("PK#"));
+assert.ok(!adminCopy.html.includes("SK#"));
 assert.ok(!adminCopy.message.toLowerCase().includes("your task"));
 
 const { ORANGE_MS } = require("./escalation");

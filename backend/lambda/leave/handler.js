@@ -6,13 +6,34 @@ const {
   PutCommand,
   QueryCommand,
   GetCommand,
+  DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { randomUUID } = require("crypto");
 const { isSuperAdminRole } = require("../common/roles");
+const {
+  WORK_PERIODS,
+  expectedWindow,
+  activeShiftDateKey,
+  loadCurrentAssignedShift,
+} = require("../attendance/assignedShift");
+const {
+  materializeTodaysConfirmedLeave,
+  materializeConfirmedLeaveDay,
+} = require("./materialize");
+const {
+  notifyLeaveRequested,
+  notifyLeaveApproved,
+  notifyLeaveRejected,
+} = require("./leaveNotify");
 
 let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
+let nowMs = () => Date.now();
+
+function currentNow() {
+  return new Date(nowMs());
+}
 
 const COMPANY_TZ = process.env.COMPANY_TIMEZONE || "Asia/Kolkata";
 const APPROVAL_HOURS = Number(process.env.LEAVE_APPROVAL_HOURS || 5);
@@ -177,6 +198,15 @@ async function notifyEmployee(leave, type, message) {
   });
 }
 
+async function sendLeaveEmailSafe(label, leaveId, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(label, JSON.stringify({ leaveId }));
+    console.error(err);
+  }
+}
+
 async function getProfile(email) {
   if (!email || !process.env.USER_PROFILE_TABLE) {
     return { employeeId: email?.split("@")[0] || "—", employeeName: email?.split("@")[0] || "Unknown" };
@@ -264,14 +294,224 @@ async function applyAttendanceStatus(email, fromDate, toDate, status) {
   }
 }
 
-function validatePlannedOff({ fromDate, toDate, emergencyReason }) {
+function todayAttendanceRange(fromDate, toDate, now = currentNow()) {
+  const today = todayKey(now);
+  const start = fromDate;
+  const end = toDate || fromDate;
+  if (!isValidDateKey(start) || !isValidDateKey(end)) return null;
+  if (today < start || today > end) return null;
+  return { fromDate: today, toDate: today };
+}
+
+async function applyTodayAttendanceStatus(
+  email,
+  fromDate,
+  toDate,
+  status,
+  now = currentNow(),
+  leave = null
+) {
+  const range = todayAttendanceRange(fromDate, toDate, now);
+  if (!range) return;
+  await materializeConfirmedLeaveDay({
+    ddb,
+    now,
+    leave: {
+      email,
+      fromDate,
+      toDate,
+      leaveId: leave?.leaveId,
+      status:
+        leave?.status ||
+        (status === "PlannedOff" ? "PLANNED_OFF" : "APPROVED"),
+      category:
+        leave?.category ||
+        (status === "PlannedOff" ? "PLANNED_OFF" : "LEAVE"),
+      type: leave?.type,
+    },
+  });
+}
+
+function appendStatusHistory(item, { status, by, at }) {
+  const previousStatus = String(item?.status || "");
+  const history = Array.isArray(item?.statusHistory)
+    ? item.statusHistory.map((entry) => ({ ...entry }))
+    : [];
+  if (history.length === 0 && previousStatus) {
+    history.push({
+      status: previousStatus,
+      at:
+        item.approvedAt ||
+        item.reviewedAt ||
+        item.submittedAt ||
+        item.createdAt ||
+        at,
+      by: item.approvedBy || item.reviewedBy || item.email || by,
+    });
+  }
+  history.push({
+    status,
+    previousStatus,
+    at,
+    by,
+  });
+  return history;
+}
+
+function isConfirmedLeaveStatus(status) {
+  const s = String(status || "").toUpperCase();
+  return s === "APPROVED" || s === "PLANNED_OFF";
+}
+
+function isUnstartedLeaveAttendance(item) {
+  if (!item) return false;
+  const status = String(item.status || "");
+  if (status !== "Leave" && status !== "PlannedOff") return false;
+  if (item.actualCheckInTime || item.actualCheckOutTime) return false;
+  if (item.checkInTime || item.checkOutTime) return false;
+  const session = String(item.sessionStatus || "");
+  if (session === "Active" || session === "Checked Out" || session === "Present") {
+    return false;
+  }
+  return true;
+}
+
+async function clearUnstartedFutureLeaveAttendance(email, fromDate, toDate, now) {
+  if (!process.env.ATTENDANCE_TABLE || !email) return;
+  const today = todayKey(now);
+  for (const date of eachDate(fromDate, toDate)) {
+    if (date < today) continue;
+    let existing = null;
+    try {
+      const res = await ddb.send(
+        new GetCommand({
+          TableName: process.env.ATTENDANCE_TABLE,
+          Key: { PK: email, SK: date },
+        })
+      );
+      existing = res.Item || null;
+    } catch {
+      existing = null;
+    }
+    if (!isUnstartedLeaveAttendance(existing)) continue;
+    await ddb.send(
+      new DeleteCommand({
+        TableName: process.env.ATTENDANCE_TABLE,
+        Key: { PK: email, SK: date },
+      })
+    );
+  }
+}
+
+async function cancelOwnApprovedLeave(user, body, now = new Date()) {
+  const actor = String(user?.email || "")
+    .trim()
+    .toLowerCase();
+  if (!actor) return json(401, { error: "Unauthorized" });
+  const leaveId = String(body?.leaveId || "").trim();
+  if (!leaveId) return json(400, { error: "leaveId required" });
+
+  const item = await getLeave(leaveId);
+  if (!item) return json(404, { error: "Not found" });
+
+  const owner = String(item.email || "")
+    .trim()
+    .toLowerCase();
+  if (owner !== actor) {
+    return json(403, { error: "You can only cancel your own leave." });
+  }
+  if (!isConfirmedLeaveStatus(item.status)) {
+    return json(400, {
+      error: "Only approved or confirmed leave can be cancelled.",
+    });
+  }
+
+  const fromDate = item.fromDate || item.startDate;
+  const toDate = item.toDate || item.endDate || fromDate;
+  const until = daysUntilStart(fromDate, now);
+  if (until < 0) {
+    return json(400, { error: "Past leave cannot be cancelled." });
+  }
+  if (until === 0) {
+    const cutoffError = await sameDayShiftCutoffError(owner, fromDate, now, {
+      action: "cancel",
+    });
+    if (cutoffError) return json(400, { error: cutoffError });
+  }
+
+  const nowIso = now.toISOString();
+  const updated = {
+    ...item,
+    status: "CANCELLED",
+    cancelledBy: actor,
+    cancelledAt: nowIso,
+    updatedAt: nowIso,
+    approvedBy: item.approvedBy,
+    approvedAt: item.approvedAt,
+    reviewedBy: item.reviewedBy,
+    reviewedAt: item.reviewedAt,
+    statusHistory: appendStatusHistory(item, {
+      status: "CANCELLED",
+      by: actor,
+      at: nowIso,
+    }),
+  };
+  await putLeaveCopies(updated);
+  await clearUnstartedFutureLeaveAttendance(owner, fromDate, toDate, now);
+  return json(200, withComputed(updated));
+}
+
+function resolveApplicableLeaveShiftWindow(assignment, now = currentNow()) {
+  if (!assignment || !String(assignment.startTime || "").trim()) return null;
+  const dateKey = todayKey(now);
+  const shiftDateKey = activeShiftDateKey(assignment, dateKey, now.getTime());
+  const window = expectedWindow(assignment, shiftDateKey, WORK_PERIODS.FULL_DAY);
+  if (!window) return null;
+  return { ...window, dateKey, shiftDateKey };
+}
+
+async function sameDayShiftCutoffError(
+  email,
+  fromDate,
+  now = currentNow(),
+  { action = "request" } = {}
+) {
+  if (daysUntilStart(fromDate, now) !== 0) return null;
+
+  const assignment = await loadCurrentAssignedShift(
+    ddb,
+    process.env.WORK_TABLE,
+    email
+  );
+  const noShiftMessage =
+    action === "cancel"
+      ? "Same-day leave cannot be cancelled because you do not have an assigned shift."
+      : "Same-day leave requires an assigned shift. Ask an admin to assign your shift first.";
+  if (!assignment || !String(assignment.startTime || "").trim()) {
+    return noShiftMessage;
+  }
+
+  const window = resolveApplicableLeaveShiftWindow(assignment, now);
+  if (!window) {
+    return noShiftMessage;
+  }
+
+  if (now.getTime() >= window.startMs) {
+    return action === "cancel"
+      ? "Same-day leave cannot be cancelled after your assigned shift has started."
+      : "Same-day leave can only be requested before your assigned shift starts.";
+  }
+  return null;
+}
+
+function validatePlannedOff({ fromDate, toDate, emergencyReason, now }) {
   if (!isValidDateKey(fromDate) || !isValidDateKey(toDate)) {
     return "Valid Planned Off date is required.";
   }
   if (parseDateKey(toDate) < parseDateKey(fromDate)) {
     return "End date cannot be before start date.";
   }
-  const until = daysUntilStart(fromDate);
+  const until = daysUntilStart(fromDate, now);
   if (until < 0) {
     return "Planned Off cannot be submitted for a past date.";
   }
@@ -281,7 +521,7 @@ function validatePlannedOff({ fromDate, toDate, emergencyReason }) {
   return null;
 }
 
-function validateLeaveRequest({ fromDate, toDate, type, reason, emergencyReason }) {
+function validateLeaveRequest({ fromDate, toDate, type, reason, emergencyReason, now }) {
   if (!isValidDateKey(fromDate) || !isValidDateKey(toDate)) {
     return "Start date and end date are required.";
   }
@@ -291,7 +531,7 @@ function validateLeaveRequest({ fromDate, toDate, type, reason, emergencyReason 
   if (!LEAVE_TYPES.includes(String(type || "").toUpperCase())) {
     return "Invalid leave type.";
   }
-  const until = daysUntilStart(fromDate);
+  const until = daysUntilStart(fromDate, now);
   if (until < 0) {
     return "Leave cannot start in the past.";
   }
@@ -337,7 +577,14 @@ async function autoApproveExpired(now = new Date()) {
       updatedAt: now.toISOString(),
     };
     await putLeaveCopies(updated);
-    await applyAttendanceStatus(updated.email, updated.fromDate, updated.toDate, "Leave");
+    await applyTodayAttendanceStatus(
+      updated.email,
+      updated.fromDate,
+      updated.toDate,
+      "Leave",
+      now,
+      updated
+    );
     await notifyEmployee(
       updated,
       "LEAVE_AUTO_APPROVED",
@@ -384,6 +631,14 @@ function isMeetingRequest(event, body) {
 exports.handler = async (event) => {
   if (isAutoApproveEvent(event)) {
     const result = await autoApproveExpiredSafe();
+    try {
+      await materializeTodaysConfirmedLeave({
+        ddb,
+        now: currentNow(),
+      });
+    } catch (err) {
+      console.error("LEAVE_MATERIALIZE_ERROR", err);
+    }
     try {
       const { sendReminders } = require("../meetings/handler");
       await sendReminders();
@@ -461,13 +716,15 @@ exports.handler = async (event) => {
       const toDate = body.toDate || body.endDate || fromDate;
       const reason = String(body.reason || "").trim();
       const emergencyReason = String(body.emergencyReason || "").trim();
-      const now = new Date();
+      const now = currentNow();
       const submittedAt = now.toISOString();
       const id = randomUUID();
 
       if (isPlannedOff) {
-        const error = validatePlannedOff({ fromDate, toDate, emergencyReason });
+        const error = validatePlannedOff({ fromDate, toDate, emergencyReason, now });
         if (error) return json(400, { error });
+        const cutoffError = await sameDayShiftCutoffError(user.email, fromDate, now);
+        if (cutoffError) return json(400, { error: cutoffError });
 
         const days = daysInclusive(fromDate, toDate);
         const item = {
@@ -496,7 +753,14 @@ exports.handler = async (event) => {
           timezone: COMPANY_TZ,
         };
         await putLeaveCopies(item);
-        await applyAttendanceStatus(user.email, fromDate, toDate, "PlannedOff");
+        await applyTodayAttendanceStatus(
+          user.email,
+          fromDate,
+          toDate,
+          "PlannedOff",
+          now,
+          item
+        );
         return json(201, withComputed(item));
       }
 
@@ -507,11 +771,14 @@ exports.handler = async (event) => {
         type,
         reason,
         emergencyReason,
+        now,
       });
       if (error) return json(400, { error });
+      const cutoffError = await sameDayShiftCutoffError(user.email, fromDate, now);
+      if (cutoffError) return json(400, { error: cutoffError });
 
       const days = daysInclusive(fromDate, toDate);
-      const shortNotice = days > 1 && daysUntilStart(fromDate) < 3;
+      const shortNotice = days > 1 && daysUntilStart(fromDate, now) < 3;
       const approvalDeadline = new Date(
         now.getTime() + APPROVAL_HOURS * 60 * 60 * 1000
       ).toISOString();
@@ -544,6 +811,19 @@ exports.handler = async (event) => {
       };
       await putLeaveCopies(item);
       await notifyApprovers(item);
+      await sendLeaveEmailSafe(
+        "LEAVE_REQUESTED_EMAIL_ERROR",
+        item.leaveId,
+        async () => {
+          const profile = await getProfile(item.email);
+          await notifyLeaveRequested({
+            ddb,
+            leave: item,
+            employeeName: profile.employeeName,
+            approverEmails: APPROVER_EMAILS,
+          });
+        }
+      );
       return json(201, withComputed(item));
     }
 
@@ -575,6 +855,11 @@ exports.handler = async (event) => {
 
       await autoApproveExpiredSafe();
 
+      const requestedStatus = String(body.status || body.action || "").toUpperCase();
+      if (requestedStatus === "CANCELLED" || String(body.action || "").toLowerCase() === "cancel") {
+        return await cancelOwnApprovedLeave(user, body, currentNow());
+      }
+
       if (!user.isAdmin) return json(403, { error: "Admin required" });
       const { leaveId, status, rejectionReason } = body;
       if (!leaveId || !status) return json(400, { error: "leaveId and status required" });
@@ -604,6 +889,11 @@ exports.handler = async (event) => {
         reviewedBy: user.email,
         reviewedAt: nowIso,
         updatedAt: nowIso,
+        statusHistory: appendStatusHistory(item, {
+          status: next,
+          by: user.email,
+          at: nowIso,
+        }),
       };
 
       if (next === "APPROVED") {
@@ -622,11 +912,32 @@ exports.handler = async (event) => {
       await putLeaveCopies(updated);
 
       if (next === "APPROVED") {
-        await applyAttendanceStatus(updated.email, updated.fromDate, updated.toDate, "Leave");
+        await applyTodayAttendanceStatus(
+          updated.email,
+          updated.fromDate,
+          updated.toDate,
+          "Leave",
+          currentNow(),
+          updated
+        );
         await notifyEmployee(
           updated,
           "LEAVE_APPROVED",
           `Your leave request from ${updated.fromDate} to ${updated.toDate} has been approved.`
+        );
+        await sendLeaveEmailSafe(
+          "LEAVE_APPROVED_EMAIL_ERROR",
+          updated.leaveId,
+          async () => {
+            const profile = await getProfile(updated.email);
+            const reviewer = await getProfile(updated.approvedBy);
+            await notifyLeaveApproved({
+              ddb,
+              leave: updated,
+              employeeName: profile.employeeName,
+              approvedByName: reviewer.employeeName,
+            });
+          }
         );
       } else {
         await notifyEmployee(
@@ -635,6 +946,20 @@ exports.handler = async (event) => {
           `Your leave request from ${updated.fromDate} to ${updated.toDate} has been rejected.${
             updated.rejectionReason ? ` Reason: ${updated.rejectionReason}` : ""
           }`
+        );
+        await sendLeaveEmailSafe(
+          "LEAVE_REJECTED_EMAIL_ERROR",
+          updated.leaveId,
+          async () => {
+            const profile = await getProfile(updated.email);
+            const reviewer = await getProfile(updated.rejectedBy);
+            await notifyLeaveRejected({
+              ddb,
+              leave: updated,
+              employeeName: profile.employeeName,
+              rejectedByName: reviewer.employeeName,
+            });
+          }
         );
       }
 
@@ -649,6 +974,16 @@ exports.handler = async (event) => {
 };
 
 exports.applyAttendanceStatus = applyAttendanceStatus;
+exports.applyTodayAttendanceStatus = applyTodayAttendanceStatus;
+exports.todayAttendanceRange = todayAttendanceRange;
+exports.materializeTodaysConfirmedLeave = materializeTodaysConfirmedLeave;
+exports.appendStatusHistory = appendStatusHistory;
+exports.cancelOwnApprovedLeave = cancelOwnApprovedLeave;
+exports.resolveApplicableLeaveShiftWindow = resolveApplicableLeaveShiftWindow;
+exports.sameDayShiftCutoffError = sameDayShiftCutoffError;
 exports.setDocumentClientForTests = (client) => {
   ddb = client;
+};
+exports.setNowMsForTests = (fn) => {
+  nowMs = typeof fn === "function" ? fn : () => Date.now();
 };

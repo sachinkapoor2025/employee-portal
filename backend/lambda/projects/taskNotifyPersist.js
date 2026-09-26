@@ -17,6 +17,14 @@ const ASSIGNMENT_RED_NOTIFY_ATTRS = [
   "redAdminNotifyAttempts",
 ];
 
+const ASSIGNMENT_BLOCKER_ATTRS = [
+  "blockerStatus",
+  "blockerRemark",
+  "blockerReportedAt",
+  "blockerResolvedAt",
+  "blockerResolvedBy",
+];
+
 const TASK_NOTIFY_ATTRS = [
   ...TASK_COMPLETION_EMAIL_ATTRS,
   ...ASSIGNMENT_RED_NOTIFY_ATTRS,
@@ -52,6 +60,21 @@ function overlayStoredAttrs(outgoing, stored, attrNames) {
     } else {
       delete next[name];
     }
+  }
+  return next;
+}
+
+function overlayMissingAttrs(outgoing, stored, attrNames) {
+  const next = { ...(outgoing || {}) };
+  const names = Array.isArray(attrNames) ? attrNames : [];
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(next, name)) continue;
+    if (!stored || !Object.prototype.hasOwnProperty.call(stored, name)) continue;
+    const value = stored[name];
+    next[name] =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? { ...value }
+        : value;
   }
   return next;
 }
@@ -110,7 +133,8 @@ async function putProtectedItem(
   outgoing,
   attrNames,
   statusKey,
-  claimedKey
+  claimedKey,
+  preserveAttrs
 ) {
   const key = { PK: outgoing.PK, SK: outgoing.SK };
   let lastError = null;
@@ -139,7 +163,8 @@ async function putProtectedItem(
         throw err;
       }
     }
-    const item = overlayStoredAttrs(outgoing, stored, attrNames);
+    let item = overlayStoredAttrs(outgoing, stored, attrNames);
+    item = overlayMissingAttrs(item, stored, preserveAttrs);
     const cond = statusCondition(stored, statusKey, claimedKey);
     try {
       await ddb.send(
@@ -325,15 +350,18 @@ async function putAssignmentSafe(ddb, tableName, item) {
     item,
     ASSIGNMENT_RED_NOTIFY_ATTRS,
     "redAdminNotifyStatus",
-    "redAdminNotifyClaimedAt"
+    "redAdminNotifyClaimedAt",
+    ASSIGNMENT_BLOCKER_ATTRS
   );
 }
 
 module.exports = {
   TASK_COMPLETION_EMAIL_ATTRS,
   ASSIGNMENT_RED_NOTIFY_ATTRS,
+  ASSIGNMENT_BLOCKER_ATTRS,
   TASK_NOTIFY_ATTRS,
   overlayStoredAttrs,
+  overlayMissingAttrs,
   putCreatedTaskRecords,
   putTaskCopiesSafe,
   putAssignmentSafe,

@@ -2,6 +2,7 @@ const assert = require("assert");
 const {
   GetCommand,
   PutCommand,
+  QueryCommand,
   ScanCommand,
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
@@ -223,6 +224,18 @@ function createMemoryDdb() {
             .map((row) => ({ ...row.Item })),
         };
       }
+      if (command instanceof QueryCommand) {
+        const { TableName, ExpressionAttributeValues = {} } = command.input;
+        const pk = ExpressionAttributeValues[":pk"];
+        const skPrefix = ExpressionAttributeValues[":sk"];
+        const found = items
+          .filter((row) => row.TableName === TableName && row.Item.PK === pk)
+          .filter((row) =>
+            skPrefix ? String(row.Item.SK).startsWith(skPrefix) : true
+          )
+          .map((row) => ({ ...row.Item }));
+        return { Items: found };
+      }
       throw new Error(`unexpected command ${command.constructor.name}`);
     },
   };
@@ -294,18 +307,37 @@ async function run() {
 
   const copy = buildCompletionEmail({
     title: `Ship <script>alert(1)</script>`,
-    assigneeEmail: "doer@mydgv.com",
+    employeeName: "Amit Sharma",
+    employeeEmail: "doer@mydgv.com",
     completedByName: `Admin "Boss"`,
     completedByEmail: "admin@mydgv.com",
     projectName: "Portal",
     completedAt: "2026-09-20T12:00:00.000Z",
+    completionRemark: 'Ready <b>now</b>',
     taskId: "task-1",
+    recipientKind: "admin",
   });
-  assert.ok(copy.subject.startsWith("Task completed:"));
+  assert.ok(copy.subject.startsWith("Task Completed:"));
+  assert.ok(copy.html.includes("font-family:Arial,sans-serif"));
+  assert.ok(copy.html.includes("background:#047857"));
+  assert.ok(copy.html.includes("/admin/tasks/task-1"));
   assert.ok(!copy.html.includes("<script>"));
   assert.ok(copy.html.includes("&lt;script&gt;"));
   assert.ok(copy.html.includes("&quot;"));
+  assert.ok(copy.html.includes("Amit Sharma"));
+  assert.ok(!copy.html.includes("doer@mydgv.com"));
+  assert.ok(copy.html.includes("Ready &lt;b&gt;now&lt;/b&gt;"));
   assert.strictEqual(escapeHtml("<x>"), "&lt;x&gt;");
+
+  const employeeCopy = buildCompletionEmail({
+    title: "Homepage Update",
+    employeeName: "Amit Sharma",
+    employeeEmail: "doer@mydgv.com",
+    taskId: "task-1",
+    recipientKind: "employee",
+  });
+  assert.ok(employeeCopy.html.includes("/work/task-1"));
+  assert.ok(!employeeCopy.html.includes("/admin/tasks/"));
 
   emailCalls.length = 0;
   const ddb = createMemoryDdb();
@@ -316,19 +348,32 @@ async function run() {
     tableName: WORK_TABLE,
     accessTable: ACCESS_TABLE,
     task,
-    completedBy: "doer@mydgv.com",
+    employeeEmail: "doer@mydgv.com",
+    employeeName: "Amit Sharma",
+    completedBy: "admin@mydgv.com",
+    completedByName: "Admin",
     completedAt: "2026-09-20T12:00:00.000Z",
+    completionRemark: "Uploaded all 50 products.",
     projectName: "DGV Employee Portal",
   });
   assert.strictEqual(first.status, "SENT");
   const tos = emailCalls.map((call) => call.to).sort();
-  assert.deepStrictEqual(tos, ["admin@mydgv.com", "super@mydgv.com"]);
+  assert.deepStrictEqual(tos, ["admin@mydgv.com", "doer@mydgv.com", "super@mydgv.com"]);
   assert.ok(emailCalls.every((call) => call.from === "noreply@mydgv.com"));
   assert.ok(emailCalls.every((call) => call.subject.includes("Homepage Update")));
+  assert.ok(emailCalls.every((call) => call.subject.startsWith("Task Completed:")));
   assert.ok(!emailCalls.some((call) => call.to === "mgr@mydgv.com"));
   assert.ok(!emailCalls.some((call) => call.to === "oldadmin@mydgv.com"));
   assert.ok(!emailCalls.some((call) => call.to === "oldsuper@mydgv.com"));
-  assert.ok(!emailCalls.some((call) => call.to === "doer@mydgv.com"));
+  const doerMail = emailCalls.find((call) => call.to === "doer@mydgv.com");
+  const adminMail = emailCalls.find((call) => call.to === "admin@mydgv.com");
+  assert.ok(doerMail.html.includes("/work/task-1"));
+  assert.ok(!doerMail.html.includes("/admin/tasks/"));
+  assert.ok(adminMail.html.includes("/admin/tasks/task-1"));
+  assert.ok(adminMail.html.includes("Uploaded all 50 products."));
+  assert.ok(adminMail.html.includes("Amit Sharma"));
+  assert.ok(!adminMail.html.includes("doer@mydgv.com"));
+  assert.ok(adminMail.html.includes("background:#047857"));
   assert.strictEqual(notifyItems(ddb).length, 0);
   const stored = ddb.of(WORK_TABLE).find((item) => item.taskId === "task-1");
   assert.strictEqual(stored.status, "DONE");
@@ -517,6 +562,67 @@ async function run() {
   assert.strictEqual(reclaimed.ok, true);
   assert.strictEqual(reclaimed.task.completionEmailStatus, "SENDING");
   assert.strictEqual(reclaimed.task.completionEmailAttempts, 2);
+
+  emailCalls.length = 0;
+  const restDdb = createMemoryDdb();
+  restDdb.seed(ACCESS_TABLE, {
+    PK: "super@mydgv.com",
+    SK: "super@mydgv.com",
+    email: "super@mydgv.com",
+    role: "SUPER_ADMIN",
+    status: "ACTIVE",
+  });
+  restDdb.seed(ACCESS_TABLE, {
+    PK: "pa@mydgv.com",
+    SK: "pa@mydgv.com",
+    email: "pa@mydgv.com",
+    role: "ADMIN",
+    status: "ACTIVE",
+  });
+  restDdb.seed(WORK_TABLE, {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#secret-1",
+    projectId: "secret-1",
+    name: "Secret",
+    accessMode: "RESTRICTED",
+    status: "ACTIVE",
+  });
+  restDdb.seed(WORK_TABLE, {
+    PK: "PROJECT#secret-1",
+    SK: "PROJECT_ADMIN#pa@mydgv.com",
+    type: "PROJECT_ADMIN",
+    projectId: "secret-1",
+    email: "pa@mydgv.com",
+    status: "ACTIVE",
+  });
+  restDdb.seed(WORK_TABLE, {
+    PK: "ENTITY#TASK",
+    SK: "TASK#task-rest",
+    taskId: "task-rest",
+    title: "Secret Task",
+    status: "DONE",
+    projectId: "secret-1",
+    assignee: "doer@mydgv.com",
+  });
+  const rest = await notifyTaskCompleted({
+    ddb: restDdb,
+    tableName: WORK_TABLE,
+    accessTable: ACCESS_TABLE,
+    task: {
+      taskId: "task-rest",
+      title: "Secret Task",
+      status: "DONE",
+      projectId: "secret-1",
+    },
+    employeeEmail: "doer@mydgv.com",
+    employeeName: "Amit Sharma",
+    completedBy: "pa@mydgv.com",
+    projectName: "Secret",
+  });
+  assert.strictEqual(rest.status, "SENT");
+  const restTos = emailCalls.map((call) => call.to).sort();
+  assert.deepStrictEqual(restTos, ["doer@mydgv.com", "pa@mydgv.com"]);
+  assert.ok(!emailCalls.some((call) => call.to === "super@mydgv.com"));
 
   console.log("taskCompleteNotify tests passed");
 }

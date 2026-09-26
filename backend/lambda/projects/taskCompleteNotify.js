@@ -1,9 +1,11 @@
 const { ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { dispatchNotification } = require("../common/notify");
+const { buildProfessionalEmail } = require("../common/emailLayout");
 const { adminNotifyRecipientsForTask } = require("./workflowAccess");
 const { activeCompletionAdminEmailsFromAccess } = require("../common/roles");
 const { isConditionalCheckFailed } = require("./taskNotifyPersist");
 const { notifyFromAddress, notifyFromName } = require("./notifyFrom");
+const { formatWhen } = require("./zoneNotify");
 const escalation = require("./escalation");
 
 const TYPE_COMPLETED_EMAIL = "TASK_COMPLETED_EMAIL";
@@ -15,7 +17,7 @@ const CLAIM_STALE_MS = 180000;
 const EMAIL_CLAIM_MAX_ATTEMPTS = 5;
 
 function portalBaseUrl() {
-  return String(process.env.PORTAL_URL || "")
+  return String(process.env.PORTAL_URL || "https://login.mydgv.com")
     .trim()
     .replace(/\/+$/, "");
 }
@@ -25,6 +27,13 @@ function adminTaskUrl(taskId) {
   const id = String(taskId || "").trim();
   if (!base || !id) return "";
   return `${base}/admin/tasks/${encodeURIComponent(id)}`;
+}
+
+function employeeTaskUrl(taskId) {
+  const base = portalBaseUrl();
+  const id = String(taskId || "").trim();
+  if (!base || !id) return "";
+  return `${base}/work/${encodeURIComponent(id)}`;
 }
 
 function safeLine(raw, fallback = "") {
@@ -42,11 +51,17 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function displayName(name, email) {
-  const n = safeLine(name);
-  const e = safeLine(email);
-  if (n && e && n.toLowerCase() !== e.toLowerCase()) return `${n} (${e})`;
-  return n || e;
+function personLabel(name, email) {
+  return (
+    escalation.pickPersonName(name) ||
+    escalation.displayNameFromEmail(email)
+  );
+}
+
+function textField(label, value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return `${label}:\n${text}\n\n`;
 }
 
 function completedEmailKey(taskId, adminEmail) {
@@ -72,32 +87,80 @@ async function scanAccessRows(ddb, accessTable) {
 
 function buildCompletionEmail({
   title,
+  employeeName,
+  employeeEmail,
   assigneeName,
   assigneeEmail,
   completedByName,
   completedByEmail,
   projectName,
+  priority,
+  category,
+  startDate,
+  dueDate,
   completedAt,
+  completionRemark,
   taskId,
-}) {
-  const safeTitle = safeLine(title, "a task");
-  const assignee = displayName(assigneeName, assigneeEmail);
-  const completer = displayName(completedByName, completedByEmail);
-  const project = safeLine(projectName);
-  const when = safeLine(completedAt);
-  const subject = `Task completed: ${safeTitle}`;
-  const lines = [
-    `Task "${safeTitle}" was marked completed.`,
-    assignee ? `Assigned to: ${assignee}` : "",
-    completer ? `Completed by: ${completer}` : "",
-    project ? `Project: ${project}` : "",
-    when ? `Completed at: ${when}` : "",
-  ].filter(Boolean);
-  const portal = adminTaskUrl(taskId);
-  if (portal) lines.push(`Portal: ${portal}`);
-  const text = lines.join("\n");
-  const html = lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
-  return { subject, title: subject, text, html };
+  recipientKind = "admin",
+  timeZone,
+} = {}) {
+  const taskName = safeLine(title, "Untitled task") || "Untitled task";
+  const employee = personLabel(
+    employeeName || assigneeName,
+    employeeEmail || assigneeEmail
+  );
+  const completer = personLabel(completedByName, completedByEmail);
+  const priorityText = priority ? escalation.priorityLabel(priority) : "";
+  const startLabel = startDate ? formatWhen(startDate, timeZone) : "";
+  const dueLabel = dueDate ? formatWhen(dueDate, timeZone) : "";
+  const when = completedAt ? formatWhen(completedAt, timeZone) : "";
+  const remark = String(completionRemark || "").trim();
+  const isEmployee = String(recipientKind || "").toLowerCase() === "employee";
+  const link = isEmployee ? employeeTaskUrl(taskId) : adminTaskUrl(taskId);
+  const subject = `Task Completed: ${taskName}`;
+  const intro = `${taskName} has been completed and approved.`;
+
+  const message =
+    `${subject}\n\n` +
+    `${intro}\n\n` +
+    `TASK DETAILS\n\n` +
+    `Task:\n${taskName}\n\n` +
+    textField("Project", projectName) +
+    textField("Priority", priorityText) +
+    textField("Category", category) +
+    textField("Employee", employee) +
+    textField("Completed By", completer) +
+    textField("Completed At", when) +
+    textField("Start", startLabel) +
+    textField("Due", dueLabel) +
+    (remark ? `Completion Remark:\n${remark}\n\n` : "") +
+    (link ? `View Task:\n${link}` : "");
+
+  const html = buildProfessionalEmail({
+    variant: "success",
+    title: "Task completed",
+    intro,
+    sections: [
+      {
+        heading: "TASK DETAILS",
+        rows: [
+          { label: "Task", value: taskName },
+          { label: "Project", value: projectName },
+          { label: "Priority", value: priorityText },
+          { label: "Category", value: category },
+          { label: "Employee", value: employee },
+          { label: "Completed By", value: completer },
+          { label: "Completed At", value: when },
+          { label: "Start", value: startLabel },
+          { label: "Due", value: dueLabel },
+        ],
+      },
+      remark ? { heading: "COMPLETION REMARK", body: remark } : null,
+    ].filter(Boolean),
+    cta: link ? { href: link, label: "VIEW TASK" } : undefined,
+  });
+
+  return { subject, title: subject, text: message, html };
 }
 
 async function claimCompletionEmail(ddb, tableName, taskId, nowIso, nowMs) {
@@ -174,14 +237,40 @@ async function finalizeCompletionEmail(ddb, tableName, taskId, status, extra = {
   }
 }
 
+async function sendCompletionCopy(ddb, { to, copy, taskId, from, fromName }) {
+  const result = await dispatchNotification(ddb, {
+    email: to,
+    type: TYPE_COMPLETED_EMAIL,
+    title: copy.title,
+    subject: copy.subject,
+    message: copy.text,
+    html: copy.html,
+    reason: TYPE_COMPLETED_EMAIL,
+    dedupKey: completedEmailKey(taskId, to),
+    extra: { taskId },
+    channel: "email",
+    emailEnabled: true,
+    inAppEnabled: false,
+    from,
+    fromName,
+  });
+  if (result?.status === "SENT" && result.messageId) return "sent";
+  if (result?.skipped && result.status === "SENT") return "sent";
+  return "failed";
+}
+
 async function notifyTaskCompleted({
   ddb,
   tableName = process.env.WORK_TABLE,
   accessTable = process.env.USER_ACCESS_TABLE,
   task = {},
+  assignment,
+  employeeEmail,
+  employeeName,
   completedBy,
   completedByName,
   completedAt,
+  completionRemark,
   nowMs,
   listAccessRows,
   projectName,
@@ -193,8 +282,14 @@ async function notifyTaskCompleted({
   if (!escalation.isComplete(task.status)) {
     return { skipped: true, reason: "NOT_COMPLETED" };
   }
-  const nowIso = completedAt || task.completedDate || new Date().toISOString();
+  const nowIso = completedAt || assignment?.completedAt || task.completedDate || new Date().toISOString();
   const clock = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  const employee = escalation.normalizeEmail(
+    employeeEmail || assignment?.email || ""
+  );
+  const remark = String(
+    completionRemark || assignment?.completionRemark || ""
+  ).trim();
 
   let claimed;
   try {
@@ -215,23 +310,25 @@ async function notifyTaskCompleted({
     return { skipped: true, reason: claimed.reason || "ALREADY_CLAIMED" };
   }
 
-  let recipients = [];
+  let adminRecipients = [];
   try {
     const rows =
       typeof listAccessRows === "function"
         ? await listAccessRows()
         : await scanAccessRows(ddb, accessTable);
-    recipients = activeCompletionAdminEmailsFromAccess(rows);
+    const fallback = activeCompletionAdminEmailsFromAccess(rows);
     const scoped = await adminNotifyRecipientsForTask({
       ddb,
       tableName,
       projectId: task.projectId,
-      fallbackEmails: recipients,
+      fallbackEmails: fallback,
     });
     if (!scoped.ok) {
       throw new Error("RESTRICTED_RECIPIENT_LOOKUP_FAILED");
     }
-    recipients = scoped.emails;
+    adminRecipients = [...new Set(scoped.emails || [])]
+      .map((email) => escalation.normalizeEmail(email))
+      .filter((email) => email && email !== employee);
   } catch (err) {
     console.error(
       "TASK_COMPLETED_EMAIL_RECIPIENT_ERROR",
@@ -246,7 +343,7 @@ async function notifyTaskCompleted({
     return { skipped: false, status: STATUS_FAILED, error: "RECIPIENT_LOOKUP_FAILED" };
   }
 
-  if (!recipients.length) {
+  if (!adminRecipients.length && !employee) {
     console.warn(
       "TASK_COMPLETED_EMAIL_NO_RECIPIENTS",
       JSON.stringify({ taskId })
@@ -259,39 +356,38 @@ async function notifyTaskCompleted({
     return { skipped: false, status: STATUS_SKIPPED, reason: "NO_ADMIN_RECIPIENTS" };
   }
 
-  const copy = buildCompletionEmail({
+  const copyFields = {
     title: task.title,
-    assigneeEmail: task.assignee || (task.assignees || [])[0],
+    employeeName,
+    employeeEmail: employee,
+    assigneeEmail: employee || task.assignee || (task.assignees || [])[0],
     completedByEmail: completedBy,
     completedByName,
     projectName,
+    priority: task.priority,
+    category: task.category,
+    startDate: task.startDate,
+    dueDate: task.dueDate,
     completedAt: nowIso,
+    completionRemark: remark,
     taskId,
-  });
+  };
   const from = notifyFromAddress();
   const fromName = notifyFromName();
   let sent = 0;
   let failed = 0;
-  for (const to of recipients) {
+
+  async function sendKind(to, recipientKind) {
+    const copy = buildCompletionEmail({ ...copyFields, recipientKind });
     try {
-      const result = await dispatchNotification(ddb, {
-        email: to,
-        type: TYPE_COMPLETED_EMAIL,
-        title: copy.title,
-        subject: copy.subject,
-        message: copy.text,
-        html: copy.html,
-        reason: TYPE_COMPLETED_EMAIL,
-        dedupKey: completedEmailKey(taskId, to),
-        extra: { taskId },
-        channel: "email",
-        emailEnabled: true,
-        inAppEnabled: false,
+      const outcome = await sendCompletionCopy(ddb, {
+        to,
+        copy,
+        taskId,
         from,
         fromName,
       });
-      if (result?.status === "SENT" && result.messageId) sent += 1;
-      else if (result?.skipped && result.status === "SENT") sent += 1;
+      if (outcome === "sent") sent += 1;
       else failed += 1;
     } catch (err) {
       failed += 1;
@@ -302,18 +398,26 @@ async function notifyTaskCompleted({
     }
   }
 
+  if (employee) {
+    await sendKind(employee, "employee");
+  }
+  for (const to of adminRecipients) {
+    await sendKind(to, "admin");
+  }
+
+  const recipientCount = adminRecipients.length + (employee ? 1 : 0);
   const nextStatus = sent > 0 ? STATUS_SENT : STATUS_FAILED;
   await finalizeCompletionEmail(ddb, tableName, taskId, nextStatus, {
     nowIso,
     error: sent > 0 ? null : "SEND_FAILED",
-    recipientCount: recipients.length,
+    recipientCount,
   });
   return {
     skipped: false,
     status: nextStatus,
     sent,
     failed,
-    recipients: recipients.length,
+    recipients: recipientCount,
   };
 }
 
@@ -325,4 +429,6 @@ module.exports = {
   buildCompletionEmail,
   claimCompletionEmail,
   notifyTaskCompleted,
+  adminTaskUrl,
+  employeeTaskUrl,
 };

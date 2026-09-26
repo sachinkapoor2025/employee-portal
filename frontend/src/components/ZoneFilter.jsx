@@ -15,8 +15,18 @@ const TONES = {
   neutral: "var(--dgv-text-muted)",
 };
 
-export default function ZoneFilter({ value, onChange, counts = {} }) {
-  const selected = String(value || "ALL").toUpperCase();
+export default function ZoneFilter({
+  value,
+  onChange,
+  counts = {},
+  includeAll = true,
+}) {
+  const options = includeAll
+    ? OPTIONS
+    : OPTIONS.filter((opt) => opt.value !== "ALL");
+  const selected = String(
+    value || (includeAll ? "ALL" : "GREEN")
+  ).toUpperCase();
   return (
     <div
       role="tablist"
@@ -31,7 +41,7 @@ export default function ZoneFilter({ value, onChange, counts = {} }) {
         WebkitOverflowScrolling: "touch",
       }}
     >
-      {OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const active = selected === opt.value;
         const count = counts[opt.value];
         const text =

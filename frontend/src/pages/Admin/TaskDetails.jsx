@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Button from "../../components/ui/Button";
@@ -7,9 +7,12 @@ import {
   fetchTaskById,
   fetchTaskActivity,
   updateTask,
+  createTask,
   fetchUsers,
   fetchUserProfile,
+  reportTaskBlocker,
 } from "../../services/api";
+import { getLoggedInEmail } from "../../services/auth";
 import {
   colors,
   pageCard,
@@ -41,8 +44,28 @@ import {
   statusBadgeStyle,
   statusLabel,
   zoneDisplay,
+  employeeCanChangeStatus,
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
+
+const EMPLOYEE_STATUS_OPTIONS = TASK_STATUSES.filter(
+  (s) => s.value !== "CANCELLED" && s.value !== "REVIEW"
+);
+const RED_ZONE_MESSAGE =
+  "Red Zone tasks can only be updated by an administrator.";
+const COMPLETION_MODAL_TITLE = "Submit Task for Review";
+const COMPLETION_REMARK_HELPER =
+  "Add a final remark describing the work you completed. The task will be sent to Admin for review.";
+const COMPLETION_SUBMIT_LABEL = "Submit for Review";
+const COMPLETION_REMARK_REQUIRED = "Completion Remark is required.";
+const REVIEW_WAIT_HEADER =
+  "Your task has been submitted for Admin review.";
+const REVIEW_WAIT_ASSIGNMENT = "Waiting for Admin review.";
+const BLOCKER_REMARK_HELPER =
+  "Describe what is blocking you from completing this task.";
+const BLOCKER_REMARK_REQUIRED = "Blocker Remark is required.";
+const BLOCKER_REMARK_PLACEHOLDER =
+  "Describe what is preventing you from completing the task...";
 
 function StatusBadge({ taskOrStatus }) {
   const style = statusBadgeStyle(taskOrStatus);
@@ -92,7 +115,23 @@ export default function TaskDetails() {
   const [loading, setLoading] = useState(!location.state?.task);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [modal, setModal] = useState(null); // edit | status | reassign
+  const [modal, setModal] = useState(null); // edit | status | reassign | complete | blocker
+  const [completeRemark, setCompleteRemark] = useState("");
+  const [completeError, setCompleteError] = useState("");
+  const [blockerRemark, setBlockerRemark] = useState("");
+  const [blockerError, setBlockerError] = useState("");
+  const [reviewDecision, setReviewDecision] = useState("");
+  const [reviewReason, setReviewReason] = useState("");
+  const [reviewRemark, setReviewRemark] = useState("");
+  const [reviewAssignMode, setReviewAssignMode] = useState("SAME");
+  const [reviewOtherEmail, setReviewOtherEmail] = useState("");
+  const [reviewDescription, setReviewDescription] = useState("");
+  const [reviewStartDate, setReviewStartDate] = useState("");
+  const [reviewStartTime, setReviewStartTime] = useState("");
+  const [reviewEndDate, setReviewEndDate] = useState("");
+  const [reviewEndTime, setReviewEndTime] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const reviewFormTaskIdRef = useRef(null);
   const [editForm, setEditForm] = useState({
     title: "",
     description: "",
@@ -226,6 +265,28 @@ export default function TaskDetails() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!task) {
+      reviewFormTaskIdRef.current = null;
+      return;
+    }
+    if (reviewFormTaskIdRef.current === task.taskId) return;
+    reviewFormTaskIdRef.current = task.taskId;
+    const start = splitDueParts(task.startDate);
+    const due = splitDueParts(task.dueDate);
+    setReviewDescription(task.description || "");
+    setReviewStartDate(start.date);
+    setReviewStartTime(start.time);
+    setReviewEndDate(due.date);
+    setReviewEndTime(due.time);
+    setReviewDecision("");
+    setReviewReason("");
+    setReviewRemark("");
+    setReviewAssignMode("SAME");
+    setReviewOtherEmail("");
+    setReviewError("");
+  }, [task]);
 
   const patchTask = async (updates) => {
     const updated = await updateTask({
@@ -386,6 +447,227 @@ export default function TaskDetails() {
     }
   };
 
+  const reviewedAssignment = task
+    ? getTaskAssignees(task).find(
+        (a) => String(a.status || "").toUpperCase() === "REVIEW"
+      ) || null
+    : null;
+
+  const resetReviewForm = () => {
+    setReviewDecision("");
+    setReviewReason("");
+    setReviewRemark("");
+    setReviewAssignMode("SAME");
+    setReviewOtherEmail("");
+    setReviewError("");
+  };
+
+  const handleApproveReview = async () => {
+    if (!reviewedAssignment?.email) {
+      setReviewError("Reviewed assignment not found.");
+      return;
+    }
+    const ok = window.confirm(
+      "Mark this assignment as completed? Completed work will not move to Orange or Red."
+    );
+    if (!ok) return;
+    setSaving(true);
+    setReviewError("");
+    setError("");
+    try {
+      await patchTask({
+        status: "DONE",
+        assignmentEmail: reviewedAssignment.email,
+      });
+      resetReviewForm();
+    } catch (err) {
+      setReviewError(err.message || "Failed to approve task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReviewReassign = async () => {
+    if (!reviewedAssignment?.email) {
+      setReviewError("Reviewed assignment not found.");
+      return;
+    }
+    if (
+      reviewReason !== "CHANGES_REQUIRED" &&
+      reviewReason !== "REJECTED"
+    ) {
+      setReviewError("Select Changes Required or Rejected.");
+      return;
+    }
+    const remark = String(reviewRemark || "").trim();
+    if (!remark) {
+      setReviewError("Admin remark is required.");
+      return;
+    }
+    const targetEmail =
+      reviewAssignMode === "OTHER"
+        ? String(reviewOtherEmail || "").trim().toLowerCase()
+        : String(reviewedAssignment.email || "").trim().toLowerCase();
+    if (!targetEmail) {
+      setReviewError("Please select an employee.");
+      return;
+    }
+    if (!reviewStartDate || !reviewStartTime || !reviewEndDate || !reviewEndTime) {
+      setReviewError("Start and end date/time are required.");
+      return;
+    }
+    if (!isQuarterHourTime(reviewStartTime) || !isQuarterHourTime(reviewEndTime)) {
+      setReviewError(
+        "Start and end times must be in 15-minute intervals (00, 15, 30, or 45)."
+      );
+      return;
+    }
+    const startIso = joinDueParts(reviewStartDate, reviewStartTime);
+    const dueIso = joinDueParts(reviewEndDate, reviewEndTime);
+    if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
+      setReviewError("End must be after the start date and time.");
+      return;
+    }
+    setSaving(true);
+    setReviewError("");
+    setError("");
+    try {
+      const created = await createTask({
+        sourceTaskId: task.taskId || taskId,
+        assignmentEmail: reviewedAssignment.email,
+        reassignmentReason: reviewReason,
+        reassignmentRemark: remark,
+        assignees: [targetEmail],
+        assignee: targetEmail,
+        startDate: startIso,
+        dueDate: dueIso,
+        description: reviewDescription,
+      });
+      const nextId = created?.taskId;
+      if (nextId) {
+        navigate(`/admin/tasks/${encodeURIComponent(nextId)}`);
+        return;
+      }
+      await load();
+    } catch (err) {
+      setReviewError(err.message || "Failed to reassign task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEmployeeStatus = async (nextStatus) => {
+    const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
+    const mine =
+      task?.myAssignment ||
+      getTaskAssignees(task).find(
+        (a) => String(a.email || "").toLowerCase() === viewer
+      ) ||
+      null;
+    const current = String(mine?.status || "").toUpperCase();
+    const wanted = String(nextStatus || "").toUpperCase();
+    if (!wanted || wanted === current || wanted === "CANCELLED" || wanted === "REVIEW") return;
+    if (!employeeCanChangeStatus(mine || task, task.dueDate)) {
+      setError(RED_ZONE_MESSAGE);
+      return;
+    }
+    if (wanted === "DONE") {
+      setCompleteRemark("");
+      setCompleteError("");
+      setModal("complete");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await updateTask({
+        taskId: task.taskId || taskId,
+        projectId: task.projectId,
+        status: wanted,
+        assignmentEmail: mine?.email || getLoggedInEmail(),
+      });
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to update task status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const closeCompletionModal = () => {
+    setModal(null);
+    setCompleteRemark("");
+    setCompleteError("");
+  };
+
+  const handleEmployeeComplete = async () => {
+    const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
+    const mine =
+      task?.myAssignment ||
+      getTaskAssignees(task).find(
+        (a) => String(a.email || "").toLowerCase() === viewer
+      ) ||
+      null;
+    if (!employeeCanChangeStatus(mine || task, task.dueDate)) {
+      setCompleteError(RED_ZONE_MESSAGE);
+      return;
+    }
+    const remark = String(completeRemark || "").trim();
+    if (!remark) {
+      setCompleteError(COMPLETION_REMARK_REQUIRED);
+      return;
+    }
+    setSaving(true);
+    setCompleteError("");
+    setError("");
+    try {
+      await updateTask({
+        taskId: task.taskId || taskId,
+        projectId: task.projectId,
+        status: "DONE",
+        assignmentEmail: mine?.email || getLoggedInEmail(),
+        completionRemark: remark,
+      });
+      closeCompletionModal();
+      await load();
+    } catch (err) {
+      setCompleteError(err.message || "Failed to update task status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const closeBlockerModal = () => {
+    setModal(null);
+    setBlockerRemark("");
+    setBlockerError("");
+  };
+
+  const openBlockerModal = () => {
+    setBlockerError("");
+    setModal("blocker");
+  };
+
+  const handleReportBlocker = async () => {
+    const remark = String(blockerRemark || "").trim();
+    if (!remark) {
+      setBlockerError(BLOCKER_REMARK_REQUIRED);
+      return;
+    }
+    setSaving(true);
+    setBlockerError("");
+    setError("");
+    try {
+      await reportTaskBlocker(task.taskId || taskId, remark);
+      closeBlockerModal();
+      await load();
+    } catch (err) {
+      setBlockerError(err.message || "Failed to report blocker.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading && !task) {
     return (
       <Layout>
@@ -426,6 +708,48 @@ export default function TaskDetails() {
   const creator = task.createdByName || creatorName || personLabel(users, task.createdBy).name;
   const zone = getTaskZone(task);
   const timing = getTaskTiming(task);
+  const viewerEmail = String(getLoggedInEmail() || "").trim().toLowerCase();
+  const mine =
+    task.myAssignment ||
+    assignees.find(
+      (a) => String(a.email || "").toLowerCase() === viewerEmail
+    ) ||
+    null;
+  const employeeStatus = String(mine?.status || "").toUpperCase();
+  const employeeBlockerStatus = String(mine?.blockerStatus || "")
+    .trim()
+    .toUpperCase();
+  const showReportBlocker =
+    employeeView &&
+    !!mine &&
+    employeeStatus === "IN_PROGRESS" &&
+    employeeBlockerStatus !== "ACTIVE";
+  const showActiveBlocker =
+    employeeView && !!mine && employeeBlockerStatus === "ACTIVE";
+  const employeeZone = mine?.zone || zone;
+  const employeeTiming = mine?.timing || timing;
+  const headerStatus = employeeView ? employeeStatus || "TODO" : task;
+  const headerZone = employeeView ? employeeZone : zone;
+  const headerTiming = employeeView ? employeeTiming : timing;
+  const headerStatusValue = employeeView ? employeeStatus : task.status;
+  const employeeLocked =
+    !mine ||
+    employeeStatus === "DONE" ||
+    employeeStatus === "REVIEW" ||
+    employeeStatus === "CANCELLED" ||
+    !employeeCanChangeStatus(mine, task.dueDate);
+  const employeeIsRed =
+    !!mine &&
+    employeeStatus !== "DONE" &&
+    employeeStatus !== "REVIEW" &&
+    employeeStatus !== "CANCELLED" &&
+    String(employeeZone).toUpperCase() === "RED";
+  const showEmployeeSelect =
+    employeeView &&
+    !!mine &&
+    employeeStatus !== "DONE" &&
+    employeeStatus !== "REVIEW" &&
+    employeeStatus !== "CANCELLED";
   const timeline = [...activity].sort((a, b) => {
     const ta = new Date(a.timestamp || 0).getTime();
     const tb = new Date(b.timestamp || 0).getTime();
@@ -480,25 +804,145 @@ export default function TaskDetails() {
         </div>
 
         <section style={sectionBox}>
-          <Label>TASK NAME</Label>
-          <h3 style={{ margin: "0 0 16px", fontSize: 22, fontWeight: 700 }}>
-            {task.title}
-          </h3>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ minWidth: 0, flex: "1 1 180px" }}>
+              <Label>TASK NAME</Label>
+              <h3 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
+                {task.title}
+              </h3>
+            </div>
+            {showReportBlocker ? (
+              <div style={{ flex: "0 0 auto" }}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={openBlockerModal}
+                >
+                  Report Blocker
+                </Button>
+              </div>
+            ) : null}
+          </div>
           <Label>STATUS</Label>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <StatusBadge taskOrStatus={task} />
-            <ZoneBadge zone={zone} status={task.status} size="md" />
+            {employeeView && showEmployeeSelect ? (
+              <select
+                id="employee-assignment-status"
+                className="dgv-select"
+                aria-label="Update your assignment status"
+                style={{ ...formSelect, maxWidth: 280, marginBottom: 0 }}
+                value={employeeStatus || "TODO"}
+                disabled={saving || employeeLocked}
+                onChange={(e) => handleEmployeeStatus(e.target.value)}
+              >
+                {EMPLOYEE_STATUS_OPTIONS.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <StatusBadge taskOrStatus={headerStatus} />
+            )}
+            <ZoneBadge zone={headerZone} status={headerStatusValue} size="md" />
           </div>
-          {timing ? (
-            <p style={{ margin: "10px 0 0", fontSize: 13, color: colors.textMuted }}>
-              {timing}
+          {employeeView && employeeStatus === "REVIEW" ? (
+            <p style={{ margin: "8px 0 0", color: colors.textMuted, fontSize: 13 }}>
+              {REVIEW_WAIT_HEADER}
             </p>
+          ) : null}
+          {employeeView && employeeIsRed ? (
+            <p style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}>
+              {RED_ZONE_MESSAGE}
+            </p>
+          ) : null}
+          {headerTiming ? (
+            <p style={{ margin: "10px 0 0", fontSize: 13, color: colors.textMuted }}>
+              {headerTiming}
+            </p>
+          ) : null}
+          {showActiveBlocker ? (
+            <ActiveBlockerNotice
+              reportedAt={mine.blockerReportedAt}
+              style={{ margin: "10px 0 0" }}
+            />
           ) : null}
         </section>
 
+        {employeeView ? (
+          <EmployeeTaskBody
+            task={task}
+            mine={mine}
+            employeeStatus={employeeStatus}
+            employeeZone={employeeZone}
+            employeeTiming={employeeTiming}
+            showActiveBlocker={showActiveBlocker}
+            timeline={timeline}
+            users={users}
+          />
+        ) : (
+        <>
+        {!employeeView && reviewedAssignment ? (
+          <AdminReviewPanel
+            assignment={reviewedAssignment}
+            users={users}
+            decision={reviewDecision}
+            onDecision={setReviewDecision}
+            reason={reviewReason}
+            onReason={setReviewReason}
+            remark={reviewRemark}
+            onRemark={setReviewRemark}
+            assignMode={reviewAssignMode}
+            onAssignMode={setReviewAssignMode}
+            otherEmail={reviewOtherEmail}
+            onOtherEmail={setReviewOtherEmail}
+            description={reviewDescription}
+            onDescription={setReviewDescription}
+            startDate={reviewStartDate}
+            onStartDate={setReviewStartDate}
+            startTime={reviewStartTime}
+            onStartTime={setReviewStartTime}
+            endDate={reviewEndDate}
+            onEndDate={setReviewEndDate}
+            endTime={reviewEndTime}
+            onEndTime={setReviewEndTime}
+            error={reviewError}
+            saving={saving}
+            onCancel={resetReviewForm}
+            onApprove={handleApproveReview}
+            onReassign={handleReviewReassign}
+          />
+        ) : null}
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>TASK INFORMATION</h3>
           <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
+          {task.sourceTaskId ? (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
+                Source task:
+              </div>
+              <button
+                type="button"
+                className="dgv-btn dgv-btn--outline"
+                onClick={() =>
+                  navigate(
+                    `/admin/tasks/${encodeURIComponent(task.sourceTaskId)}`
+                  )
+                }
+              >
+                {displayTaskId(task.sourceTaskId)}
+              </button>
+            </div>
+          ) : null}
           <InfoRow
             label="Author"
             value={
@@ -653,6 +1097,8 @@ export default function TaskDetails() {
             </ul>
           )}
         </section>
+        </>
+        )}
       </div>
 
       {modal === "edit" ? (
@@ -910,7 +1356,557 @@ export default function TaskDetails() {
           </div>
         </Modal>
       ) : null}
+
+      {modal === "complete" ? (
+        <Modal title={COMPLETION_MODAL_TITLE} onClose={closeCompletionModal}>
+          <label style={formLabel} htmlFor="completion-remark">
+            Completion Remark *
+          </label>
+          <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
+            {COMPLETION_REMARK_HELPER}
+          </p>
+          <textarea
+            id="completion-remark"
+            aria-label="Completion Remark"
+            style={{ ...formInput, minHeight: 110 }}
+            value={completeRemark}
+            onChange={(e) => {
+              setCompleteRemark(e.target.value);
+              if (completeError) setCompleteError("");
+            }}
+          />
+          {completeError ? (
+            <p style={{ margin: "0 0 8px", color: colors.error, fontSize: 13 }}>
+              {completeError}
+            </p>
+          ) : null}
+          <div style={modalActions}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={closeCompletionModal}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving}
+              onClick={handleEmployeeComplete}
+            >
+              {COMPLETION_SUBMIT_LABEL}
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {modal === "blocker" ? (
+        <Modal title="Report Blocker" onClose={closeBlockerModal}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+            {BLOCKER_REMARK_HELPER}
+          </p>
+          <label style={formLabel} htmlFor="blocker-remark">
+            Blocker Remark *
+          </label>
+          <textarea
+            id="blocker-remark"
+            aria-label="Blocker Remark"
+            placeholder={BLOCKER_REMARK_PLACEHOLDER}
+            style={{ ...formInput, minHeight: 110 }}
+            value={blockerRemark}
+            onChange={(e) => {
+              setBlockerRemark(e.target.value);
+              if (blockerError) setBlockerError("");
+            }}
+          />
+          {blockerError ? (
+            <p style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}>
+              {blockerError}
+            </p>
+          ) : null}
+          <div style={modalActions}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={closeBlockerModal}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving}
+              onClick={handleReportBlocker}
+            >
+              Report Blocker
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
     </Layout>
+  );
+}
+
+function radioRow(style) {
+  return {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    margin: "8px 0 14px",
+    ...style,
+  };
+}
+
+function AdminReviewPanel({
+  assignment,
+  users,
+  decision,
+  onDecision,
+  reason,
+  onReason,
+  remark,
+  onRemark,
+  assignMode,
+  onAssignMode,
+  otherEmail,
+  onOtherEmail,
+  description,
+  onDescription,
+  startDate,
+  onStartDate,
+  startTime,
+  onStartTime,
+  endDate,
+  onEndDate,
+  endTime,
+  onEndTime,
+  error,
+  saving,
+  onCancel,
+  onApprove,
+  onReassign,
+}) {
+  const employee = personLabel(users, assignment.email);
+  const employeeName = employee.name || assignment.email;
+  return (
+    <section style={{ ...sectionBox, marginTop: 14 }}>
+      <h3 style={sectionTitle}>Review Task</h3>
+      <Label>CURRENT STATUS</Label>
+      <div style={{ marginBottom: 12 }}>
+        <StatusBadge taskOrStatus="REVIEW" />
+      </div>
+      {assignment.completionRemark ? (
+        <div style={{ marginBottom: 14 }}>
+          <Label>EMPLOYEE SUBMISSION REMARK</Label>
+          <p style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 14 }}>
+            {assignment.completionRemark}
+          </p>
+        </div>
+      ) : (
+        <p style={{ margin: "0 0 14px", color: colors.textMuted, fontSize: 13 }}>
+          No submission remark was provided.
+        </p>
+      )}
+      <Label>REVIEW DECISION</Label>
+      <div style={radioRow()}>
+        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="radio"
+            name="review-decision"
+            value="APPROVE"
+            checked={decision === "APPROVE"}
+            onChange={() => onDecision("APPROVE")}
+          />
+          Approve & Complete
+        </label>
+        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="radio"
+            name="review-decision"
+            value="REASSIGN"
+            checked={decision === "REASSIGN"}
+            onChange={() => onDecision("REASSIGN")}
+          />
+          Reassign
+        </label>
+      </div>
+
+      {decision === "REASSIGN" ? (
+        <>
+          <Label>REASON</Label>
+          <div style={radioRow()}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="review-reason"
+                value="CHANGES_REQUIRED"
+                checked={reason === "CHANGES_REQUIRED"}
+                onChange={() => onReason("CHANGES_REQUIRED")}
+              />
+              Changes Required
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="review-reason"
+                value="REJECTED"
+                checked={reason === "REJECTED"}
+                onChange={() => onReason("REJECTED")}
+              />
+              Rejected
+            </label>
+          </div>
+          <label style={formLabel} htmlFor="admin-review-remark">
+            Admin Remark *
+          </label>
+          <textarea
+            id="admin-review-remark"
+            aria-label="Admin Remark"
+            style={{ ...formInput, minHeight: 90 }}
+            value={remark}
+            onChange={(e) => onRemark(e.target.value)}
+          />
+          <Label>ASSIGN TO</Label>
+          <div style={radioRow()}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="review-assign-to"
+                value="SAME"
+                checked={assignMode === "SAME"}
+                onChange={() => onAssignMode("SAME")}
+              />
+              Same Employee — {employeeName}
+            </label>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="review-assign-to"
+                value="OTHER"
+                checked={assignMode === "OTHER"}
+                onChange={() => onAssignMode("OTHER")}
+              />
+              Another Employee
+            </label>
+          </div>
+          {assignMode === "OTHER" ? (
+            <>
+              <label style={formLabel} htmlFor="review-other-employee">
+                Select Employee
+              </label>
+              <select
+                id="review-other-employee"
+                aria-label="Select Employee"
+                style={formSelect}
+                value={otherEmail}
+                onChange={(e) => onOtherEmail(e.target.value)}
+              >
+                <option value="">Select employee</option>
+                {selectableTaskAssignees(users)
+                  .filter(
+                    (u) =>
+                      String(u.email || "").toLowerCase() !==
+                      String(assignment.email || "").toLowerCase()
+                  )
+                  .map((u) => (
+                    <option key={u.email} value={u.email}>
+                      {u.name ? `${u.name} (${u.email})` : u.email}
+                    </option>
+                  ))}
+              </select>
+            </>
+          ) : null}
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: colors.textMuted }}>
+            Copied from original task: name, project, category, and priority.
+            Description and schedule can be overridden below.
+          </p>
+          <label style={formLabel} htmlFor="review-description">
+            Description
+          </label>
+          <textarea
+            id="review-description"
+            aria-label="Description"
+            style={{ ...formInput, minHeight: 80 }}
+            value={description}
+            onChange={(e) => onDescription(e.target.value)}
+          />
+          <Label>NEW SCHEDULE</Label>
+          <label style={formLabel} htmlFor="review-start-date">
+            Start Date
+          </label>
+          <input
+            id="review-start-date"
+            aria-label="Start Date"
+            type="date"
+            style={formInput}
+            value={startDate}
+            onChange={(e) => onStartDate(e.target.value)}
+          />
+          <label style={formLabel} htmlFor="review-start-time">
+            Start Time
+          </label>
+          <input
+            id="review-start-time"
+            aria-label="Start Time"
+            type="time"
+            step={900}
+            style={formInput}
+            value={startTime}
+            onChange={(e) => onStartTime(e.target.value)}
+          />
+          <label style={formLabel} htmlFor="review-end-date">
+            End Date
+          </label>
+          <input
+            id="review-end-date"
+            aria-label="End Date"
+            type="date"
+            style={formInput}
+            value={endDate}
+            onChange={(e) => onEndDate(e.target.value)}
+          />
+          <label style={formLabel} htmlFor="review-end-time">
+            End Time
+          </label>
+          <input
+            id="review-end-time"
+            aria-label="End Time"
+            type="time"
+            step={900}
+            style={formInput}
+            value={endTime}
+            onChange={(e) => onEndTime(e.target.value)}
+          />
+        </>
+      ) : null}
+
+      {error ? (
+        <p style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}>
+          {error}
+        </p>
+      ) : null}
+      {decision ? (
+        <div style={{ ...modalActions, marginTop: 16 }}>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          {decision === "APPROVE" ? (
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving}
+              onClick={onApprove}
+            >
+              Approve & Complete
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving}
+              onClick={onReassign}
+            >
+              Reassign Task
+            </Button>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function EmployeeTaskBody({
+  task,
+  mine,
+  employeeStatus,
+  employeeZone,
+  employeeTiming,
+  showActiveBlocker,
+  timeline,
+  users,
+}) {
+  return (
+    <>
+      <section style={{ ...sectionBox, marginTop: 14 }}>
+        <h3 style={sectionTitle}>TASK INFORMATION</h3>
+        <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
+        <InfoRow
+          label="Project"
+          value={task.projectName || task.projectId || "—"}
+        />
+        <InfoRow label="Priority" value={priorityLabel(task.priority)} />
+        <InfoRow label="Category" value={task.category || "—"} />
+      </section>
+
+      <section style={{ ...sectionBox, marginTop: 14 }}>
+        <h3 style={sectionTitle}>TASK DESCRIPTION</h3>
+        <p
+          style={{
+            margin: 0,
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.6,
+            color: colors.text,
+          }}
+        >
+          {task.description?.trim()
+            ? task.description
+            : "No description added."}
+        </p>
+      </section>
+
+      <section style={{ ...sectionBox, marginTop: 14 }}>
+        <h3 style={sectionTitle}>SCHEDULE</h3>
+        <InfoRow
+          label="Start date"
+          value={formatTaskDate(task.startDate || task.createdAt)}
+        />
+        <InfoRow
+          label="Start time"
+          value={formatTaskTime(task.startDate || task.createdAt)}
+        />
+        <InfoRow
+          label="Deadline date"
+          value={formatTaskDate(task.dueDate)}
+          danger={employeeZone === "RED" || employeeZone === "ORANGE"}
+        />
+        <InfoRow
+          label="Deadline time"
+          value={formatTaskTime(task.dueDate)}
+          danger={employeeZone === "RED" || employeeZone === "ORANGE"}
+        />
+        <InfoRow label="Due in" value={employeeTiming || "—"} />
+        <InfoRow
+          label="Current Zone"
+          value={`${zoneDisplay(employeeZone, employeeStatus).emoji} ${
+            zoneDisplay(employeeZone, employeeStatus).label
+          }`.trim()}
+        />
+        <InfoRow label="Duration" value={formatTaskDuration(task) || "—"} />
+      </section>
+
+      <section style={{ ...sectionBox, marginTop: 14 }}>
+        <h3 style={sectionTitle}>YOUR ASSIGNMENT</h3>
+        {!mine ? (
+          <p style={{ margin: 0, color: colors.textMuted }}>
+            No assignment found for your account.
+          </p>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <StatusBadge taskOrStatus={employeeStatus} />
+              <ZoneBadge zone={employeeZone} status={employeeStatus} />
+            </div>
+            {showActiveBlocker ? (
+              <ActiveBlockerNotice
+                reportedAt={mine.blockerReportedAt}
+                style={{ margin: "0 0 12px" }}
+              />
+            ) : null}
+            {employeeTiming ? (
+              <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+                {employeeTiming}
+              </p>
+            ) : null}
+            {mine.completedAt ? (
+              <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+                Completed {formatTaskDateTime(mine.completedAt)}
+              </p>
+            ) : null}
+            {mine.completionRemark ? (
+              <p style={{ margin: "0 0 12px", fontSize: 14, whiteSpace: "pre-wrap" }}>
+                <strong>
+                  {employeeStatus === "REVIEW"
+                    ? "Review Submission Remark"
+                    : "Completion Remark"}
+                </strong>
+                <br />
+                {mine.completionRemark}
+              </p>
+            ) : null}
+            {employeeStatus === "REVIEW" ? (
+              <p style={{ margin: 0, color: colors.textMuted, fontSize: 13 }}>
+                {REVIEW_WAIT_ASSIGNMENT}
+              </p>
+            ) : null}
+            {employeeStatus === "DONE" ? (
+              <p style={{ margin: 0, color: colors.textMuted, fontSize: 13 }}>
+                Completed assignments cannot be reopened.
+              </p>
+            ) : null}
+            {employeeStatus === "CANCELLED" ? (
+              <p style={{ margin: 0, color: colors.textMuted, fontSize: 13 }}>
+                This assignment is cancelled and cannot be updated.
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
+
+      <section style={{ ...sectionBox, marginTop: 14 }}>
+        <h3 style={sectionTitle}>Task Activity</h3>
+        {timeline.length === 0 ? (
+          <p style={{ margin: 0, color: colors.textMuted }}>
+            No timeline events yet.
+          </p>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            {timeline.map((ev) => (
+              <li
+                key={ev.activityId || ev.SK}
+                style={{
+                  padding: "12px 0 12px 14px",
+                  borderLeft: "2px solid var(--dgv-accent)",
+                  marginBottom: 4,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: colors.textMuted,
+                    marginBottom: 4,
+                  }}
+                >
+                  {formatTaskDateTime(ev.timestamp)}
+                </div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  {friendlyActivityText(ev, users)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
+  );
+}
+
+function ActiveBlockerNotice({ reportedAt, style }) {
+  return (
+    <div style={style}>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 13,
+          fontWeight: 700,
+          color: colors.text,
+        }}
+      >
+        Blocker Reported
+      </p>
+      {reportedAt ? (
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: colors.textMuted }}>
+          Reported: {formatTaskDateTime(reportedAt)}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

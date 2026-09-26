@@ -7,6 +7,7 @@ import {
   saveUserProfile,
   getProfileImageUploadUrl,
   apiOptional,
+  fetchEmployeeShift,
 } from "../services/api";
 import { getLoggedInEmail } from "../services/auth";
 import { s3KeyFromFileUrl } from "../utils/documentView";
@@ -148,6 +149,8 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [assignedShift, setAssignedShift] = useState(null);
+  const [shiftLoadError, setShiftLoadError] = useState("");
 
   const email = String(profile.email || getLoggedInEmail() || "")
     .trim()
@@ -162,6 +165,14 @@ export default function Profile() {
       const lookup = getLoggedInEmail() || undefined;
       const data = await fetchUserProfile(lookup);
       setProfile(data || {});
+      try {
+        const shiftRes = await fetchEmployeeShift(lookup || getLoggedInEmail());
+        setAssignedShift(shiftRes?.shift || null);
+        setShiftLoadError("");
+      } catch (err) {
+        setAssignedShift(null);
+        setShiftLoadError(err?.message || "Unable to load assigned shift.");
+      }
       const src = await resolveProfilePhotoSrc(data || {});
       if (src) {
         setPreview((prev) => {
@@ -422,6 +433,27 @@ export default function Profile() {
               draft={draft}
               onDraftChange={updateDraft}
             />
+          </div>
+        </section>
+
+        <section className="dgv-profile-block">
+          <h2>Assigned Shift</h2>
+          <p className="dgv-profile-section-desc">
+            Your working hours. Only an administrator can change this.
+          </p>
+          <div className="dgv-profile-card">
+            <div className="dgv-profile-item">
+              <label>Shift</label>
+              <div className="dgv-profile-value">
+                {shiftLoadError
+                  ? shiftLoadError
+                  : assignedShift?.name
+                    ? `${assignedShift.name} (${assignedShift.startTime} – ${assignedShift.endTime}${
+                        assignedShift.crossesMidnight ? ", overnight" : ""
+                      })`
+                    : "Not assigned"}
+              </div>
+            </div>
           </div>
         </section>
       </div>

@@ -3,7 +3,9 @@ const { TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   TASK_COMPLETION_EMAIL_ATTRS,
   ASSIGNMENT_RED_NOTIFY_ATTRS,
+  ASSIGNMENT_BLOCKER_ATTRS,
   overlayStoredAttrs,
+  overlayMissingAttrs,
   putTaskCopiesSafe,
   putAssignmentSafe,
   putCreatedTaskRecords,
@@ -141,6 +143,35 @@ async function run() {
   assert.strictEqual(overlaid.completionEmailError, "x");
   assert.strictEqual(overlaid.completionEmailRecipientCount, 2);
   assert.ok(!Object.prototype.hasOwnProperty.call(overlaid, "completionEmailUpdatedAt"));
+
+  const missing = overlayMissingAttrs(
+    { status: "IN_PROGRESS" },
+    {
+      blockerStatus: "ACTIVE",
+      blockerRemark: "Need asset",
+      blockerReportedAt: "2026-09-25T10:00:00.000Z",
+    },
+    ASSIGNMENT_BLOCKER_ATTRS
+  );
+  assert.strictEqual(missing.status, "IN_PROGRESS");
+  assert.strictEqual(missing.blockerStatus, "ACTIVE");
+  assert.strictEqual(missing.blockerRemark, "Need asset");
+  const explicitNull = overlayMissingAttrs(
+    {
+      blockerStatus: "ACTIVE",
+      blockerResolvedAt: null,
+      blockerResolvedBy: null,
+    },
+    {
+      blockerStatus: "RESOLVED",
+      blockerResolvedAt: "old",
+      blockerResolvedBy: "admin@mydgv.com",
+    },
+    ASSIGNMENT_BLOCKER_ATTRS
+  );
+  assert.strictEqual(explicitNull.blockerStatus, "ACTIVE");
+  assert.strictEqual(explicitNull.blockerResolvedAt, null);
+  assert.strictEqual(explicitNull.blockerResolvedBy, null);
 
   const tableName = "WorkTasksTable";
   const ddb = createMemoryDdb();
@@ -282,6 +313,42 @@ async function run() {
   assert.strictEqual(afterSent.status, "REVIEW");
   assert.strictEqual(afterSent.redAdminNotifyStatus, "SENT");
   assert.strictEqual(afterSent.redAdminNotifyRecipients["admin@mydgv.com"].messageId, "m-1");
+
+  afterSent.blockerStatus = "ACTIVE";
+  afterSent.blockerRemark = "Need asset";
+  afterSent.blockerReportedAt = "2026-09-25T10:00:00.000Z";
+  assignDdb.items.set("TASK#t1|ASSIGNMENT#a@mydgv.com", afterSent);
+  const keepBlocker = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    status: "REVIEW",
+  });
+  assert.strictEqual(keepBlocker.ok, true);
+  const keptBlocker = assignDdb.items.get("TASK#t1|ASSIGNMENT#a@mydgv.com");
+  assert.strictEqual(keptBlocker.status, "REVIEW");
+  assert.strictEqual(keptBlocker.blockerStatus, "ACTIVE");
+  assert.strictEqual(keptBlocker.blockerRemark, "Need asset");
+  assert.strictEqual(keptBlocker.blockerReportedAt, "2026-09-25T10:00:00.000Z");
+
+  const cycleB = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    status: "IN_PROGRESS",
+    blockerStatus: "ACTIVE",
+    blockerRemark: "Cycle B",
+    blockerReportedAt: "2026-09-26T10:00:00.000Z",
+    blockerResolvedAt: null,
+    blockerResolvedBy: null,
+  });
+  assert.strictEqual(cycleB.ok, true);
+  const cycleStored = assignDdb.items.get("TASK#t1|ASSIGNMENT#a@mydgv.com");
+  assert.strictEqual(cycleStored.blockerStatus, "ACTIVE");
+  assert.strictEqual(cycleStored.blockerRemark, "Cycle B");
+  assert.strictEqual(cycleStored.blockerReportedAt, "2026-09-26T10:00:00.000Z");
+  assert.strictEqual(cycleStored.blockerResolvedAt, null);
+  assert.strictEqual(cycleStored.blockerResolvedBy, null);
   const fs = require("fs");
   const confirmSrc = fs.readFileSync(require.resolve("./taskImportConfirm.js"), "utf8");
   const handlerSrc = fs.readFileSync(require.resolve("./handler.js"), "utf8");
@@ -293,6 +360,8 @@ async function run() {
   assert.ok(handlerSrc.includes("assertPersistOk"));
   assert.ok(handlerSrc.includes("PersistConflictError"));
   assert.ok(handlerSrc.includes("json(err.statusCode || 409"));
+  assert.ok(handlerSrc.includes("blockerStatus"));
+  assert.ok(confirmSrc.includes("assignmentBlockerFields"));
 
   ddb.items.get("ENTITY#TASK|TASK#t1").completionEmailStatus = "FAILED";
   ddb.items.get("ENTITY#TASK|TASK#t1").completionEmailError = "SEND_FAILED";

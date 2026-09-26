@@ -60,7 +60,14 @@ assert.deepStrictEqual(resolveChannels({ type: "ATTENDANCE_MISSED" }), {
 assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_ASSIGNED"));
 assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_ORANGE"));
 assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_RED"));
+assert.ok(TASK_IN_APP_ONLY_TYPES.has("TASK_BLOCKER_REPORTED"));
 assert.ok(!TASK_IN_APP_ONLY_TYPES.has("TASK_COMPLETED"));
+assert.ok(!TASK_IN_APP_ONLY_TYPES.has("TASK_ASSIGNED_EMAIL"));
+assert.ok(!TASK_IN_APP_ONLY_TYPES.has("TASK_REVIEW_REASSIGNED_EMAIL"));
+assert.deepStrictEqual(resolveChannels({ type: "TASK_BLOCKER_REPORTED" }), {
+  emailEnabled: false,
+  inAppEnabled: true,
+});
 assert.deepStrictEqual(resolveChannels({ type: "TASK_COMPLETED" }), {
   emailEnabled: true,
   inAppEnabled: true,

@@ -32,14 +32,27 @@ const taskImportConfirm = require("./taskImportConfirm");
 const projectManage = require("./projectManage");
 const taskImportHistory = require("./taskImportHistory");
 const { notifyTaskCompleted } = require("./taskCompleteNotify");
+const { notifyTaskSubmittedForReview } = require("./taskReviewNotify");
 const taskReadAccess = require("./taskReadAccess");
 const taskMutateAccess = require("./taskMutateAccess");
 const workflowAccess = require("./workflowAccess");
+const shiftCatalog = require("./shiftCatalog");
+const myActivity = require("./myActivity");
+const { notifyBlockerReported } = require("./taskBlockerNotify");
+const {
+  putChangesAssignedShiftFit,
+  shiftFitConflictBody,
+  validateAssigneesAssignedShiftFit,
+} = require("./assignedShiftFit");
+const taskReviewReassign = require("./taskReviewReassign");
+const { materializeTodaysConfirmedLeave } = require("../leave/materialize");
 const { canViewTask } = taskReadAccess;
+const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
 
-const ddb = DynamoDBDocumentClient.from(
+const ddbClient = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
+let ddb = ddbClient;
 const s3 = new S3Client({ region: process.env.AWS_REGION });
 
 const STATUSES = [
@@ -123,10 +136,16 @@ function parseDuration(body = {}) {
 }
 
 function taskPathMatch(path) {
-  // /tasks/{taskId} or /prod/tasks/{taskId}
-  const m = String(path).match(/\/tasks\/([^/]+)(?:\/([^/]+))?$/);
+  // /tasks/{taskId}[/sub[/action]] or /prod/tasks/{taskId}[/sub[/action]]
+  const m = String(path).match(
+    /\/tasks\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/
+  );
   if (!m) return null;
-  return { taskId: decodeURIComponent(m[1]), sub: m[2] || null };
+  return {
+    taskId: decodeURIComponent(m[1]),
+    sub: m[2] || null,
+    action: m[3] || null,
+  };
 }
 
 function isOverdue(task) {
@@ -218,6 +237,7 @@ function assignmentRecord(taskId, assignment) {
     completedAt: assignment.completedAt || null,
     completedDate: assignment.completedDate || null,
     completedZone: assignment.completedZone || null,
+    completionRemark: assignment.completionRemark || null,
     highestZone: assignment.highestZone || null,
     recordedZone: assignment.recordedZone || null,
     zoneReachedAt: assignment.zoneReachedAt || null,
@@ -227,6 +247,7 @@ function assignmentRecord(taskId, assignment) {
     redAdminNotifyRecipients: assignment.redAdminNotifyRecipients || {},
     redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
+    ...escalation.assignmentBlockerFields(assignment, { omitIfAbsent: true }),
   };
 }
 
@@ -267,6 +288,7 @@ function snapshotTask(task, assignments) {
       completedAt: a.completedAt || null,
       completedDate: a.completedDate || null,
       completedZone: a.completedZone || null,
+      completionRemark: a.completionRemark || null,
       highestZone: a.highestZone || null,
       recordedZone: a.recordedZone || null,
       zoneReachedAt: a.zoneReachedAt || null,
@@ -276,9 +298,143 @@ function snapshotTask(task, assignments) {
       redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
       redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
       removed: !!a.removed,
+      ...escalation.assignmentBlockerFields(a),
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
   };
+}
+
+function findAssignmentByEmail(assignments, email) {
+  const target = escalation.normalizeEmail(email);
+  if (!target) return null;
+  return (
+    (assignments || []).find(
+      (a) => escalation.normalizeEmail(a.email) === target && !a.removed
+    ) || null
+  );
+}
+
+function decoratedTaskResponse(task, assignments, viewerEmail) {
+  return escalation.decorateTask(
+    snapshotTask(task, assignments),
+    Date.now(),
+    viewerEmail
+  );
+}
+
+async function handleReportBlocker({ user, task, taskId, body, cache }) {
+  const denied = await denyUnlessTaskReadable(user, task, cache);
+  if (denied) return denied;
+  const actorEmail = escalation.normalizeEmail(user.email);
+  if (!actorEmail) return json(401, { error: "Unauthorized" });
+
+  const remark = String(body?.remark ?? "").trim();
+  if (!remark) return json(400, { error: "Remark is required" });
+
+  const assignments = await resolveAssignments(task);
+  const mine = findAssignmentByEmail(assignments, actorEmail);
+  if (!mine) return json(404, { error: "Assignment not found" });
+
+  const status = String(mine.status || "").trim().toUpperCase();
+  if (status !== "IN_PROGRESS") {
+    return json(400, {
+      error: "Blocker can only be reported for an IN_PROGRESS assignment",
+    });
+  }
+
+  if (
+    escalation.normalizeBlockerStatus(mine.blockerStatus) ===
+    escalation.BLOCKER_ACTIVE
+  ) {
+    return json(400, {
+      error: "A blocker is already active for this assignment",
+    });
+  }
+
+  const now = new Date().toISOString();
+  mine.blockerStatus = escalation.BLOCKER_ACTIVE;
+  mine.blockerRemark = remark;
+  mine.blockerReportedAt = now;
+  mine.blockerResolvedAt = null;
+  mine.blockerResolvedBy = null;
+  await writeAssignment(taskId, mine);
+  await appendActivity(
+    taskId,
+    "BLOCKER_REPORTED",
+    "Employee reported a blocker",
+    actorEmail,
+    {
+      assignmentEmail: actorEmail,
+      blockerRemark: remark,
+    }
+  );
+  try {
+    await notifyBlockerReported({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      accessTable: process.env.USER_ACCESS_TABLE,
+      task,
+      assignmentEmail: actorEmail,
+      remark,
+      reportedAt: now,
+      listAccessRows: scanAccessRows,
+    });
+  } catch (err) {
+    console.error(
+      "TASK_BLOCKER_REPORTED_NOTIFY_ERROR",
+      JSON.stringify({ taskId })
+    );
+    console.error(err);
+  }
+  return json(200, decoratedTaskResponse(task, assignments, actorEmail));
+}
+
+async function handleResolveBlocker({ user, task, taskId, body, cache }) {
+  const updateAuth = await taskMutateAccess.authorizeTaskUpdate({
+    ...taskReadAuthArgs(user, task, cache),
+  });
+  const denied = denyAuthz(user, updateAuth);
+  if (denied) return denied;
+  if (!updateAuth.mayAdminMutate) {
+    return json(403, { error: "Forbidden" });
+  }
+
+  const targetEmail = escalation.normalizeEmail(body?.assignmentEmail);
+  if (!targetEmail) {
+    return json(400, { error: "assignmentEmail required" });
+  }
+
+  const assignments = await resolveAssignments(task);
+  const target = findAssignmentByEmail(assignments, targetEmail);
+  if (!target) return json(404, { error: "Assignment not found" });
+
+  if (
+    escalation.normalizeBlockerStatus(target.blockerStatus) !==
+    escalation.BLOCKER_ACTIVE
+  ) {
+    return json(400, { error: "No active blocker to resolve" });
+  }
+
+  const actorEmail = escalation.normalizeEmail(user.email);
+  const now = new Date().toISOString();
+  target.blockerStatus = escalation.BLOCKER_RESOLVED;
+  target.blockerResolvedAt = now;
+  target.blockerResolvedBy = actorEmail;
+  await writeAssignment(taskId, target);
+  await appendActivity(
+    taskId,
+    "BLOCKER_RESOLVED",
+    "Blocker resolved",
+    actorEmail,
+    {
+      assignmentEmail: targetEmail,
+      blockerRemark: target.blockerRemark || null,
+      blockerReportedAt: target.blockerReportedAt || null,
+      blockerResolvedAt: now,
+      blockerResolvedBy: actorEmail,
+    }
+  );
+  return json(200, decoratedTaskResponse(task, assignments, actorEmail));
 }
 
 async function persistAssignmentsAndTask(task, assignments, options = {}) {
@@ -338,6 +494,40 @@ async function notifyTaskEvent(email, type, title, message, dedupKey, extra = {}
     });
   } catch (err) {
     console.error("Task notification failed", err);
+  }
+}
+
+async function notifyAssignedEmployeeEmail(email, task, options = {}) {
+  if (!email || !task) return;
+  try {
+    const { notifyAssignedEmployee } = require("./taskAssignNotify");
+    let projectName = options.projectName;
+    if (projectName === undefined) {
+      try {
+        projectName = (await getProjectName(task.projectId)) || "";
+      } catch (err) {
+        console.error("TASK_ASSIGNED_PROJECT_NAME_ERROR", err?.name);
+        projectName = "";
+      }
+    }
+    await notifyAssignedEmployee({
+      ddb,
+      task,
+      assigneeEmail: email,
+      assignedByName: options.assignedByName || "",
+      assignedByEmail: options.assignedByEmail || "",
+      projectName,
+      kind: options.kind || "assigned",
+      reasonLabel: options.reasonLabel || "",
+      remark: options.remark || "",
+      assignedAt: options.assignedAt || "",
+    });
+  } catch (err) {
+    console.error(
+      "TASK_ASSIGNED_EMAIL_ERROR",
+      JSON.stringify({ taskId: task.taskId || "" })
+    );
+    console.error(err);
   }
 }
 
@@ -478,6 +668,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
       completedAt: a.completedAt || null,
       completedDate: a.completedDate || null,
       completedZone: a.completedZone || null,
+      completionRemark: a.completionRemark || null,
       highestZone: a.highestZone || null,
       recordedZone: a.recordedZone || null,
       zoneReachedAt: a.zoneReachedAt || null,
@@ -683,6 +874,11 @@ async function runEscalationSweep() {
     if (!accessRows) accessRows = await scanAccessRows();
     return accessRows;
   };
+  try {
+    await materializeTodaysConfirmedLeave({ ddb, now: new Date() });
+  } catch (err) {
+    console.error("LEAVE_MATERIALIZE_ERROR", err);
+  }
   await taskImportConfirm.assignDueScheduledTasks({
     ddb,
     tableName: process.env.WORK_TABLE,
@@ -792,6 +988,204 @@ function taskReadAuthArgs(user, task, cache) {
   };
 }
 
+async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) {
+  const sourceTask = await getTask(sourceTaskId);
+  if (!sourceTask) return json(404, { error: "Task not found" });
+
+  const sourceAssignments = await resolveAssignments(sourceTask);
+  const sourceSnap = snapshotTask(sourceTask, sourceAssignments);
+  const updateAuth = await taskMutateAccess.authorizeTaskUpdate({
+    ...taskReadAuthArgs(user, sourceSnap, cache),
+    task: sourceSnap,
+  });
+  const updateDenied = denyAuthz(user, updateAuth);
+  if (updateDenied) return updateDenied;
+  if (!updateAuth.mayAdminMutate) {
+    return json(403, { error: "Forbidden" });
+  }
+
+  const parsedReview = taskReviewReassign.parseReviewReassignRequest(
+    body,
+    sourceAssignments
+  );
+  if (!parsedReview.ok) {
+    return json(parsedReview.statusCode || 400, { error: parsedReview.error });
+  }
+
+  const description =
+    body.description !== undefined
+      ? String(body.description)
+      : String(sourceTask.description || "");
+  const createParsed = escalation.validateCreatePayload({
+    title: sourceTask.title,
+    description,
+    assignees: [parsedReview.targetEmail],
+    assignee: parsedReview.targetEmail,
+    priority: sourceTask.priority,
+    category: sourceTask.category,
+    startDate: body.startDate,
+    dueDate: body.dueDate,
+  });
+  if (!createParsed.ok) {
+    const first =
+      Object.values(createParsed.errors)[0] ||
+      "Unable to reassign task. Please try again.";
+    return json(400, { error: first, errors: createParsed.errors });
+  }
+
+  const createAuth = await taskMutateAccess.authorizeTaskCreate({
+    ...taskReadAuthArgs(user, { projectId: sourceTask.projectId }, cache),
+    projectId: sourceTask.projectId,
+  });
+  const createDenied = denyAuthz(user, createAuth);
+  if (createDenied) return createDenied;
+
+  const blocked = await blockedNewAssignees([parsedReview.targetEmail]);
+  if (blocked.length) {
+    return json(400, {
+      error: "Cannot assign a task to a deactivated user.",
+    });
+  }
+  const memberAssign =
+    await taskMutateAccess.assertRestrictedAssigneesAreMembers({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      project: createAuth.project || updateAuth.project,
+      emails: [parsedReview.targetEmail],
+    });
+  const memberDenied = denyAuthz(user, memberAssign);
+  if (memberDenied) return memberDenied;
+
+  const fitCheck = await validateAssigneesAssignedShiftFit(
+    ddb,
+    process.env.WORK_TABLE,
+    {
+      emails: [parsedReview.targetEmail],
+      startDate: createParsed.startDate,
+      dueDate: createParsed.dueDate,
+      assignmentState: "ASSIGNED",
+    }
+  );
+  if (!fitCheck.ok) {
+    return json(400, shiftFitConflictBody(fitCheck.conflicts));
+  }
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const createdByName = await resolveCreatorName(event, user);
+  const assignments = [
+    {
+      email: parsedReview.targetEmail,
+      status: "TODO",
+      assignedAt: now,
+      assignedBy: user.email,
+      recordedZone: escalation.zoneAt(
+        escalation.parseDeadlineMs(createParsed.dueDate),
+        nowMs
+      ),
+    },
+  ];
+  const item = snapshotTask(
+    {
+      PK: "ENTITY#TASK",
+      SK: `TASK#${id}`,
+      taskId: id,
+      projectId: sourceTask.projectId,
+      title: createParsed.title,
+      description: createParsed.description || "",
+      category: createParsed.category || sourceTask.category || "",
+      assignee: parsedReview.targetEmail,
+      priority: createParsed.priority,
+      status: "TODO",
+      dueDate: createParsed.dueDate,
+      startDate: createParsed.startDate,
+      durationType: null,
+      durationHours: null,
+      durationDays: null,
+      durationStart: null,
+      durationEnd: null,
+      completedDate: null,
+      labels: Array.isArray(sourceTask.labels) ? sourceTask.labels : [],
+      archived: false,
+      createdAt: now,
+      createdBy: user.email,
+      createdByName,
+      updatedAt: now,
+      sourceTaskId,
+      reassignmentReason: parsedReview.reason,
+      reassignmentRemark: parsedReview.remark,
+      reassignedBy: user.email,
+      reassignedAt: now,
+    },
+    assignments
+  );
+
+  await persistAssignmentsAndTask(item, assignments, { create: true });
+
+  const reasonText = taskReviewReassign.reasonLabel(parsedReview.reason);
+  const newLabel = taskReviewReassign.shortTaskId(id);
+  const sourceLabel = taskReviewReassign.shortTaskId(sourceTaskId);
+  await appendActivity(
+    sourceTaskId,
+    "task_reassigned",
+    `${reasonText}: ${parsedReview.sourceEmail} → ${parsedReview.targetEmail}. New task ${newLabel}. Schedule ${createParsed.startDate} → ${createParsed.dueDate}. ${parsedReview.remark}`,
+    user.email,
+    {
+      assignmentEmail: parsedReview.sourceEmail,
+      newTaskId: id,
+      targetEmail: parsedReview.targetEmail,
+      reassignmentReason: parsedReview.reason,
+      reassignmentRemark: parsedReview.remark,
+      startDate: createParsed.startDate,
+      dueDate: createParsed.dueDate,
+    }
+  );
+  await appendActivity(
+    id,
+    "task_created",
+    `Task created from ${sourceLabel} after ${reasonText} review`,
+    user.email,
+    {
+      actorName: createdByName,
+      sourceTaskId,
+      reassignmentReason: parsedReview.reason,
+    }
+  );
+  await appendActivity(
+    id,
+    "task_assigned",
+    `Assigned to ${parsedReview.targetEmail}`,
+    user.email
+  );
+  await notifyTaskEvent(
+    parsedReview.targetEmail,
+    "TASK_ASSIGNED",
+    `New task assigned: ${item.title}`,
+    `You have been assigned "${item.title}".`,
+    `${id}#${parsedReview.targetEmail}#assigned#${now}`,
+    { taskId: id, sourceTaskId },
+    { channel: "inapp" }
+  );
+  await notifyAssignedEmployeeEmail(parsedReview.targetEmail, item, {
+    assignedByName: createdByName,
+    assignedByEmail: user.email,
+    assignedAt: now,
+    kind: "review-reassigned",
+    reasonLabel: reasonText,
+    remark: parsedReview.remark,
+  });
+
+  return json(201, {
+    ...escalation.decorateTask(item, nowMs, user.email),
+    sourceTaskId,
+    reassignmentReason: parsedReview.reason,
+    reassignmentRemark: parsedReview.remark,
+    reassignedBy: user.email,
+    reassignedAt: now,
+  });
+}
+
 async function denyUnlessTaskReadable(user, task, cache) {
   const decision = await taskReadAccess.authorizeTaskRead(
     taskReadAuthArgs(user, task, cache)
@@ -847,6 +1241,72 @@ exports.handler = async (event) => {
   const taskReadCache = taskReadAccess.createCache();
 
   try {
+    if (myActivity.myActivityPathMatch(path) && method === "GET") {
+      const result = await myActivity.handleGetMyActivity({
+        user,
+        query: event.queryStringParameters || {},
+        ddb,
+        nowMs: Date.now(),
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (shiftCatalog.listShiftsPathMatch(path) && method === "GET") {
+      const result = await shiftCatalog.handleListShifts({
+        user,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (shiftCatalog.listShiftsPathMatch(path) && method === "POST") {
+      const result = await shiftCatalog.handleCreateShift({
+        user,
+        body,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const shiftId = shiftCatalog.shiftIdPathMatch(path, event.pathParameters);
+    if (shiftId && method === "PATCH") {
+      const result = await shiftCatalog.handleUpdateShift({
+        user,
+        shiftId,
+        body,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const shiftEmail = shiftCatalog.employeeShiftPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (shiftEmail && method === "GET") {
+      const result = await shiftCatalog.handleGetEmployeeShift({
+        user,
+        email: shiftEmail,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (shiftEmail && method === "PUT") {
+      const result = await shiftCatalog.handleAssignEmployeeShift({
+        user,
+        email: shiftEmail,
+        body,
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+
     if (taskImport.isUploadUrlPath(path) && method === "POST") {
       const result = await taskImport.handleUploadUrlRequest({
         user,
@@ -926,7 +1386,7 @@ exports.handler = async (event) => {
 
     // ── TASK BY ID / COMMENTS / ACTIVITY / ATTACHMENTS ──
     if (taskRoute) {
-      const { taskId, sub } = taskRoute;
+      const { taskId, sub, action } = taskRoute;
       const task = await getTask(taskId);
 
       if (sub === "attachment-download-url" && method === "POST") {
@@ -1002,6 +1462,26 @@ exports.handler = async (event) => {
       }
 
       if (!task) return json(404, { error: "Task not found" });
+
+      if (sub === "blocker" && method === "POST") {
+        if (action === "resolve") {
+          return handleResolveBlocker({
+            user,
+            task,
+            taskId,
+            body,
+            cache: taskReadCache,
+          });
+        }
+        if (action) return json(404, { error: "Not found" });
+        return handleReportBlocker({
+          user,
+          task,
+          taskId,
+          body,
+          cache: taskReadCache,
+        });
+      }
 
       if (sub === "comments" && method === "POST") {
         const text = String(body.text || body.comment || "").trim();
@@ -1190,7 +1670,20 @@ exports.handler = async (event) => {
         q,
         search,
         priority,
+        includePendingShiftConflicts: includePendingRaw,
       } = event.queryStringParameters || {};
+      const includePendingShiftConflicts =
+        String(includePendingRaw || "").toLowerCase() === "true";
+      if (includePendingShiftConflicts) {
+        const conflictAuth = await requireEligiblePortalAdmin({
+          user,
+          ddb,
+          accessTable: process.env.USER_ACCESS_TABLE,
+        });
+        if (!conflictAuth.ok) {
+          return json(conflictAuth.statusCode, conflictAuth.body);
+        }
+      }
       const projectId = String(projectIdRaw || "").trim();
       let items = [];
 
@@ -1218,14 +1711,36 @@ exports.handler = async (event) => {
       }
 
       items = items.filter((t) => !t.archived);
+      const pendingScheduled = items.filter((t) =>
+        taskImportConfirm.isPendingScheduledTask(t)
+      );
       items = items.filter((t) => !taskImportConfirm.isPendingScheduledTask(t));
 
       const focusEmail =
         mine === "true" ? user.email : assignee || "";
 
+      if (includePendingShiftConflicts) {
+        const conflictFocus = escalation.normalizeEmail(focusEmail);
+        const extra = pendingScheduled.filter((t) => {
+          if (conflictFocus) {
+            return Boolean(
+              shiftCatalog.unresolvedShiftConflictStatus(t, conflictFocus)
+            );
+          }
+          return (t.pendingAssignees || []).some((email) =>
+            shiftCatalog.unresolvedShiftConflictStatus(t, email)
+          );
+        });
+        items = items.concat(extra);
+      }
+
       if (mine === "true" || assignee) {
-        items = items.filter((t) =>
-          escalation.taskAssignedTo(t, focusEmail || user.email)
+        const target = focusEmail || user.email;
+        items = items.filter(
+          (t) =>
+            escalation.taskAssignedTo(t, target) ||
+            (includePendingShiftConflicts &&
+              Boolean(shiftCatalog.unresolvedShiftConflictStatus(t, target)))
         );
       }
 
@@ -1272,6 +1787,16 @@ exports.handler = async (event) => {
     if (path.endsWith("/tasks") && method === "POST") {
       if (!escalation.normalizeEmail(user.email)) {
         return json(401, { error: "Unauthorized" });
+      }
+      const sourceTaskId = String(body.sourceTaskId || "").trim();
+      if (sourceTaskId) {
+        return await handleReviewReassign({
+          user,
+          body,
+          sourceTaskId,
+          cache: taskReadCache,
+          event,
+        });
       }
       const projectId = String(body.projectId || "").trim();
       if (!projectId) {
@@ -1385,6 +1910,12 @@ exports.handler = async (event) => {
           `Assigned to ${emails.join(", ")}`,
           user.email
         );
+        let projectName = "";
+        try {
+          projectName = (await getProjectName(item.projectId)) || "";
+        } catch (err) {
+          console.error("TASK_ASSIGNED_PROJECT_NAME_ERROR", err?.name);
+        }
         for (const email of emails) {
           await notifyTaskEvent(
             email,
@@ -1395,6 +1926,13 @@ exports.handler = async (event) => {
             { taskId: id },
             { channel: "inapp" }
           );
+          await notifyAssignedEmployeeEmail(email, item, {
+            assignedByName: createdByName,
+            assignedByEmail: user.email,
+            projectName,
+            assignedAt: now,
+            kind: "assigned",
+          });
         }
       }
 
@@ -1428,6 +1966,7 @@ exports.handler = async (event) => {
         : {
             status: updates.status,
             assignmentEmail: updates.assignmentEmail,
+            completionRemark: updates.completionRemark,
           };
 
       if (allowed.status && !STATUSES.includes(allowed.status)) {
@@ -1454,6 +1993,8 @@ exports.handler = async (event) => {
       const nowIso = new Date().toISOString();
       const nowMs = Date.now();
       let completionTransitioned = false;
+      let completedAssignment = null;
+      let reviewSubmitted = null;
       const merged = {
         ...existing,
         ...allowed,
@@ -1468,6 +2009,7 @@ exports.handler = async (event) => {
       };
 
       delete merged.assignmentEmail;
+      delete merged.completionRemark;
       delete merged.assignees;
       delete merged.zone;
       delete merged.overdue;
@@ -1476,6 +2018,111 @@ exports.handler = async (event) => {
       delete merged.assigneeProfiles;
       delete merged.displayStatus;
       delete merged.priorityLabel;
+
+      const currentEmails = assignments
+        .filter((a) => a && !a.removed)
+        .map((a) => escalation.normalizeEmail(a.email))
+        .filter(Boolean);
+      const assigneeFieldsProvided =
+        mayAdminMutate &&
+        (updates.assignees !== undefined || updates.assignee !== undefined);
+      const nextEmails = assigneeFieldsProvided
+        ? escalation.normalizeEmailList(
+            updates.assignees !== undefined ? updates.assignees : updates.assignee,
+            null
+          )
+        : currentEmails;
+      const timingFieldsProvided =
+        mayAdminMutate &&
+        (updates.startDate !== undefined ||
+          updates.dueDate !== undefined ||
+          updates.scheduledAssignAt !== undefined);
+
+      if (merged.startDate && merged.dueDate) {
+        const startMs = escalation.parseInstantMs(merged.startDate, false);
+        const dueMs = escalation.parseDeadlineMs(merged.dueDate);
+        if (
+          Number.isFinite(startMs) &&
+          Number.isFinite(dueMs) &&
+          dueMs < startMs
+        ) {
+          return json(400, {
+            error: "Deadline must be after the start date and time.",
+          });
+        }
+      }
+      if (
+        merged.startDate &&
+        !escalation.allowsQuarterHourOrExisting(
+          merged.startDate,
+          existing.startDate
+        )
+      ) {
+        return json(400, {
+          error:
+            "Start time must be in 15-minute intervals (00, 15, 30, or 45).",
+        });
+      }
+      if (
+        merged.dueDate &&
+        !escalation.allowsQuarterHourOrExisting(
+          merged.dueDate,
+          existing.dueDate
+        )
+      ) {
+        return json(400, {
+          error:
+            "Deadline time must be in 15-minute intervals (00, 15, 30, or 45).",
+        });
+      }
+
+      if (assigneeFieldsProvided) {
+        const blocked = await blockedNewAssignees(nextEmails, currentEmails);
+        if (blocked.length) {
+          return json(400, {
+            error: "Cannot assign a task to a deactivated user.",
+          });
+        }
+        const memberAssign = await taskMutateAccess.assertRestrictedAssigneesAreMembers(
+          {
+            ddb,
+            tableName: process.env.WORK_TABLE,
+            project: updateAuth.project,
+            emails: nextEmails,
+          }
+        );
+        const memberDenied = denyAuthz(user, memberAssign);
+        if (memberDenied) return memberDenied;
+      }
+
+      if (
+        (assigneeFieldsProvided || timingFieldsProvided) &&
+        putChangesAssignedShiftFit({
+          currentEmails,
+          nextEmails,
+          currentStart: existing.startDate,
+          nextStart: merged.startDate,
+          currentDue: existing.dueDate,
+          nextDue: merged.dueDate,
+          currentScheduledAssignAt: existing.scheduledAssignAt,
+          nextScheduledAssignAt: merged.scheduledAssignAt,
+        })
+      ) {
+        const fitCheck = await validateAssigneesAssignedShiftFit(
+          ddb,
+          process.env.WORK_TABLE,
+          {
+            emails: nextEmails,
+            startDate: merged.startDate,
+            dueDate: merged.dueDate,
+            scheduledAssignAt: merged.scheduledAssignAt,
+            assignmentState: existing.assignmentState,
+          }
+        );
+        if (!fitCheck.ok) {
+          return json(400, shiftFitConflictBody(fitCheck.conflicts));
+        }
+      }
 
       const statusLabel = (s) => {
         const map = {
@@ -1489,7 +2136,7 @@ exports.handler = async (event) => {
         return map[String(s || "").toUpperCase()] || s;
       };
 
-      const applyStatusToAssignment = async (target, nextStatus) => {
+      const applyStatusToAssignment = async (target, nextStatus, remark = "") => {
         if (!target || target.removed) return;
         if (nextStatus === "DONE") {
           const wasComplete = escalation.isComplete(target.status);
@@ -1501,13 +2148,21 @@ exports.handler = async (event) => {
           );
           Object.assign(target, completed);
           if (!wasComplete && escalation.isComplete(target.status)) {
+            if (remark) target.completionRemark = remark;
             completionTransitioned = true;
+            completedAssignment = target;
             await appendActivity(
               taskId,
               "task_completed",
-              `Completed by ${target.email} (zone ${completed.completedZone})`,
+              remark
+                ? `Completed by ${target.email} (zone ${completed.completedZone}): ${remark}`
+                : `Completed by ${target.email} (zone ${completed.completedZone})`,
               user.email,
-              { assignmentEmail: target.email, zone: completed.completedZone }
+              {
+                assignmentEmail: target.email,
+                zone: completed.completedZone,
+                ...(remark ? { completionRemark: remark } : {}),
+              }
             );
           }
         } else {
@@ -1551,6 +2206,8 @@ exports.handler = async (event) => {
               escalation.normalizeEmail(a.email) === targetEmail && !a.removed
           );
           if (mine) {
+            const currentStatus = String(mine.status || "").toUpperCase();
+            const nextStatus = String(allowed.status || "").toUpperCase();
             if (
               !mayAdminMutate &&
               !escalation.isComplete(mine.status) &&
@@ -1561,14 +2218,50 @@ exports.handler = async (event) => {
                   "Red Zone tasks can only be updated by an administrator.",
               });
             }
-            if (
+            if (!mayAdminMutate && nextStatus === "CANCELLED") {
+              // Employees cannot cancel tasks.
+            } else if (
               !mayAdminMutate &&
-              escalation.isComplete(mine.status) &&
-              allowed.status !== "DONE"
+              escalation.isComplete(mine.status)
             ) {
               // Employees cannot reopen a completed assignment.
-            } else if (!mayAdminMutate && allowed.status === "CANCELLED") {
-              // Employees cannot cancel tasks.
+            } else if (!mayAdminMutate && nextStatus === "REVIEW") {
+              return json(400, {
+                error: "REVIEW cannot be set directly",
+              });
+            } else if (!mayAdminMutate && nextStatus === "DONE") {
+              if (currentStatus === "REVIEW") {
+                return json(400, {
+                  error: "This assignment is already in review",
+                });
+              }
+              const remark = String(
+                allowed.completionRemark != null
+                  ? allowed.completionRemark
+                  : updates.completionRemark || ""
+              ).trim();
+              if (!remark) {
+                return json(400, {
+                  error: "Completion Remark is required.",
+                });
+              }
+              allowed.completionRemark = remark;
+              const prev = mine.status;
+              mine.status = "REVIEW";
+              mine.completionRemark = remark;
+              if (prev !== "REVIEW") {
+                await appendActivity(
+                  taskId,
+                  "status_changed",
+                  `${mine.email}: ${statusLabel(prev)} → ${statusLabel("REVIEW")}`,
+                  user.email,
+                  { assignmentEmail: mine.email }
+                );
+                reviewSubmitted = {
+                  email: mine.email,
+                  remark,
+                };
+              }
             } else {
               await applyStatusToAssignment(mine, allowed.status);
             }
@@ -1584,34 +2277,8 @@ exports.handler = async (event) => {
         mayAdminMutate &&
         (updates.assignees !== undefined || updates.assignee !== undefined)
       ) {
-        const emails = escalation.normalizeEmailList(
-          updates.assignees !== undefined ? updates.assignees : updates.assignee,
-          null
-        );
-        const currentActiveEmails = assignments
-          .filter((a) => !a.removed)
-          .map((a) => a.email);
-        const blocked = await blockedNewAssignees(emails, currentActiveEmails);
-        if (blocked.length) {
-          return json(400, {
-            error: "Cannot assign a task to a deactivated user.",
-          });
-        }
-        const memberAssign = await taskMutateAccess.assertRestrictedAssigneesAreMembers(
-          {
-            ddb,
-            tableName: process.env.WORK_TABLE,
-            project: updateAuth.project,
-            emails,
-          }
-        );
-        const memberDenied = denyAuthz(user, memberAssign);
-        if (memberDenied) return memberDenied;
-        const current = new Set(
-          assignments
-            .filter((a) => !a.removed)
-            .map((a) => escalation.normalizeEmail(a.email))
-        );
+        const emails = nextEmails;
+        const current = new Set(currentEmails);
         const nextSet = new Set(emails);
         for (const a of assignments) {
           const email = escalation.normalizeEmail(a.email);
@@ -1657,6 +2324,14 @@ exports.handler = async (event) => {
               { taskId },
               { channel: "inapp" }
             );
+            await notifyAssignedEmployeeEmail(email, merged, {
+              assignedByName:
+                escalation.pickPersonName(user.name) ||
+                escalation.displayNameFromEmail(user.email),
+              assignedByEmail: user.email,
+              assignedAt: nowIso,
+              kind: "assigned",
+            });
           } else if (existingA.removed) {
             existingA.removed = false;
             existingA.assignedAt = nowIso;
@@ -1684,6 +2359,14 @@ exports.handler = async (event) => {
               { taskId },
               { channel: "inapp" }
             );
+            await notifyAssignedEmployeeEmail(email, merged, {
+              assignedByName:
+                escalation.pickPersonName(user.name) ||
+                escalation.displayNameFromEmail(user.email),
+              assignedByEmail: user.email,
+              assignedAt: nowIso,
+              kind: "assigned",
+            });
           }
         }
         if ([...nextSet].sort().join(",") !== [...current].sort().join(",")) {
@@ -1748,61 +2431,77 @@ exports.handler = async (event) => {
         );
       }
 
-      if (merged.startDate && merged.dueDate) {
-        const startMs = escalation.parseInstantMs(merged.startDate, false);
-        const dueMs = escalation.parseDeadlineMs(merged.dueDate);
-        if (
-          Number.isFinite(startMs) &&
-          Number.isFinite(dueMs) &&
-          dueMs < startMs
-        ) {
-          return json(400, {
-            error: "Deadline must be after the start date and time.",
+      const saved = await persistAssignmentsAndTask(merged, assignments);
+      if (reviewSubmitted) {
+        try {
+          let projectName = "";
+          let employeeName = "";
+          try {
+            projectName = (await getProjectName(saved.projectId)) || "";
+          } catch (err) {
+            console.error("TASK_REVIEW_PROJECT_NAME_ERROR", err?.name);
+          }
+          try {
+            const profile = await getAssigneeProfile(reviewSubmitted.email);
+            employeeName =
+              escalation.pickPersonName(profile?.name) ||
+              escalation.displayNameFromEmail(reviewSubmitted.email);
+          } catch (err) {
+            employeeName = escalation.displayNameFromEmail(reviewSubmitted.email);
+            console.error("TASK_REVIEW_EMPLOYEE_NAME_ERROR", err?.name);
+          }
+          await notifyTaskSubmittedForReview({
+            ddb,
+            tableName: process.env.WORK_TABLE,
+            accessTable: process.env.USER_ACCESS_TABLE,
+            task: saved,
+            employeeEmail: reviewSubmitted.email,
+            employeeName,
+            completionRemark: reviewSubmitted.remark,
+            projectName,
           });
+        } catch (err) {
+          console.error(
+            "TASK_REVIEW_SUBMITTED_EMAIL_ERROR",
+            JSON.stringify({ taskId })
+          );
+          console.error(err);
         }
       }
-      if (
-        merged.startDate &&
-        !escalation.allowsQuarterHourOrExisting(
-          merged.startDate,
-          existing.startDate
-        )
-      ) {
-        return json(400, {
-          error:
-            "Start time must be in 15-minute intervals (00, 15, 30, or 45).",
-        });
-      }
-      if (
-        merged.dueDate &&
-        !escalation.allowsQuarterHourOrExisting(
-          merged.dueDate,
-          existing.dueDate
-        )
-      ) {
-        return json(400, {
-          error:
-            "Deadline time must be in 15-minute intervals (00, 15, 30, or 45).",
-        });
-      }
-
-      const saved = await persistAssignmentsAndTask(merged, assignments);
       if (completionTransitioned && escalation.isComplete(saved.status)) {
         try {
           let projectName = "";
+          let employeeName = "";
           try {
             projectName = (await getProjectName(saved.projectId)) || "";
           } catch (err) {
             console.error("TASK_COMPLETED_PROJECT_NAME_ERROR", err?.name);
+          }
+          const employeeEmail = completedAssignment?.email || "";
+          if (employeeEmail) {
+            try {
+              const profile = await getAssigneeProfile(employeeEmail);
+              employeeName =
+                escalation.pickPersonName(profile?.name) ||
+                escalation.displayNameFromEmail(employeeEmail);
+            } catch {
+              employeeName = escalation.displayNameFromEmail(employeeEmail);
+            }
           }
           await notifyTaskCompleted({
             ddb,
             tableName: process.env.WORK_TABLE,
             accessTable: process.env.USER_ACCESS_TABLE,
             task: saved,
+            assignment: completedAssignment,
+            employeeEmail,
+            employeeName,
             completedBy: user.email,
-            completedByName: user.name || user.email,
-            completedAt: nowIso,
+            completedByName:
+              escalation.pickPersonName(user.name) ||
+              escalation.displayNameFromEmail(user.email),
+            completedAt: completedAssignment?.completedAt || nowIso,
+            completionRemark: completedAssignment?.completionRemark || "",
             nowMs,
             projectName,
           });
@@ -1959,3 +2658,6 @@ exports.canViewTask = canViewTask;
 exports.collectBlockedNewAssignees = collectBlockedNewAssignees;
 exports.newAssignmentEmails = newAssignmentEmails;
 exports.isBlockedAccessStatus = isBlockedAccessStatus;
+exports.setClientsForTests = function setClientsForTests(clients = {}) {
+  if (Object.prototype.hasOwnProperty.call(clients, "ddb")) ddb = clients.ddb;
+};
