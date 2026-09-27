@@ -538,7 +538,7 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   const redAtByEmail = {};
   const next = [];
   for (const a of assignments) {
-    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
+    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status) || escalation.isReview(a.status)) {
       next.push(a);
       continue;
     }
@@ -627,7 +627,12 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   }
 
   const pendingAdmin = next.filter((a) => {
-    if (a.removed || escalation.isComplete(a.status) || escalation.isCancelled(a.status)) {
+    if (
+      a.removed ||
+      escalation.isComplete(a.status) ||
+      escalation.isCancelled(a.status) ||
+      escalation.isReview(a.status)
+    ) {
       return false;
     }
     const email = escalation.normalizeEmail(a.email);
@@ -2211,6 +2216,7 @@ exports.handler = async (event) => {
             if (
               !mayAdminMutate &&
               !escalation.isComplete(mine.status) &&
+              !escalation.isReview(mine.status) &&
               !escalation.employeeMayChangeStatus(mine, existing.dueDate, nowMs)
             ) {
               return json(403, {
@@ -2229,12 +2235,12 @@ exports.handler = async (event) => {
               return json(400, {
                 error: "REVIEW cannot be set directly",
               });
-            } else if (!mayAdminMutate && nextStatus === "DONE") {
-              if (currentStatus === "REVIEW") {
-                return json(400, {
-                  error: "This assignment is already in review",
-                });
-              }
+            } else if (
+              nextStatus === "DONE" &&
+              (currentStatus === "TODO" ||
+                currentStatus === "IN_PROGRESS" ||
+                currentStatus === "BACKLOG")
+            ) {
               const remark = String(
                 allowed.completionRemark != null
                   ? allowed.completionRemark
@@ -2246,9 +2252,20 @@ exports.handler = async (event) => {
                 });
               }
               allowed.completionRemark = remark;
+              const submitView = escalation.computeAssignmentView(
+                mine,
+                existing.dueDate,
+                nowMs
+              );
+              const frozenZone =
+                submitView.zone && submitView.zone !== escalation.ZONES.NONE
+                  ? submitView.zone
+                  : escalation.ZONES.GREEN;
               const prev = mine.status;
               mine.status = "REVIEW";
               mine.completionRemark = remark;
+              mine.recordedZone = frozenZone;
+              mine.highestZone = escalation.maxZone(mine.highestZone, frozenZone);
               if (prev !== "REVIEW") {
                 await appendActivity(
                   taskId,
@@ -2261,6 +2278,12 @@ exports.handler = async (event) => {
                   email: mine.email,
                   remark,
                 };
+              }
+            } else if (!mayAdminMutate && nextStatus === "DONE") {
+              if (currentStatus === "REVIEW") {
+                return json(400, {
+                  error: "This assignment is already in review",
+                });
               }
             } else {
               await applyStatusToAssignment(mine, allowed.status);

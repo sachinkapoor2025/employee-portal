@@ -1,144 +1,71 @@
 import { useCallback, useEffect, useState } from "react";
 import Layout from "../components/Layout";
-import ZoneBadge from "../components/ZoneBadge";
-import { fetchMyDayActivity } from "../services/api";
-import { todayKeyIST } from "../utils/meetings";
-import { filterEmployeeTaskActivity } from "../utils/taskActivityFilter";
-import { formatTaskDateTime } from "../utils/taskStatus";
+import Button from "../components/ui/Button";
+import { StatCard } from "../components/ui/Card";
+import { fetchAttendance, fetchTaskList } from "../services/api";
+import { getLoggedInDisplayName } from "../services/auth";
+import { colors, pageCard, pageSubtitle, pageTitle } from "../theme";
 import {
-  colors,
-  formInput,
-  formLabel,
-  pageCard,
-  pageSubtitle,
-  pageTitle,
-} from "../theme";
+  addDaysToKey,
+  currentWeekStartKey,
+  EMPTY_ATTENDANCE_METRICS,
+  EMPTY_TASK_METRICS,
+  formatWeekRange,
+  indexAttendanceByDate,
+  startOfWeekKey,
+  summarizeAttendanceWeek,
+  summarizeTaskWeek,
+  weekEndKey,
+} from "../utils/myActivityReport";
 
 const sectionCard = {
   ...pageCard,
   marginTop: 16,
 };
 
-function TaskActivityList({ activity }) {
-  const rows = Array.isArray(activity) ? activity : [];
-  if (!rows.length) {
-    return (
-      <p style={{ color: colors.textMuted, fontSize: 13, margin: "8px 0 0" }}>
-        No activity recorded
-      </p>
-    );
-  }
-  return (
-    <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
-      {rows.map((row, index) => (
-        <li
-          key={`${row.timestamp || "a"}-${index}`}
-          style={{
-            fontSize: 13,
-            color: colors.textSecondary,
-            padding: "6px 0",
-            borderTop: "1px solid var(--dgv-border)",
-          }}
-        >
-          <span style={{ fontWeight: 600, color: "var(--dgv-text)" }}>
-            {formatTaskDateTime(row.timestamp)}
-          </span>
-          {row.action ? ` · ${row.action}` : ""}
-          {row.detail ? ` — ${row.detail}` : ""}
-          {row.actorEmail ? ` (${row.actorEmail})` : ""}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function TasksSection({ tasks, employeeEmail }) {
-  const list = Array.isArray(tasks) ? tasks : [];
-  return (
-    <section style={sectionCard} aria-labelledby="my-activity-tasks">
-      <h3 id="my-activity-tasks" style={{ marginTop: 0, marginBottom: 8 }}>
-        Tasks
-      </h3>
-      {list.length === 0 ? (
-        <p style={{ color: colors.textMuted, margin: 0 }}>No tasks for this day.</p>
-      ) : (
-        <div style={{ display: "grid", gap: 12, marginTop: 8 }}>
-          {list.map((task) => (
-            <article key={task.taskId} className="dgv-task-card">
-              <h4 className="dgv-task-card__title" style={{ margin: 0 }}>
-                {task.title || task.taskId}
-              </h4>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 8,
-                  flexWrap: "wrap",
-                  marginTop: 10,
-                  alignItems: "center",
-                }}
-              >
-                <ZoneBadge zone={task.zone} status={task.assignmentStatus || task.taskStatus} />
-                {task.overdue ? (
-                  <span className="dgv-badge dgv-badge--danger">Overdue</span>
-                ) : null}
-              </div>
-              <div className="dgv-task-card__meta">
-                <span>
-                  <strong>Project</strong> {task.projectId || "—"}
-                </span>
-                <span>
-                  <strong>Task status</strong> {task.taskStatus || "—"}
-                </span>
-                <span>
-                  <strong>Assignment</strong> {task.assignmentStatus || "—"}
-                </span>
-                <span>
-                  <strong>Assigned</strong> {formatTaskDateTime(task.assignedAt)}
-                </span>
-                {task.completedAt ? (
-                  <span>
-                    <strong>Completed</strong> {formatTaskDateTime(task.completedAt)}
-                  </span>
-                ) : null}
-                <span>
-                  <strong>Start</strong> {formatTaskDateTime(task.startDate)}
-                </span>
-                <span>
-                  <strong>Due</strong> {formatTaskDateTime(task.dueDate)}
-                </span>
-                {task.timing ? (
-                  <span>
-                    <strong>Timing</strong> {task.timing}
-                  </span>
-                ) : null}
-              </div>
-              <TaskActivityList
-                activity={filterEmployeeTaskActivity(task.activity, employeeEmail)}
-              />
-            </article>
-          ))}
-        </div>
-      )}
-    </section>
-  );
+function metricValue(metrics, key) {
+  const value = metrics?.[key];
+  return Number.isFinite(value) ? value : 0;
 }
 
 export default function MyActivity() {
-  const [date, setDate] = useState(() => todayKeyIST());
-  const [data, setData] = useState(null);
+  const [weekStart, setWeekStart] = useState(() => currentWeekStartKey());
+  const [attendanceMetrics, setAttendanceMetrics] = useState(
+    EMPTY_ATTENDANCE_METRICS
+  );
+  const [taskMetrics, setTaskMetrics] = useState(EMPTY_TASK_METRICS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const employeeName = getLoggedInDisplayName();
 
-  const load = useCallback(async (day) => {
+  const load = useCallback(async (mondayKey) => {
     setLoading(true);
     setError("");
+    const start = startOfWeekKey(mondayKey);
+    const end = weekEndKey(start);
     try {
-      const result = await fetchMyDayActivity(day);
-      setData(result || null);
+      const [attendanceRows, taskList] = await Promise.all([
+        fetchAttendance(start, end),
+        fetchTaskList({ mine: "true" }),
+      ]);
+      setAttendanceMetrics(
+        summarizeAttendanceWeek({
+          weekStart: start,
+          recordsByDate: indexAttendanceByDate(attendanceRows),
+        })
+      );
+      setTaskMetrics(
+        summarizeTaskWeek({
+          weekStart: start,
+          tasks: taskList?.tasks,
+        })
+      );
     } catch (err) {
       if (err?.status === 401 || /session expired/i.test(err?.message || "")) {
         return;
       }
+      setAttendanceMetrics(EMPTY_ATTENDANCE_METRICS);
+      setTaskMetrics(EMPTY_TASK_METRICS);
       setError(err.message || "Unable to load activity.");
     } finally {
       setLoading(false);
@@ -146,43 +73,50 @@ export default function MyActivity() {
   }, []);
 
   useEffect(() => {
-    load(date);
-  }, [date, load]);
+    load(weekStart);
+  }, [weekStart, load]);
 
-  const employee = data?.employee;
+  const weekRange = formatWeekRange(weekStart);
 
   return (
     <Layout>
       <div style={pageCard}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 16,
-            flexWrap: "wrap",
-            alignItems: "flex-end",
-          }}
-        >
+        <div className="dgv-weekly-attendance__header">
           <div>
             <h2 style={{ ...pageTitle, marginBottom: 4 }}>My Activity</h2>
-            <p style={{ ...pageSubtitle, marginBottom: 0 }}>
-              {employee?.name || employee?.email
-                ? [employee.name, employee.empId, employee.department]
-                    .filter(Boolean)
-                    .join(" · ")
-                : "Task status, assignment, and activity for one day."}
+            <p
+              style={{ ...pageSubtitle, marginBottom: 0 }}
+              aria-label="Selected week"
+            >
+              {weekRange}
             </p>
+            {employeeName ? (
+              <p style={{ ...pageSubtitle, margin: "8px 0 0" }}>{employeeName}</p>
+            ) : null}
           </div>
-          <label style={{ minWidth: 180, flex: "0 0 auto" }}>
-            <span style={formLabel}>Date</span>
-            <input
-              type="date"
-              aria-label="Date"
-              style={{ ...formInput, marginBottom: 0 }}
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </label>
+          <div className="dgv-weekly-attendance__nav" aria-label="Week navigation">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setWeekStart((prev) => addDaysToKey(prev, -7))}
+            >
+              ← Previous Week
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setWeekStart(currentWeekStartKey())}
+            >
+              Current Week
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setWeekStart((prev) => addDaysToKey(prev, 7))}
+            >
+              Next Week →
+            </Button>
+          </div>
         </div>
         {loading ? (
           <p style={{ color: colors.textMuted, margin: "16px 0 0" }}>
@@ -196,15 +130,44 @@ export default function MyActivity() {
         ) : null}
       </div>
 
-      {data ? (
-        <TasksSection tasks={data.tasks} employeeEmail={employee?.email} />
-      ) : !loading ? (
-        <section style={sectionCard}>
-          <p style={{ color: colors.textMuted, margin: 0 }}>
-            No activity data for this day.
-          </p>
-        </section>
-      ) : null}
+      <section style={sectionCard} aria-labelledby="my-activity-attendance">
+        <h3 id="my-activity-attendance" style={{ marginTop: 0, marginBottom: 8 }}>
+          Attendance
+        </h3>
+        <div className="dgv-kpi-grid dgv-kpi-grid--3">
+          <StatCard label="Present" value={metricValue(attendanceMetrics, "present")} />
+          <StatCard label="On Time" value={metricValue(attendanceMetrics, "onTime")} />
+          <StatCard label="Late" value={metricValue(attendanceMetrics, "late")} />
+          <StatCard label="Leave" value={metricValue(attendanceMetrics, "leave")} />
+          <StatCard label="Week Off" value={metricValue(attendanceMetrics, "weekOff")} />
+          <StatCard
+            label="Not Marked"
+            value={metricValue(attendanceMetrics, "notMarked")}
+          />
+        </div>
+      </section>
+
+      <section style={sectionCard} aria-labelledby="my-activity-tasks">
+        <h3 id="my-activity-tasks" style={{ marginTop: 0, marginBottom: 8 }}>
+          Task Performance
+        </h3>
+        <div className="dgv-kpi-grid">
+          <StatCard
+            label="Assigned"
+            value={metricValue(taskMetrics, "assigned")}
+            hint="Assigned work for this week"
+          />
+          <StatCard
+            label="Completed"
+            value={metricValue(taskMetrics, "completed")}
+          />
+          <StatCard
+            label="Under Review"
+            value={metricValue(taskMetrics, "underReview")}
+          />
+          <StatCard label="Red Zone" value={metricValue(taskMetrics, "redZone")} />
+        </div>
+      </section>
     </Layout>
   );
 }

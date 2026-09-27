@@ -83,7 +83,7 @@ test("Leave Holiday and Weekly Off do not show punch times", () => {
   }
 });
 
-test("employee week view shows timing compliance, not work duration", () => {
+test("employee week view shows Present Leave Week Off Absent and Shift, not timing", () => {
   render(
     <WeeklyAttendanceHistory
       weekStart="2026-09-21"
@@ -100,6 +100,9 @@ test("employee week view shows timing compliance, not work duration", () => {
         "2026-09-23": { status: "Holiday" },
         "2026-09-24": {
           status: "Working",
+          workPeriod: "FULL_DAY",
+          dayType: "Full Day",
+          shiftName: "Morning Shift",
           expectedStartTime: "2026-09-24T11:00:00+05:30",
           graceMinutes: 5,
           attendanceSubmittedAt: "2026-09-24T10:58:00+05:30",
@@ -107,6 +110,9 @@ test("employee week view shows timing compliance, not work duration", () => {
         },
         "2026-09-25": {
           status: "Working",
+          workPeriod: "FULL_DAY",
+          dayType: "Full Day",
+          shiftName: "Morning Shift",
           expectedStartTime: "2026-09-25T11:00:00+05:30",
           graceMinutes: 5,
           attendanceSubmittedAt: "2026-09-25T11:18:00+05:30",
@@ -118,14 +124,25 @@ test("employee week view shows timing compliance, not work duration", () => {
       onNextWeek={() => {}}
     />
   );
-  expect(screen.getByText("ON TIME")).toBeInTheDocument();
-  expect(screen.getByText("LATE")).toBeInTheDocument();
-  expect(screen.getByText("13 min")).toBeInTheDocument();
-  expect(screen.getByText("LEAVE")).toBeInTheDocument();
-  expect(screen.getByText("WEEK OFF")).toBeInTheDocument();
-  expect(screen.getByText("HOLIDAY")).toBeInTheDocument();
-  expect(screen.getAllByText("NOT MARKED").length).toBeGreaterThan(0);
-  expect(screen.getByText("UPCOMING")).toBeInTheDocument();
-  expect(screen.getByText("Expected By")).toBeInTheDocument();
-  expect(screen.queryByText(/worked \d/i)).not.toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Day" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Date" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Working Type" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Shift" })).toBeInTheDocument();
+  expect(screen.getAllByText("Full Day").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("columnheader", { name: "Marked At" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Expected By" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Late By" })).not.toBeInTheDocument();
+  expect(screen.getAllByText("Present").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Leave").length).toBeGreaterThan(0);
+  expect(screen.getByText("Week Off")).toBeInTheDocument();
+  expect(screen.getAllByText("Absent").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Not Marked").length).toBeGreaterThan(0);
+  expect(screen.queryByText("ON TIME")).not.toBeInTheDocument();
+  expect(screen.queryByText("LATE")).not.toBeInTheDocument();
+  expect(screen.queryByText("13 min")).not.toBeInTheDocument();
+  expect(screen.queryByText("Expected By")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Expected by/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Late by/i)).not.toBeInTheDocument();
+  expect(screen.getAllByText("Morning Shift").length).toBeGreaterThan(0);
 });

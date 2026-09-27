@@ -1,11 +1,5 @@
 import Button from "./ui/Button";
 import { colors } from "../theme";
-import {
-  COMPLIANCE,
-  attendanceCompliance,
-  formatInstant,
-  lateByLabel,
-} from "../utils/attendanceCompliance";
 
 const DAY_NAMES = [
   "Sunday",
@@ -125,6 +119,31 @@ export function getWeeklyDisplayStatus(record) {
   return "Not Marked";
 }
 
+function employeeStatusLabel(status) {
+  if (status === "Weekly Off") return "Week Off";
+  return status;
+}
+
+function shiftLabelOf(record, assignedShift) {
+  return (
+    String(record?.shiftName || record?.shift || assignedShift?.name || "").trim() ||
+    "—"
+  );
+}
+
+const WORK_PERIOD_LABELS = {
+  FULL_DAY: "Full Day",
+  FIRST_HALF: "First Half",
+  SECOND_HALF: "Second Half",
+};
+
+function workingTypeLabel(record) {
+  if (record?.workPeriod && WORK_PERIOD_LABELS[record.workPeriod]) {
+    return WORK_PERIOD_LABELS[record.workPeriod];
+  }
+  return record?.dayType || "—";
+}
+
 const STATUS_CLASS = {
   Present: "dgv-badge dgv-badge--success",
   Leave: "dgv-badge dgv-badge--danger",
@@ -132,14 +151,8 @@ const STATUS_CLASS = {
   Absent: "dgv-badge dgv-badge--neutral",
   "Not Marked": "dgv-badge dgv-badge--info",
   "Weekly Off": "dgv-badge dgv-badge--neutral",
+  "Week Off": "dgv-badge dgv-badge--neutral",
   "Attendance Not Marked": "dgv-badge dgv-badge--info",
-  [COMPLIANCE.ON_TIME]: "dgv-badge dgv-badge--success",
-  [COMPLIANCE.LATE]: "dgv-badge dgv-badge--danger",
-  [COMPLIANCE.NOT_MARKED]: "dgv-badge dgv-badge--info",
-  [COMPLIANCE.LEAVE]: "dgv-badge dgv-badge--danger",
-  [COMPLIANCE.WEEK_OFF]: "dgv-badge dgv-badge--info",
-  [COMPLIANCE.HOLIDAY]: "dgv-badge dgv-badge--neutral",
-  [COMPLIANCE.UPCOMING]: "dgv-badge dgv-badge--neutral",
 };
 
 function buildWeekRows(weekStart, attendanceData, todayKey, assignedShift) {
@@ -152,19 +165,12 @@ function buildWeekRows(weekStart, attendanceData, todayKey, assignedShift) {
     const dateKey = addDaysToKey(mondayKey, i);
     const [y, m, d] = dateKey.split("-").map(Number);
     const record = attendanceData?.[dateKey] || null;
-    const compliance = attendanceCompliance({
-      dateKey,
-      todayKey: today,
-      record,
-      shift: assignedShift,
-    });
-    const displayStatus = compliance.status;
+    const displayStatus = getWeeklyDisplayStatus(record);
     return {
       dateKey,
       dayName: DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()],
       record,
       displayStatus,
-      compliance,
       isToday: dateKey === today,
     };
   });
@@ -181,16 +187,17 @@ function summarize(rows) {
   };
 
   rows.forEach((row) => {
-    if (row.displayStatus === "Present" || row.displayStatus === COMPLIANCE.ON_TIME || row.displayStatus === COMPLIANCE.LATE) {
+    if (row.displayStatus === "Present") {
       summary.present += 1;
-    } else if (row.displayStatus === "Leave" || row.displayStatus === COMPLIANCE.LEAVE) {
+    } else if (row.displayStatus === "Leave") {
       summary.leave += 1;
-    } else if (row.displayStatus === "Planned Off" || row.displayStatus === COMPLIANCE.WEEK_OFF) {
+    } else if (
+      row.displayStatus === "Planned Off" ||
+      row.displayStatus === "Weekly Off"
+    ) {
       summary.plannedOff += 1;
     } else if (row.displayStatus === "Absent") summary.absent += 1;
-    else if (row.displayStatus === "Weekly Off" || row.displayStatus === COMPLIANCE.HOLIDAY) {
-      /* counted in total days only */
-    } else summary.notMarked += 1;
+    else summary.notMarked += 1;
   });
 
   return summary;
@@ -209,38 +216,21 @@ function formatWeekRange(weekStart) {
 function TodayBanner({ rows }) {
   const today = rows.find((r) => r.isToday);
   if (!today) return null;
-  const compliance = today.compliance;
-  const status = today.displayStatus;
-
-  if (status === "Not Marked" || status === COMPLIANCE.NOT_MARKED) {
-    return (
-      <div className="dgv-weekly-attendance__today-banner" role="status">
-        <strong>Today</strong>
-        <span className={STATUS_CLASS[COMPLIANCE.NOT_MARKED]}>
-          {COMPLIANCE.NOT_MARKED}
-        </span>
-        {compliance?.expectedByMs ? (
-          <span>Expected by: {formatInstant(compliance.expectedByMs)}</span>
-        ) : null}
-      </div>
-    );
-  }
+  const status = employeeStatusLabel(today.displayStatus);
 
   return (
-    <div className="dgv-weekly-attendance__today-banner is-marked" role="status">
+    <div
+      className={
+        today.displayStatus === "Not Marked"
+          ? "dgv-weekly-attendance__today-banner"
+          : "dgv-weekly-attendance__today-banner is-marked"
+      }
+      role="status"
+    >
       <strong>Today</strong>
-      <span className={STATUS_CLASS[status] || STATUS_CLASS.Present}>
+      <span className={STATUS_CLASS[status] || STATUS_CLASS["Not Marked"]}>
         {status}
       </span>
-      {compliance?.markedAtMs ? (
-        <span>Marked: {formatInstant(compliance.markedAtMs)}</span>
-      ) : null}
-      {compliance?.expectedByMs ? (
-        <span>Expected by: {formatInstant(compliance.expectedByMs)}</span>
-      ) : null}
-      {status === COMPLIANCE.LATE && compliance?.lateMinutes != null ? (
-        <span>Late by: {lateByLabel(compliance.lateMinutes)}</span>
-      ) : null}
     </div>
   );
 }
@@ -335,14 +325,13 @@ export default function WeeklyAttendanceHistory({
                 <th>Day</th>
                 <th>Date</th>
                 <th>Status</th>
-                <th>Marked At</th>
-                <th>Expected By</th>
-                <th>Late By</th>
+                <th>Working Type</th>
+                <th>Shift</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const compliance = row.compliance;
+                const status = employeeStatusLabel(row.displayStatus);
                 return (
                   <tr
                     key={row.dateKey}
@@ -362,30 +351,14 @@ export default function WeeklyAttendanceHistory({
                     <td>
                       <span
                         className={
-                          STATUS_CLASS[row.displayStatus] ||
-                          STATUS_CLASS[COMPLIANCE.NOT_MARKED]
+                          STATUS_CLASS[status] || STATUS_CLASS["Not Marked"]
                         }
                       >
-                        {row.displayStatus === "Not Marked"
-                          ? COMPLIANCE.NOT_MARKED
-                          : row.displayStatus}
+                        {status}
                       </span>
                     </td>
-                    <td>
-                      {compliance?.markedAtMs
-                        ? formatInstant(compliance.markedAtMs)
-                        : "—"}
-                    </td>
-                    <td>
-                      {compliance?.expectedByMs
-                        ? formatInstant(compliance.expectedByMs)
-                        : "—"}
-                    </td>
-                    <td>
-                      {row.displayStatus === COMPLIANCE.LATE
-                        ? lateByLabel(compliance?.lateMinutes) || "—"
-                        : "—"}
-                    </td>
+                    <td>{workingTypeLabel(row.record)}</td>
+                    <td>{shiftLabelOf(row.record, assignedShift)}</td>
                   </tr>
                 );
               })}

@@ -599,4 +599,97 @@ assert.deepStrictEqual(
   ["admin@mydgv.com", "super@mydgv.com"]
 );
 
+{
+  const afterDeadline = DEADLINE_MS + ORANGE_MS + 60 * 1000;
+  const reviewView = computeAssignmentView(
+    {
+      email: "kavya@mydgv.com",
+      status: "REVIEW",
+      recordedZone: ZONES.GREEN,
+      highestZone: ZONES.GREEN,
+    },
+    DEADLINE,
+    afterDeadline
+  );
+  assert.strictEqual(reviewView.status, "REVIEW");
+  assert.strictEqual(reviewView.zone, ZONES.GREEN);
+  assert.strictEqual(reviewView.completed, false);
+  assert.strictEqual(reviewView.timing, "");
+
+  const reviewDetect = detectTransitions(
+    {
+      email: "kavya@mydgv.com",
+      status: "REVIEW",
+      recordedZone: ZONES.GREEN,
+    },
+    DEADLINE,
+    afterDeadline
+  );
+  assert.strictEqual(reviewDetect.events.length, 0);
+  assert.strictEqual(reviewDetect.assignment.status, "REVIEW");
+  assert.strictEqual(reviewDetect.assignment.recordedZone, ZONES.GREEN);
+
+  const reviewApprovedLate = completeAssignment(
+    {
+      email: "kavya@mydgv.com",
+      status: "REVIEW",
+      recordedZone: ZONES.GREEN,
+      highestZone: ZONES.GREEN,
+    },
+    DEADLINE,
+    afterDeadline,
+    new Date(afterDeadline).toISOString()
+  );
+  assert.strictEqual(reviewApprovedLate.status, "DONE");
+  assert.strictEqual(reviewApprovedLate.completedZone, ZONES.GREEN);
+
+  const reviewKept = resetEscalationForNewDeadline(
+    {
+      email: "kavya@mydgv.com",
+      status: "REVIEW",
+      recordedZone: ZONES.GREEN,
+      highestZone: ZONES.GREEN,
+    },
+    "2026-08-30T11:30:00.000Z",
+    Date.parse("2026-08-26T12:00:00.000Z")
+  );
+  assert.strictEqual(reviewKept.recordedZone, ZONES.GREEN);
+
+  assert.strictEqual(
+    needsRedAdminNotify(
+      { dueDate: DEADLINE },
+      {
+        email: "kavya@mydgv.com",
+        status: "REVIEW",
+        recordedZone: ZONES.GREEN,
+      },
+      true,
+      afterDeadline
+    ),
+    false
+  );
+
+  const reviewDecorated = decorateTask(
+    {
+      taskId: "review-freeze",
+      dueDate: DEADLINE,
+      status: "REVIEW",
+      assignee: "kavya@mydgv.com",
+      assignments: [
+        {
+          email: "kavya@mydgv.com",
+          status: "REVIEW",
+          recordedZone: ZONES.GREEN,
+          highestZone: ZONES.GREEN,
+        },
+      ],
+    },
+    afterDeadline
+  );
+  assert.strictEqual(reviewDecorated.zone, ZONES.GREEN);
+  assert.strictEqual(reviewDecorated.overdue, false);
+  assert.strictEqual(reviewDecorated.timing, "");
+  assert.strictEqual(reviewDecorated.displayStatus, "REVIEW");
+}
+
 console.log("escalation tests passed");

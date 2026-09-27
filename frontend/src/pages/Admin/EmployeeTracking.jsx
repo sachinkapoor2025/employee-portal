@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import Layout from "../../components/Layout";
+import Button from "../../components/ui/Button";
+import { StatCard } from "../../components/ui/Card";
 import {
   fetchUserProfile,
   fetchUsers,
   fetchAttendance,
   fetchTasks,
   fetchAllLeave,
-  fetchAdminActivity,
   fetchEmployeeShift,
-  fetchTaskActivity,
 } from "../../services/api";
 import { roleLabel } from "../../constants/roles";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
@@ -23,11 +23,28 @@ import {
 } from "../../utils/attendanceCompliance";
 import {
   formatTaskDateTime,
-  friendlyActivityText,
   getAssignmentZone,
   statusLabel,
 } from "../../utils/taskStatus";
-import { filterEmployeeTaskActivity } from "../../utils/taskActivityFilter";
+import {
+  addDaysToKey,
+  companyTodayKey,
+  currentWeekStartKey,
+  EMPTY_ATTENDANCE_METRICS,
+  formatWeekRange,
+  indexAttendanceByDate,
+  startOfWeekKey,
+  summarizeAttendanceWeek,
+} from "../../utils/myActivityReport";
+import {
+  buildEmployeeActivityTrend,
+  EMPTY_WORK_METRICS,
+  EMPTY_WORKLOAD_METRICS,
+  summarizeEmployeeWorkloadWeek,
+  summarizeEmployeeWorkWeek,
+  trendPercentHint,
+  trendRangeForSelectedWeek,
+} from "../../utils/adminEmployeeActivity";
 
 const TABS = [
   "Overview",
@@ -71,45 +88,29 @@ function leaveOnDate(dateKey, leaves) {
   return null;
 }
 
-async function loadEmployeeActivity(email) {
-  const primary = await fetchAdminActivity(undefined, email);
-  let events = Array.isArray(primary?.events) ? primary.events : [];
-  events = events.filter(
-    (e) => !e.email || String(e.email).toLowerCase() === email
-  );
-  if (primary?.email && String(primary.email).toLowerCase() === email) {
-    return { events, summary: primary.summary || null };
-  }
-  const extraDates = [];
-  const today = new Date();
-  for (let i = 1; i < 7; i += 1) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    extraDates.push(ymd(d));
-  }
-  const more = await Promise.all(
-    extraDates.map((d) => fetchAdminActivity(d).catch(() => ({ events: [] })))
-  );
-  const extra = more.flatMap((r) =>
-    (r?.events || []).filter((e) => String(e.email || "").toLowerCase() === email)
-  );
-  const merged = [...events, ...extra].sort((a, b) =>
-    String(b.timestamp || "").localeCompare(String(a.timestamp || ""))
-  );
-  return { events: merged, summary: null };
-}
-
 /**
  * Admin employee tracking — uses existing attendance, task, leave, and activity APIs.
  */
 export default function EmployeeTracking() {
   const { email: rawEmail } = useParams();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const email = decodeURIComponent(rawEmail || "").toLowerCase();
   const requestedTab = params.get("tab");
   const from = params.get("from");
   const [tab, setTab] = useState(
     TABS.includes(requestedTab) ? requestedTab : "Overview"
+  );
+  const selectTab = useCallback(
+    (nextTab) => {
+      if (!TABS.includes(nextTab)) return;
+      setTab(nextTab);
+      const next = new URLSearchParams(params);
+      next.set("tab", nextTab);
+      if (from) next.set("from", from);
+      else next.delete("from");
+      setParams(next, { replace: true });
+    },
+    [from, params, setParams]
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -118,7 +119,6 @@ export default function EmployeeTracking() {
   const [attendance, setAttendance] = useState(null);
   const [tasks, setTasks] = useState(null);
   const [leaveRows, setLeaveRows] = useState(null);
-  const [activity, setActivity] = useState(null);
   const [assignedShift, setAssignedShift] = useState(null);
   const [shiftConflicts, setShiftConflicts] = useState(null);
 
@@ -179,7 +179,7 @@ export default function EmployeeTracking() {
 
   useEffect(() => {
     if (!email) return;
-    if (!["Overview", "Tasks", "Activity"].includes(tab)) return;
+    if (!["Overview", "Tasks"].includes(tab)) return;
     let cancelled = false;
     fetchTasks({ assignee: email, includePendingShiftConflicts: true })
       .then((list) => {
@@ -228,22 +228,6 @@ export default function EmployeeTracking() {
       cancelled = true;
     };
   }, [tab, email, leaveRows]);
-
-  useEffect(() => {
-    if (tab !== "Activity" && tab !== "Overview") return;
-    if (!email) return;
-    let cancelled = false;
-    loadEmployeeActivity(email)
-      .then((res) => {
-        if (!cancelled) setActivity(res);
-      })
-      .catch(() => {
-        if (!cancelled) setActivity({ events: [], summary: null });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, email]);
 
   return (
     <Layout>
@@ -308,7 +292,7 @@ export default function EmployeeTracking() {
                     tab === t ? "dgv-btn--primary" : "dgv-btn--outline"
                   }`}
                   style={{ padding: "8px 12px", fontSize: 13 }}
-                  onClick={() => setTab(t)}
+                  onClick={() => selectTab(t)}
                 >
                   {t}
                 </button>
@@ -326,11 +310,14 @@ export default function EmployeeTracking() {
             >
               {tab === "Overview" ? (
                 <OverviewPanel
+                  email={email}
                   attendance={attendance}
                   tasks={tasks}
                   leaveRows={leaveRows}
-                  activity={activity}
+                  assignedShift={assignedShift}
                   skill={profile?.skill}
+                  designation={profile?.designation}
+                  onOpenTab={selectTab}
                 />
               ) : tab === "Attendance" ? (
                 <AttendancePanel
@@ -357,7 +344,7 @@ export default function EmployeeTracking() {
                   designation={profile?.designation}
                 />
               ) : (
-                <ActivityPanel tasks={tasks} email={email} />
+                <ActivityPanel email={email} profile={profile} />
               )}
             </div>
           </>
@@ -367,26 +354,409 @@ export default function EmployeeTracking() {
   );
 }
 
-function OverviewPanel({ attendance, tasks, leaveRows, activity, skill }) {
-  const present = (attendance || []).filter((r) => {
-    const s = getWeeklyDisplayStatus(r);
-    return s === "Present";
-  }).length;
-  const openTasks = (tasks || []).filter((t) => {
-    const s = String(t.status || "").toUpperCase();
-    return s !== "DONE" && s !== "CANCELLED";
-  }).length;
-  const events = activity?.events?.length ?? null;
+function nextDateKey(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return ymd(new Date(y, m - 1, d + 1));
+}
+
+function overviewAttendanceMetrics(rows, leaves, assignedShift) {
+  const byDate = {};
+  (Array.isArray(rows) ? rows : []).forEach((r) => {
+    if (r.date) byDate[r.date] = r;
+  });
+  const { start, end } = dateRange(14);
+  const todayKey = companyTodayKey();
+  const metrics = {
+    present: 0,
+    onTime: 0,
+    late: 0,
+    leave: 0,
+    weekOff: 0,
+    todayStatus: "—",
+  };
+  let cursor = start;
+  while (cursor <= end) {
+    const rec = byDate[cursor] || null;
+    const overlay = rec?.status ? null : leaveOnDate(cursor, leaves);
+    const leaveLabel =
+      overlay === "Planned Off"
+        ? "Planned Off"
+        : overlay === "On Leave" || overlay === "Leave"
+          ? "On Leave"
+          : overlay;
+    let bucket = getWeeklyDisplayStatus(rec);
+    if (!rec && overlay === "Leave") bucket = "Leave";
+    if (!rec && overlay === "Planned Off") bucket = "Planned Off";
+    const compliance = attendanceCompliance({
+      dateKey: cursor,
+      todayKey,
+      record: rec,
+      leaveLabel,
+      shift: assignedShift,
+      useAssignedShiftName: false,
+    });
+    if (cursor === todayKey) metrics.todayStatus = compliance.status;
+    if (bucket === "Present") {
+      metrics.present += 1;
+      if (compliance.status === COMPLIANCE.ON_TIME) metrics.onTime += 1;
+      if (compliance.status === COMPLIANCE.LATE) metrics.late += 1;
+    } else if (bucket === "Leave") {
+      metrics.leave += 1;
+    } else if (bucket === "Planned Off" || bucket === "Weekly Off") {
+      metrics.weekOff += 1;
+    }
+    cursor = nextDateKey(cursor);
+  }
+  return metrics;
+}
+
+function overviewTaskMetrics(tasks, email) {
+  const metrics = {
+    assigned: 0,
+    inProgress: 0,
+    completed: 0,
+    underReview: 0,
+    redZone: 0,
+  };
+  (Array.isArray(tasks) ? tasks : []).forEach((task) => {
+    const mine = assignmentForEmployee(task, email);
+    if (!mine || mine.removed) return;
+    const status = String(mine.status || "").toUpperCase();
+    if (status === "CANCELLED") return;
+    metrics.assigned += 1;
+    if (status === "IN_PROGRESS") metrics.inProgress += 1;
+    if (status === "DONE") metrics.completed += 1;
+    if (status === "REVIEW") metrics.underReview += 1;
+    if (String(getAssignmentZone(mine, task.dueDate) || "").toUpperCase() === "RED") {
+      metrics.redZone += 1;
+    }
+  });
+  return metrics;
+}
+
+function overviewLeaveMetrics(rows, todayKey) {
+  const metrics = { pending: 0, approved: 0, upcoming: 0 };
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const status = String(row.status || "").toUpperCase();
+    const from = row.fromDate || row.startDate || "";
+    if (status === "PENDING" || status === "PENDING_APPROVAL") metrics.pending += 1;
+    if (status === "APPROVED") metrics.approved += 1;
+    if (
+      status !== "REJECTED" &&
+      status !== "CANCELLED" &&
+      from &&
+      from >= todayKey
+    ) {
+      metrics.upcoming += 1;
+    }
+  });
+  return metrics;
+}
+
+const overviewSectionStyle = {
+  padding: "14px 16px",
+  borderRadius: 12,
+  border: `1px solid ${colors.border}`,
+  background: "var(--dgv-surface-solid)",
+  minWidth: 0,
+  height: "fit-content",
+};
+
+const overviewMetricRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  gap: 12,
+  padding: "6px 8px",
+  borderRadius: 8,
+  background: colors.background,
+};
+
+function OverviewSection({ id, title, hint, viewLabel, onView, loading, children }) {
+  return (
+    <section aria-labelledby={id} style={overviewSectionStyle}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          alignItems: "flex-start",
+          marginBottom: hint ? 4 : 8,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <h3 id={id} style={{ margin: 0, fontSize: 16 }}>
+            {title}
+          </h3>
+          {hint ? (
+            <p
+              style={{
+                ...pageSubtitle,
+                margin: "4px 0 0",
+                fontSize: 13,
+              }}
+            >
+              {hint}
+            </p>
+          ) : null}
+        </div>
+        <Button type="button" variant="outline" onClick={onView}>
+          {viewLabel}
+        </Button>
+      </div>
+      {loading ? (
+        <p style={{ color: colors.textMuted, margin: "8px 0 0" }}>Loading…</p>
+      ) : (
+        children
+      )}
+    </section>
+  );
+}
+
+function OverviewMetrics({ items }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 4,
+        marginTop: 4,
+      }}
+    >
+      {items.map(({ label, value }) => (
+        <div key={label} role="group" aria-label={label} style={overviewMetricRowStyle}>
+          <span
+            style={{
+              fontSize: 13,
+              color: colors.textMuted,
+              fontWeight: 600,
+            }}
+          >
+            {label}
+          </span>
+          <strong
+            style={{
+              fontSize: 16,
+              fontWeight: 700,
+              fontVariantNumeric: "tabular-nums",
+              color: colors.text,
+            }}
+          >
+            {value}
+          </strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OverviewField({ label, children }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <p
+        style={{
+          margin: "0 0 2px",
+          fontSize: 13,
+          fontWeight: 600,
+          color: colors.textMuted,
+        }}
+      >
+        {label}
+      </p>
+      <p style={{ margin: 0, fontSize: 14, color: colors.text }}>{children}</p>
+    </div>
+  );
+}
+
+function OverviewPanel({
+  email,
+  attendance,
+  tasks,
+  leaveRows,
+  assignedShift,
+  skill,
+  designation,
+  onOpenTab,
+}) {
+  const todayKey = companyTodayKey();
+  const attendanceMetrics = overviewAttendanceMetrics(
+    attendance,
+    leaveRows,
+    assignedShift
+  );
+  const taskMetrics = overviewTaskMetrics(tasks, email);
+  const leaveMetrics = overviewLeaveMetrics(leaveRows, todayKey);
+  const weekStart = currentWeekStartKey();
+  const getAssignment = (task) => assignmentForEmployee(task, email);
+  const activityWorkload = summarizeEmployeeWorkloadWeek({
+    tasks: tasks || [],
+    weekStart,
+    getAssignment,
+  });
+  const activityWork = summarizeEmployeeWorkWeek({
+    tasks: tasks || [],
+    weekStart,
+    getAssignment,
+  });
+  const activityAttendance = summarizeAttendanceWeek({
+    weekStart,
+    recordsByDate: indexAttendanceByDate(attendance || []),
+    todayKey,
+  });
+
   return (
     <>
-      <h3 style={{ marginTop: 0 }}>Overview</h3>
-      <p style={{ color: colors.textMuted }}>
-        Last 14 days present: {attendance ? present : "…"} · Open tasks:{" "}
-        {tasks ? openTasks : "…"} · Leave records:{" "}
-        {leaveRows ? leaveRows.length : "…"} · Activity events:{" "}
-        {events == null ? "…" : events}
-        {skill ? ` · Skill: ${skill}` : ""}
-      </p>
+      <style>{`
+        .employee-overview-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+          align-items: start;
+        }
+        .employee-overview-activity {
+          grid-column: 1 / -1;
+        }
+        .employee-overview-activity-metrics {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 8px 24px;
+        }
+        @media (min-width: 720px) {
+          .employee-overview-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .employee-overview-activity-metrics {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+        @media (min-width: 1100px) {
+          .employee-overview-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+        }
+      `}</style>
+      <h3 style={{ marginTop: 0, marginBottom: 16 }}>Overview</h3>
+      <div className="employee-overview-grid">
+        <OverviewSection
+          id="overview-attendance"
+          title="Attendance"
+          hint={`Last 14 days · Today: ${attendanceMetrics.todayStatus}`}
+          viewLabel="View Attendance →"
+          onView={() => onOpenTab("Attendance")}
+          loading={!attendance}
+        >
+          <OverviewMetrics
+            items={[
+              { label: "Present", value: attendanceMetrics.present },
+              { label: "On Time", value: attendanceMetrics.onTime },
+              { label: "Late", value: attendanceMetrics.late },
+              { label: "Leave", value: attendanceMetrics.leave },
+              { label: "Week Off", value: attendanceMetrics.weekOff },
+            ]}
+          />
+        </OverviewSection>
+
+        <OverviewSection
+          id="overview-tasks"
+          title="Tasks"
+          viewLabel="View Tasks →"
+          onView={() => onOpenTab("Tasks")}
+          loading={!tasks}
+        >
+          <OverviewMetrics
+            items={[
+              { label: "Assigned", value: taskMetrics.assigned },
+              { label: "In Progress", value: taskMetrics.inProgress },
+              { label: "Completed", value: taskMetrics.completed },
+              { label: "Under Review", value: taskMetrics.underReview },
+              { label: "Red Zone", value: taskMetrics.redZone },
+            ]}
+          />
+        </OverviewSection>
+
+        <OverviewSection
+          id="overview-leave"
+          title="Leave"
+          viewLabel="View Leave →"
+          onView={() => onOpenTab("Leave")}
+          loading={!leaveRows}
+        >
+          <OverviewMetrics
+            items={[
+              { label: "Pending", value: leaveMetrics.pending },
+              { label: "Approved", value: leaveMetrics.approved },
+              { label: "Upcoming", value: leaveMetrics.upcoming },
+            ]}
+          />
+        </OverviewSection>
+
+        <OverviewSection
+          id="overview-documents"
+          title="Documents"
+          viewLabel="View Documents →"
+          onView={() => onOpenTab("Documents")}
+        >
+          <OverviewField label="Personal documents">
+            Available in Documents → Personal.
+          </OverviewField>
+          <OverviewField label="Required Documents">
+            Pinned storage only. No verify/reject workflow.
+          </OverviewField>
+        </OverviewSection>
+
+        <OverviewSection
+          id="overview-training"
+          title="Training"
+          viewLabel="View Training →"
+          onView={() => onOpenTab("Training")}
+        >
+          <OverviewField label="Assigned Skill">
+            {skill || "—"}
+          </OverviewField>
+        </OverviewSection>
+
+        <OverviewSection
+          id="overview-performance"
+          title="Performance"
+          viewLabel="View Performance →"
+          onView={() => onOpenTab("Performance")}
+        >
+          <OverviewMetrics
+            items={[
+              { label: "Designation", value: designation || "—" },
+              { label: "Skill", value: skill || "—" },
+            ]}
+          />
+        </OverviewSection>
+
+        <div className="employee-overview-activity">
+          <OverviewSection
+            id="overview-activity"
+            title="Activity"
+            hint={`Current Week · ${formatWeekRange(weekStart)}`}
+            viewLabel="View Activity →"
+            onView={() => onOpenTab("Activity")}
+            loading={!tasks || !attendance}
+          >
+            <div className="employee-overview-activity-metrics">
+              <OverviewMetrics
+                items={[
+                  { label: "Assigned", value: activityWorkload.assigned },
+                  { label: "Completed", value: activityWork.completed },
+                  { label: "Under Review", value: activityWork.underReview },
+                  { label: "Red Zone", value: activityWork.redZone },
+                ]}
+              />
+              <OverviewMetrics
+                items={[
+                  { label: "Present", value: activityAttendance.present },
+                  { label: "On Time", value: activityAttendance.onTime },
+                  { label: "Late", value: activityAttendance.late },
+                ]}
+              />
+            </div>
+          </OverviewSection>
+        </div>
+      </div>
     </>
   );
 }
@@ -810,122 +1180,281 @@ function PerformancePanel({ skill, designation }) {
   );
 }
 
-function normalizeActivityList(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.activity)) return payload.activity;
-  return [];
+function metricNumber(metrics, key) {
+  const value = metrics?.[key];
+  return Number.isFinite(value) ? value : 0;
 }
 
-function TaskActivitySection({ tasks, email }) {
-  const [byTask, setByTask] = useState(null);
+function trendComparison(trend, key, current) {
+  if (!trend?.ready) return "—";
+  return trendPercentHint(current, trend.averages?.[key]) || "—";
+}
+
+function ActivityPanel({ email, profile }) {
+  const [weekStart, setWeekStart] = useState(() => currentWeekStartKey());
+  const [attendanceMetrics, setAttendanceMetrics] = useState(
+    EMPTY_ATTENDANCE_METRICS
+  );
+  const [workloadMetrics, setWorkloadMetrics] = useState(EMPTY_WORKLOAD_METRICS);
+  const [workMetrics, setWorkMetrics] = useState(EMPTY_WORK_METRICS);
+  const [trend, setTrend] = useState({ ready: false, averages: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(
+    async (mondayKey) => {
+      setLoading(true);
+      setError("");
+      const selected = startOfWeekKey(mondayKey);
+      const range = trendRangeForSelectedWeek(selected);
+      const getAssignment = (task) => assignmentForEmployee(task, email);
+      try {
+        const [attendanceRows, taskList] = await Promise.all([
+          fetchAttendance(range.rangeStart, range.rangeEnd, email),
+          fetchTasks({ assignee: email }),
+        ]);
+        const tasks = Array.isArray(taskList) ? taskList : [];
+        const recordsByDate = indexAttendanceByDate(attendanceRows);
+        const attendance = summarizeAttendanceWeek({
+          weekStart: selected,
+          recordsByDate,
+        });
+        const workload = summarizeEmployeeWorkloadWeek({
+          tasks,
+          weekStart: selected,
+          getAssignment,
+        });
+        const work = summarizeEmployeeWorkWeek({
+          tasks,
+          weekStart: selected,
+          getAssignment,
+        });
+        setAttendanceMetrics(attendance);
+        setWorkloadMetrics(workload);
+        setWorkMetrics(work);
+        setTrend(
+          buildEmployeeActivityTrend({
+            selectedWeekStart: selected,
+            recordsByDate,
+            tasks,
+            getAssignment,
+          })
+        );
+      } catch (err) {
+        if (err?.status === 401 || /session expired/i.test(err?.message || "")) {
+          return;
+        }
+        setAttendanceMetrics(EMPTY_ATTENDANCE_METRICS);
+        setWorkloadMetrics(EMPTY_WORKLOAD_METRICS);
+        setWorkMetrics(EMPTY_WORK_METRICS);
+        setTrend({ ready: false, averages: null });
+        setError(err.message || "Unable to load activity.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [email]
+  );
 
   useEffect(() => {
-    if (!tasks) {
-      setByTask(null);
-      return undefined;
-    }
-    let cancelled = false;
-    Promise.all(
-      tasks.map((task) => {
-        if (!task?.taskId) {
-          return Promise.resolve({ task, events: [] });
-        }
-        return fetchTaskActivity(task.taskId)
-          .then((rows) => ({
-            task,
-            events: filterEmployeeTaskActivity(
-              normalizeActivityList(rows),
-              email
-            ).sort(
-              (a, b) =>
-                String(b.timestamp || "").localeCompare(String(a.timestamp || ""))
-            ),
-          }))
-          .catch(() => ({ task, events: [] }));
-      })
-    ).then((list) => {
-      if (!cancelled) setByTask(list);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tasks, email]);
+    load(weekStart);
+  }, [weekStart, load]);
+
+  const weekRange = formatWeekRange(weekStart);
+  const employeeLine = [profile?.name, profile?.empId, profile?.department]
+    .filter(Boolean)
+    .join(" · ");
+  const present = metricNumber(attendanceMetrics, "present");
+  const onTime = metricNumber(attendanceMetrics, "onTime");
+  const late = metricNumber(attendanceMetrics, "late");
+  const assigned = metricNumber(workloadMetrics, "assigned");
+  const high = metricNumber(workloadMetrics, "high");
+  const critical = metricNumber(workloadMetrics, "critical");
+  const highCritical = metricNumber(workloadMetrics, "highCritical");
+  const completed = metricNumber(workMetrics, "completed");
 
   return (
-    <section aria-labelledby="tracking-task-activity">
-      <h3 id="tracking-task-activity" style={{ marginTop: 0, marginBottom: 8 }}>
-        Task activity
-      </h3>
-      {!tasks || !byTask ? (
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          Loading task activity…
-        </p>
-      ) : byTask.length === 0 ? (
-        <p style={{ color: colors.textMuted, marginBottom: 0 }}>
-          No tasks assigned to this employee.
-        </p>
-      ) : (
-        <div style={{ display: "grid", gap: 16 }}>
-          {byTask.map(({ task, events }) => {
-            const title = task.title || task.taskId || "Task";
-            const headingId = `task-activity-${task.taskId || title}`;
-            return (
-              <article
-                key={task.taskId || title}
-                aria-labelledby={headingId}
-                style={{
-                  paddingTop: 4,
-                  borderTop: "1px solid var(--dgv-border)",
-                }}
-              >
-                <h4 id={headingId} style={{ margin: "12px 0 8px", fontSize: 16 }}>
-                  {task.taskId ? (
-                    <Link
-                      to={`/admin/tasks/${encodeURIComponent(task.taskId)}`}
-                      style={{ color: "var(--dgv-accent)", fontWeight: 700 }}
-                    >
-                      {title}
-                    </Link>
-                  ) : (
-                    title
-                  )}
-                </h4>
-                {events.length === 0 ? (
-                  <p style={{ color: colors.textMuted, fontSize: 13, margin: 0 }}>
-                    No activity recorded
-                  </p>
-                ) : (
-                  <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                    {events.map((ev, index) => (
-                      <li
-                        key={ev.activityId || ev.SK || `${ev.timestamp}-${index}`}
-                        style={{
-                          fontSize: 13,
-                          color: colors.textSecondary,
-                          padding: "6px 0",
-                          borderTop: index ? "1px solid var(--dgv-border)" : "none",
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, color: "var(--dgv-text)" }}>
-                          {formatTaskDateTime(ev.timestamp)}
-                        </span>
-                        {` · ${friendlyActivityText(ev, [])}`}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </article>
-            );
-          })}
+    <>
+      <div className="dgv-weekly-attendance__header">
+        <div>
+          <h3 id="employee-activity-title" style={{ marginTop: 0, marginBottom: 4 }}>
+            Employee Activity
+          </h3>
+          <p
+            style={{ ...pageSubtitle, marginBottom: 0 }}
+            aria-label="Selected week"
+          >
+            {weekRange}
+          </p>
+          {employeeLine ? (
+            <p style={{ ...pageSubtitle, margin: "8px 0 0" }}>{employeeLine}</p>
+          ) : null}
         </div>
-      )}
-    </section>
-  );
-}
+        <div className="dgv-weekly-attendance__nav" aria-label="Week navigation">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setWeekStart((prev) => addDaysToKey(prev, -7))}
+          >
+            ← Previous Week
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setWeekStart(currentWeekStartKey())}
+          >
+            Current Week
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setWeekStart((prev) => addDaysToKey(prev, 7))}
+          >
+            Next Week →
+          </Button>
+        </div>
+      </div>
 
-function ActivityPanel({ tasks, email }) {
-  return <TaskActivitySection tasks={tasks} email={email} />;
+      {loading ? (
+        <p style={{ color: colors.textMuted, margin: "16px 0 0" }}>
+          Loading activity...
+        </p>
+      ) : null}
+      {error ? (
+        <div className="dgv-alert dgv-alert--error" style={{ marginTop: 16 }} role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      <section aria-labelledby="employee-activity-attendance" style={{ marginTop: 20 }}>
+        <h3 id="employee-activity-attendance" style={{ marginTop: 0, marginBottom: 8 }}>
+          Attendance
+        </h3>
+        <div className="dgv-kpi-grid dgv-kpi-grid--3">
+          <StatCard
+            label="Present"
+            value={present}
+            hint={trendPercentHint(present, trend.averages?.present)}
+          />
+          <StatCard
+            label="On Time"
+            value={onTime}
+            hint={trendPercentHint(onTime, trend.averages?.onTime)}
+          />
+          <StatCard
+            label="Late"
+            value={late}
+            hint={trendPercentHint(late, trend.averages?.late)}
+          />
+          <StatCard label="Leave" value={metricNumber(attendanceMetrics, "leave")} />
+          <StatCard
+            label="Week Off"
+            value={metricNumber(attendanceMetrics, "weekOff")}
+          />
+          <StatCard
+            label="Not Marked"
+            value={metricNumber(attendanceMetrics, "notMarked")}
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="employee-activity-workload">
+        <h3 id="employee-activity-workload" style={{ marginTop: 0, marginBottom: 8 }}>
+          Workload
+        </h3>
+        <div className="dgv-kpi-grid dgv-kpi-grid--3">
+          <StatCard
+            label="Assigned"
+            value={assigned}
+            hint={
+              trendPercentHint(assigned, trend.averages?.assigned) ||
+              "Assigned work for this week"
+            }
+          />
+          <StatCard
+            label="High"
+            value={high}
+            hint={trendPercentHint(high, trend.averages?.high)}
+          />
+          <StatCard
+            label="Critical"
+            value={critical}
+            hint={trendPercentHint(critical, trend.averages?.critical)}
+          />
+          <StatCard label="Medium" value={metricNumber(workloadMetrics, "medium")} />
+          <StatCard label="Low" value={metricNumber(workloadMetrics, "low")} />
+          <StatCard
+            label="High + Critical"
+            value={highCritical}
+            hint={trendPercentHint(highCritical, trend.averages?.highCritical)}
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="employee-activity-work">
+        <h3 id="employee-activity-work" style={{ marginTop: 0, marginBottom: 8 }}>
+          Work
+        </h3>
+        <div className="dgv-kpi-grid">
+          <StatCard
+            label="Completed"
+            value={completed}
+            hint={trendPercentHint(completed, trend.averages?.completed)}
+          />
+          <StatCard
+            label="Under Review"
+            value={metricNumber(workMetrics, "underReview")}
+          />
+          <StatCard
+            label="Red Zone"
+            value={metricNumber(workMetrics, "redZone")}
+          />
+          <StatCard
+            label="High Priority Red"
+            value={metricNumber(workMetrics, "highPriorityRed")}
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="employee-activity-trend">
+        <h3 id="employee-activity-trend" style={{ marginTop: 0, marginBottom: 8 }}>
+          Trend
+        </h3>
+        <p style={{ ...pageSubtitle, marginBottom: 12 }}>
+          Current week vs previous 4 completed weeks
+        </p>
+        <div className="dgv-table-wrap">
+          <table className="dgv-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>This week</th>
+                <th>vs 4-week average</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ["Present", present, "present"],
+                ["On Time", onTime, "onTime"],
+                ["Late", late, "late"],
+                ["Assigned", assigned, "assigned"],
+                ["High", high, "high"],
+                ["Critical", critical, "critical"],
+                ["High + Critical", highCritical, "highCritical"],
+                ["Completed", completed, "completed"],
+              ].map(([label, value, key]) => (
+                <tr key={key}>
+                  <td>{label}</td>
+                  <td>{value}</td>
+                  <td>{trendComparison(trend, key, value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
 }
 
 function formatHm(hhmm) {

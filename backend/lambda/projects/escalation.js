@@ -2,7 +2,7 @@
  * Task assignment zones: Green → Orange (from deadline) → Red.
  * TEST: Orange lasts 2 minutes. Set TASK_ORANGE_MS=86400000 for 24 hours.
  * Zone is always derived from the original deadline instant, never from
- * detection time. Completed assignments freeze their zone.
+ * detection time. Completed and REVIEW assignments freeze their zone.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -25,6 +25,7 @@ const ZONE_RANK = {
 };
 
 const COMPLETED = "DONE";
+const REVIEW = "REVIEW";
 const CANCELLED = "CANCELLED";
 
 /** Existing priorities plus Critical. URGENT is kept for stored legacy rows. */
@@ -259,8 +260,25 @@ function isComplete(status) {
   return String(status || "").toUpperCase() === COMPLETED;
 }
 
+function isReview(status) {
+  return String(status || "").toUpperCase() === REVIEW;
+}
+
 function isCancelled(status) {
   return String(status || "").toUpperCase() === CANCELLED;
+}
+
+function frozenZoneOf(assignment, dueDate, nowMs = Date.now()) {
+  const stored = String(assignment?.recordedZone || "").toUpperCase();
+  if (stored && stored !== ZONES.NONE && ZONE_RANK[stored]) {
+    return stored;
+  }
+  const completed = String(assignment?.completedZone || "").toUpperCase();
+  if (completed && completed !== ZONES.NONE && ZONE_RANK[completed]) {
+    return completed;
+  }
+  const live = zoneAt(parseDeadlineMs(dueDate), nowMs);
+  return live === ZONES.NONE ? ZONES.GREEN : live;
 }
 
 function isOpenStatus(status) {
@@ -306,7 +324,7 @@ function formatDuration(ms) {
 }
 
 function formatTiming({ dueDate, zone, status, nowMs = Date.now() }) {
-  if (isComplete(status) || isCancelled(status)) return "";
+  if (isComplete(status) || isCancelled(status) || isReview(status)) return "";
   const deadlineMs = parseDeadlineMs(dueDate);
   if (!Number.isFinite(deadlineMs)) return "";
   const z = zone || zoneAt(deadlineMs, nowMs);
@@ -360,6 +378,18 @@ function computeAssignmentView(assignment = {}, dueDate, nowMs = Date.now()) {
     };
   }
 
+  if (isReview(status)) {
+    const zone = frozenZoneOf(assignment, dueDate, nowMs);
+    return {
+      zone,
+      displayZone: zone,
+      status: REVIEW,
+      completed: false,
+      reachedRed: assignment.highestZone === ZONES.RED || zone === ZONES.RED,
+      timing: "",
+    };
+  }
+
   const live = zoneAt(deadlineMs, nowMs);
   return {
     zone: live,
@@ -397,7 +427,11 @@ function completeAssignment(assignment, dueDate, nowMs, nowIso) {
  * Event timestamps use the original deadline (and deadline+24h), not now.
  */
 function detectTransitions(assignment, dueDate, nowMs = Date.now()) {
-  if (isComplete(assignment.status) || isCancelled(assignment.status)) {
+  if (
+    isComplete(assignment.status) ||
+    isCancelled(assignment.status) ||
+    isReview(assignment.status)
+  ) {
     return { assignment: { ...assignment }, events: [] };
   }
   const deadlineMs = parseDeadlineMs(dueDate);
@@ -558,6 +592,7 @@ function decorateAssignment(assignment, dueDate, nowMs) {
     completionRemark: assignment.completionRemark || null,
     ...assignmentBlockerFields(assignment),
     highestZone: maxZone(assignment.highestZone, view.zone),
+    recordedZone: assignment.recordedZone || (isReview(view.status) ? view.zone : null),
     zone: view.zone,
     displayZone: view.displayZone,
     reachedRed: view.reachedRed,
@@ -723,7 +758,11 @@ function applyZoneFilter(tasks, zoneFilter, viewerEmail) {
 }
 
 function resetEscalationForNewDeadline(assignment, newDueDate, nowMs) {
-  if (isComplete(assignment.status) || isCancelled(assignment.status)) {
+  if (
+    isComplete(assignment.status) ||
+    isCancelled(assignment.status) ||
+    isReview(assignment.status)
+  ) {
     return { ...assignment };
   }
   const live = zoneAt(parseDeadlineMs(newDueDate), nowMs);
@@ -778,7 +817,12 @@ function canClaimRedAdminStatus(
  * are never duplicated on later sweeps.
  */
 function needsRedAdminNotify(task, assignment = {}, enteredRed = false, nowMs = Date.now()) {
-  if (assignment.removed || isComplete(assignment.status) || isCancelled(assignment.status)) {
+  if (
+    assignment.removed ||
+    isComplete(assignment.status) ||
+    isCancelled(assignment.status) ||
+    isReview(assignment.status)
+  ) {
     return false;
   }
   const attempts = Number(assignment.redAdminNotifyAttempts || task.redAdminNotifyAttempts || 0);
@@ -837,6 +881,7 @@ module.exports = {
   zoneAt,
   maxZone,
   isComplete,
+  isReview,
   isCancelled,
   isOpenStatus,
   normalizeEmail,

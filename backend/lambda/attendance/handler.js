@@ -532,7 +532,11 @@ exports.handler = async (event) => {
           });
         }
         if (!existing.actualCheckInTime) {
-          return json(400, { error: "Cannot check out before check-in" });
+          const implicitIn =
+            existing.attendanceSubmittedAt || existing.submittedAt || null;
+          if (!implicitIn) {
+            return json(400, { error: "Cannot check out before check-in" });
+          }
         }
         if (existing.actualCheckOutTime) {
           return json(200, {
@@ -557,7 +561,10 @@ exports.handler = async (event) => {
           date: todayKey,
           status: "Working",
           sessionStatus: "Checked Out",
-          actualCheckInTime: existing.actualCheckInTime,
+          actualCheckInTime:
+            existing.actualCheckInTime ||
+            existing.attendanceSubmittedAt ||
+            existing.submittedAt,
           actualCheckOutTime: nowIso,
           workedBeyondShift,
           workedBeyondReason,
@@ -572,7 +579,10 @@ exports.handler = async (event) => {
           updatedAt: nowIso,
           ...buildDateKeys(
             todayKey,
-            existing.checkInTime || existing.actualCheckInTime,
+            existing.checkInTime ||
+              existing.actualCheckInTime ||
+              existing.attendanceSubmittedAt ||
+              existing.submittedAt,
             user.email
           ),
         };
@@ -742,6 +752,7 @@ exports.handler = async (event) => {
                 attendanceSubmittedAt: snapshot.attendanceSubmittedAt,
                 timingStatus: snapshot.timingStatus,
                 lateMinutes: snapshot.lateMinutes,
+                actualCheckInTime: nowIso,
               }
             : {}),
           ...buildDateKeys(

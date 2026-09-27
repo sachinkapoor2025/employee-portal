@@ -661,6 +661,32 @@ async function run() {
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 
+  await test("employee TODO DONE with valid remark submits assignment for review", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+    });
+    const remark = "Finished from the employee portal.";
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: remark,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(entityTask(ddb).status, "REVIEW");
+    assert.strictEqual(mine.completionRemark, remark);
+    assert.ok(!mine.completedAt);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
   await test("employee DONE with valid remark submits assignment for review", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,
@@ -686,6 +712,7 @@ async function run() {
     assert.ok(!mine.completedAt);
     assert.ok(!mine.completedDate);
     assert.ok(!mine.completedZone);
+    assert.strictEqual(mine.recordedZone, "GREEN");
     assert.strictEqual(entityTask(ddb).status, "REVIEW");
     assert.ok(!entityTask(ddb).completionRemark);
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
@@ -905,6 +932,7 @@ async function run() {
     const completed = activityItems(ddb).filter((a) => a.action === "task_completed");
     assert.strictEqual(completed.length, 1);
     assert.strictEqual(completed[0].assignmentEmail, PRIYA);
+    assert.strictEqual(entityTask(ddb).status, "DONE");
   });
 
   await test("admin REVIEW to IN_PROGRESS preserves existing fields", async () => {
@@ -934,7 +962,7 @@ async function run() {
     assert.ok(changed.some((a) => /IN REVIEW → IN PROGRESS/.test(a.detail || "")));
   });
 
-  await test("admin DONE does not require completionRemark", async () => {
+  await test("admin TODO DONE without remark is 400", async () => {
     const { ddb } = setup({ startDate: FUTURE_START, dueDate: FUTURE_DUE });
     const res = parse(
       await handler(
@@ -946,8 +974,98 @@ async function run() {
         })
       )
     );
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(res.body.error || "", /Completion Remark/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "TODO");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("dual-role ADMIN assignee TODO DONE submits for review", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+    });
+    const remark = "Completed";
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: ADMIN,
+          completionRemark: remark,
+        })
+      )
+    );
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "DONE");
+    const mine = assignmentItem(ddb, ADMIN);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(entityTask(ddb).status, "REVIEW");
+    assert.strictEqual(mine.completionRemark, remark);
+    assert.ok(!mine.completedAt);
+    assert.ok(!mine.completedDate);
+    assert.ok(!mine.completedZone);
+    assert.strictEqual(mine.recordedZone, "GREEN");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+    const changed = activityItems(ddb).filter((a) => a.action === "status_changed");
+    assert.ok(changed.some((a) => /TODO → IN REVIEW/.test(a.detail || "")));
+  });
+
+  await test("dual-role ADMIN assignee IN_PROGRESS DONE submits for review", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: ADMIN,
+          completionRemark: "Work finished for review.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, ADMIN);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.notStrictEqual(mine.status, "DONE");
+    assert.ok(!mine.completedAt);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("approve after deadline keeps submit-time GREEN zone", async () => {
+    const { ddb } = setup({
+      startDate: PAST_DUE,
+      dueDate: PAST_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    const row = liveAssignment(ddb, PRIYA);
+    row.completionRemark = "Submitted on time.";
+    row.recordedZone = "GREEN";
+    row.highestZone = "GREEN";
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "DONE");
+    assert.ok(mine.completedAt);
+    assert.strictEqual(mine.completedZone, "GREEN");
+    assert.notStrictEqual(mine.completedZone, "RED");
+    assert.notStrictEqual(mine.completedZone, "ORANGE");
+    assert.ok(activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 }
 

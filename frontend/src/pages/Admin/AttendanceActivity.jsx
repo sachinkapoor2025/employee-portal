@@ -26,6 +26,7 @@ import {
   COMPLIANCE,
   attendanceCompliance,
   formatInstant,
+  formatClockHm,
   lateByLabel,
 } from "../../utils/attendanceCompliance";
 
@@ -74,6 +75,127 @@ function resolveDayStatus(record, leaveLabel) {
   if (weekly === "Present") return "Present";
   if (weekly === "Weekly Off") return "Weekly Off";
   return "Absent";
+}
+
+const WORK_PERIOD_LABELS = {
+  FULL_DAY: "Full Day",
+  FIRST_HALF: "First Half",
+  SECOND_HALF: "Second Half",
+};
+
+const DAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+export function todayStatusOf(row) {
+  if (row?.dayStatus === "On Leave") return "Leave";
+  if (row?.dayStatus === "Planned Off") return "Week Off";
+  const weekly = getWeeklyDisplayStatus(row);
+  if (weekly === "Present") return "Present";
+  if (weekly === "Leave") return "Leave";
+  if (weekly === "Weekly Off" || weekly === "Planned Off") return "Week Off";
+  if (weekly === "Absent") return "Absent";
+  return "Not Marked";
+}
+
+export function timingLabelOf(row) {
+  const status = String(row?.compliance?.status || "").trim();
+  if (status === COMPLIANCE.ON_TIME || status === COMPLIANCE.LATE) return status;
+  return "—";
+}
+
+export function shiftNameOf(row) {
+  const name = String(
+    row?.shiftName ||
+      row?.shift ||
+      row?.assignedShift?.name ||
+      ""
+  ).trim();
+  return name || "—";
+}
+
+export function shiftTimingOf(row) {
+  const startFromRecord = row?.expectedStartTime
+    ? formatInstant(row.expectedStartTime)
+    : "";
+  const endFromRecord = row?.expectedEndTime
+    ? formatInstant(row.expectedEndTime)
+    : "";
+  if (startFromRecord || endFromRecord) {
+    return `${startFromRecord || "—"} – ${endFromRecord || "—"}`;
+  }
+  const shift = row?.assignedShift;
+  const start = formatClockHm(shift?.startTime);
+  const end = formatClockHm(shift?.endTime);
+  if (start || end) return `${start || "—"} – ${end || "—"}`;
+  return "—";
+}
+
+function isWorkingAttendance(row) {
+  return (
+    String(row?.status || "").trim() === "Working" ||
+    todayStatusOf(row) === "Present"
+  );
+}
+
+export function attendanceCheckInIso(row) {
+  if (!isWorkingAttendance(row)) return null;
+  return (
+    row?.actualCheckInTime ||
+    row?.attendanceSubmittedAt ||
+    row?.submittedAt ||
+    null
+  );
+}
+
+export function attendanceCheckOutDetail(row) {
+  if (!isWorkingAttendance(row)) {
+    return { iso: null, fallback: false };
+  }
+  if (row?.actualCheckOutTime) {
+    return { iso: row.actualCheckOutTime, fallback: false };
+  }
+  if (row?.expectedEndTime) {
+    return { iso: row.expectedEndTime, fallback: true };
+  }
+  return { iso: null, fallback: false };
+}
+
+export function workPeriodLabelOf(row) {
+  if (!isWorkingAttendance(row)) return "—";
+  if (row?.workPeriod && WORK_PERIOD_LABELS[row.workPeriod]) {
+    return WORK_PERIOD_LABELS[row.workPeriod];
+  }
+  return row?.dayType || "—";
+}
+
+function formatDisplayDate(key) {
+  const [y, m, d] = String(key || "").split("-").map(Number);
+  if (!y || !m || !d) return key || "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+function formatDayName(key) {
+  const [y, m, d] = String(key || "").split("-").map(Number);
+  if (!y || !m || !d) return "—";
+  return DAY_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+function formatCheckOutLabel(detail) {
+  if (!detail?.iso) return "—";
+  const time = formatInstant(detail.iso) || "—";
+  return detail.fallback ? `${time} (shift end)` : time;
 }
 
 async function loadAttendanceForEmails(emails, start, end, userByEmail) {
@@ -159,6 +281,7 @@ export function buildDayRows(users, records, leaves, day, options = {}) {
     .map((u) => {
       const rec = byEmail[u.email] || null;
       const leaveLabel = leaveOnDate(day, leaves, u.email);
+      const assignedShift = shiftsByEmail[u.email] || null;
       const merged = withActivityStatus(
         rec || { email: u.email, date: day },
         u
@@ -168,13 +291,14 @@ export function buildDayRows(users, records, leaves, day, options = {}) {
         todayKey,
         record: rec,
         leaveLabel,
-        shift: shiftsByEmail[u.email] || null,
+        shift: assignedShift,
         nowMs,
       });
       return {
         ...merged,
         date: rec?.date || day,
         dayStatus: resolveDayStatus(rec, leaveLabel),
+        assignedShift,
         compliance,
       };
     })
@@ -236,6 +360,8 @@ const STATUS_BADGE = {
   "Planned Off": "dgv-badge dgv-badge--info",
   Absent: "dgv-badge dgv-badge--neutral",
   "Weekly Off": "dgv-badge dgv-badge--neutral",
+  "Week Off": "dgv-badge dgv-badge--neutral",
+  "Not Marked": "dgv-badge dgv-badge--info",
   [COMPLIANCE.ON_TIME]: "dgv-badge dgv-badge--success",
   [COMPLIANCE.LATE]: "dgv-badge dgv-badge--danger",
   [COMPLIANCE.NOT_MARKED]: "dgv-badge dgv-badge--info",
@@ -254,16 +380,94 @@ function complianceOf(row) {
   });
 }
 
-function statusLabel(row, historyMode) {
-  if (!historyMode) {
-    return row.compliance?.status || COMPLIANCE.NOT_MARKED;
-  }
+function DayDetailCard({ row }) {
+  const dateKey = row?.date;
+  const status = todayStatusOf(row);
+  const timing = timingLabelOf(row);
+  const compliance = complianceOf(row);
+  const checkIn = attendanceCheckInIso(row);
+  const checkOut = attendanceCheckOutDetail(row);
   return (
-    complianceOf(row).status ||
-    row.dayStatus ||
-    row.activityStatus ||
-    getWeeklyDisplayStatus(row) ||
-    "—"
+    <section
+      className="dgv-attendance-taker"
+      aria-label="Attendance details"
+      style={{ marginBottom: 24 }}
+    >
+      <div className="dgv-attendance-taker__locked">
+        <div>
+          <div className="dgv-attendance-taker__label">Employee Name</div>
+          <div className="dgv-attendance-taker__value">
+            {row?.employeeName || "—"}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Date</div>
+          <div className="dgv-attendance-taker__value">
+            {formatDisplayDate(dateKey)}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Day</div>
+          <div className="dgv-attendance-taker__value">
+            {formatDayName(dateKey)}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Status</div>
+          <div className="dgv-attendance-taker__value">{status}</div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Working Type</div>
+          <div className="dgv-attendance-taker__value">
+            {workPeriodLabelOf(row)}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Shift</div>
+          <div className="dgv-attendance-taker__value">{shiftNameOf(row)}</div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Shift Timing</div>
+          <div className="dgv-attendance-taker__value">{shiftTimingOf(row)}</div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Expected By</div>
+          <div className="dgv-attendance-taker__value">
+            {compliance.expectedByMs ? formatInstant(compliance.expectedByMs) : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Attendance Marked At</div>
+          <div className="dgv-attendance-taker__value">
+            {compliance.markedAtMs ? formatInstant(compliance.markedAtMs) : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Timing</div>
+          <div className="dgv-attendance-taker__value">{timing}</div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Late By / Difference</div>
+          <div className="dgv-attendance-taker__value">
+            {timing === COMPLIANCE.LATE
+              ? lateByLabel(compliance.lateMinutes) || "—"
+              : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Check In</div>
+          <div className="dgv-attendance-taker__value">
+            {checkIn ? formatInstant(checkIn) : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="dgv-attendance-taker__label">Check Out</div>
+          <div className="dgv-attendance-taker__value">
+            {formatCheckOutLabel(checkOut)}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -409,11 +613,7 @@ export default function AttendanceActivity() {
   const openDetails = async (row) => {
     const email = String(row.email || "").toLowerCase();
     if (!email) return;
-    setDetail({
-      email,
-      name: row.employeeName || displayNameFromEmail(email),
-      empId: row.employeeId || "",
-    });
+    setDetail(row);
     setHistoryLoading(true);
     setViewAll(false);
     try {
@@ -452,8 +652,9 @@ export default function AttendanceActivity() {
     return sourceRows.filter((row) => {
       if (historyMode) {
         if (status) {
-          const label = statusLabel(row, true);
-          if (label !== status) return false;
+          const compliance = complianceOf(row).status;
+          const today = todayStatusOf(row);
+          if (compliance !== status && today !== status) return false;
         }
         return true;
       }
@@ -546,8 +747,8 @@ export default function AttendanceActivity() {
 
         <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 0 }}>
           {historyMode
-            ? `Attendance history for ${detail.name}.`
-            : "All employees for the selected date. Open View Details to see one person’s full history."}
+            ? `Attendance details for ${detail.employeeName || detail.name} on ${formatDisplayDate(detail.date || date)}.`
+            : "All employees for the selected date. Open View Details to see one person’s attendance for this date."}
         </p>
 
         {historyMode ? (
@@ -625,9 +826,11 @@ export default function AttendanceActivity() {
           </div>
         ) : null}
 
-        {loading || (historyMode && historyLoading) ? (
+        {historyMode && detail ? <DayDetailCard row={detail} /> : null}
+
+        {loading && !historyMode ? (
           <p style={{ color: colors.textMuted }}>Loading attendance activity…</p>
-        ) : filteredRows.length === 0 ? (
+        ) : !historyMode && filteredRows.length === 0 ? (
           <div
             style={{
               textAlign: "center",
@@ -639,12 +842,10 @@ export default function AttendanceActivity() {
           >
             <p style={{ margin: 0, fontWeight: 600 }}>No attendance activity found</p>
             <p style={{ color: colors.textMuted, fontSize: 14, marginBottom: 0 }}>
-              {historyMode
-                ? "No attendance records for this employee yet."
-                : "No employees match the current filters."}
+              No employees match the current filters.
             </p>
           </div>
-        ) : (
+        ) : !historyMode ? (
           <>
             <div className="dgv-table-wrap">
               <table className="dgv-table">
@@ -652,17 +853,16 @@ export default function AttendanceActivity() {
                   <tr>
                     <th>Employee Name</th>
                     <th>Shift</th>
-                    <th>Status</th>
-                    <th>Marked At</th>
-                    <th>Expected By</th>
-                    <th>Late By</th>
-                    {!historyMode ? <th>Action</th> : null}
+                    <th>Shift Timing</th>
+                    <th>Today&apos;s Status</th>
+                    <th>Timing</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleRows.map((row) => {
-                    const compliance = complianceOf(row);
-                    const label = statusLabel(row, historyMode);
+                    const status = todayStatusOf(row);
+                    const timing = timingLabelOf(row);
                     return (
                       <tr key={row.attendanceId || `${row.email}-${row.date}`}>
                         <td>
@@ -673,50 +873,44 @@ export default function AttendanceActivity() {
                             {row.email}
                           </div>
                         </td>
-                        <td>{compliance.shiftLabel || "—"}</td>
+                        <td>{shiftNameOf(row)}</td>
+                        <td>{shiftTimingOf(row)}</td>
                         <td>
                           <span
                             className={
-                              STATUS_BADGE[label] || "dgv-badge dgv-badge--neutral"
+                              STATUS_BADGE[status] || "dgv-badge dgv-badge--neutral"
                             }
                           >
-                            {label}
+                            {status}
                           </span>
                         </td>
                         <td>
-                          {compliance.markedAtMs
-                            ? formatInstant(compliance.markedAtMs)
-                            : "—"}
+                          <span
+                            className={
+                              timing === "—"
+                                ? undefined
+                                : STATUS_BADGE[timing] || "dgv-badge dgv-badge--neutral"
+                            }
+                          >
+                            {timing}
+                          </span>
                         </td>
                         <td>
-                          {compliance.expectedByMs
-                            ? formatInstant(compliance.expectedByMs)
-                            : "—"}
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            style={{ padding: "6px 12px", fontSize: 12 }}
+                            onClick={() => openDetails(row)}
+                          >
+                            View Details
+                          </Button>
                         </td>
-                        <td>
-                          {label === COMPLIANCE.LATE
-                            ? lateByLabel(compliance.lateMinutes) || "—"
-                            : "—"}
-                        </td>
-                        {!historyMode ? (
-                          <td>
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              style={{ padding: "6px 12px", fontSize: 12 }}
-                              onClick={() => openDetails(row)}
-                            >
-                              View Details
-                            </Button>
-                          </td>
-                        ) : null}
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
-
             <div
               style={{
                 display: "flex",
@@ -728,24 +922,86 @@ export default function AttendanceActivity() {
               }}
             >
               <span style={{ color: colors.textMuted, fontSize: 13 }}>
-                {historyMode
-                  ? viewAll
-                    ? `Showing all ${filteredRows.length} records`
-                    : `Showing latest ${Math.min(5, filteredRows.length)} of ${filteredRows.length} records`
-                  : `Showing ${filteredRows.length} employees for ${date || todayKeyIST()}`}
+                {`Showing ${filteredRows.length} employees for ${date || todayKeyIST()}`}
               </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                {historyMode && filteredRows.length > 5 ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setViewAll((v) => !v)}
-                  >
-                    {viewAll ? "Show latest 5" : "View All"}
-                  </Button>
-                ) : null}
-              </div>
             </div>
+          </>
+        ) : (
+          <>
+            {historyLoading ? (
+              <p style={{ color: colors.textMuted }}>Loading attendance history…</p>
+            ) : filteredRows.length === 0 ? (
+              <p style={{ color: colors.textMuted }}>
+                No additional attendance history for this employee.
+              </p>
+            ) : (
+              <>
+                <h3 style={{ ...pageTitle, fontSize: 18, marginBottom: 8 }}>
+                  Attendance history
+                </h3>
+                <div className="dgv-table-wrap">
+                  <table className="dgv-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Status</th>
+                        <th>Timing</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRows.map((row) => {
+                        const status = todayStatusOf(row);
+                        const timing = timingLabelOf({
+                          ...row,
+                          compliance: complianceOf(row),
+                        });
+                        return (
+                          <tr key={row.attendanceId || `${row.email}-${row.date}`}>
+                            <td>{formatDisplayDate(row.date)}</td>
+                            <td>
+                              <span
+                                className={
+                                  STATUS_BADGE[status] ||
+                                  "dgv-badge dgv-badge--neutral"
+                                }
+                              >
+                                {status}
+                              </span>
+                            </td>
+                            <td>{timing}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                    marginTop: 16,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span style={{ color: colors.textMuted, fontSize: 13 }}>
+                    {viewAll
+                      ? `Showing all ${filteredRows.length} records`
+                      : `Showing latest ${Math.min(5, filteredRows.length)} of ${filteredRows.length} records`}
+                  </span>
+                  {filteredRows.length > 5 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setViewAll((v) => !v)}
+                    >
+                      {viewAll ? "Show latest 5" : "View All"}
+                    </Button>
+                  ) : null}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>

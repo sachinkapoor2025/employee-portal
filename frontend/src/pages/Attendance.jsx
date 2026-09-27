@@ -1,21 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "../components/Layout";
 import WeeklyAttendanceHistory from "../components/WeeklyAttendanceHistory";
-import WorkingTimeWidget from "../components/WorkingTimeWidget";
 import Button from "../components/ui/Button";
 import { pageCard, pageTitle, colors } from "../theme";
 import {
   fetchAttendance as fetchAttendanceApi,
   fetchEmployeeShift,
   saveAttendance,
+  attendanceCheckOut,
 } from "../services/api";
 import { getLoggedInEmail } from "../services/auth";
-import {
-  COMPLIANCE,
-  attendanceCompliance,
-  formatInstant,
-  lateByLabel,
-} from "../utils/attendanceCompliance";
 
 const COMPANY_TZ = "Asia/Kolkata";
 
@@ -202,7 +196,7 @@ function recordFromApi(item) {
   };
 }
 
-function AssignedShiftReadOnly({ shift, loadError, dateKey }) {
+function AssignedShiftReadOnly({ shift, loadError }) {
   if (loadError) {
     return (
       <div className="dgv-attendance-taker__field">
@@ -219,12 +213,6 @@ function AssignedShiftReadOnly({ shift, loadError, dateKey }) {
       </div>
     );
   }
-  const grace = Number(shift.graceMinutes) || 0;
-  const expected = attendanceCompliance({
-    dateKey,
-    todayKey: dateKey,
-    shift,
-  });
   return (
     <>
       <div className="dgv-attendance-taker__field">
@@ -238,20 +226,6 @@ function AssignedShiftReadOnly({ shift, loadError, dateKey }) {
           {shift.crossesMidnight ? " (overnight)" : ""}
         </div>
       </div>
-      {grace > 0 ? (
-        <div className="dgv-attendance-taker__field">
-          <div className="dgv-attendance-taker__label">Grace Period</div>
-          <div className="dgv-attendance-taker__value">{grace} min</div>
-        </div>
-      ) : null}
-      {expected.expectedByMs ? (
-        <div className="dgv-attendance-taker__field">
-          <div className="dgv-attendance-taker__label">Expected By</div>
-          <div className="dgv-attendance-taker__value">
-            {formatInstant(expected.expectedByMs)}
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }
@@ -269,6 +243,7 @@ export default function Attendance() {
   const [shiftLoadError, setShiftLoadError] = useState("");
   const [shiftReady, setShiftReady] = useState(false);
   const [formError, setFormError] = useState("");
+  const [checkingOut, setCheckingOut] = useState(false);
 
   const [status, setStatus] = useState("");
   const [workPeriod, setWorkPeriod] = useState("");
@@ -486,6 +461,35 @@ export default function Attendance() {
     }
   };
 
+  const submitCheckOut = async () => {
+    if (!submitted || todayRecord.status !== "Working") return;
+    if (todayRecord.actualCheckOutTime || checkingOut) return;
+    setCheckingOut(true);
+    try {
+      const res = await attendanceCheckOut({ date: todayKey });
+      const saved = res?.attendance;
+      if (saved) {
+        const next = recordFromApi({
+          ...saved,
+          date: saved.date || todayKey,
+        });
+        setAttendanceData((prev) => ({
+          ...prev,
+          [todayKey]: {
+            ...prev[todayKey],
+            ...next,
+            submittedAt: next.submittedAt || prev[todayKey]?.submittedAt,
+          },
+        }));
+      }
+    } catch (err) {
+      console.error("Check-out error:", err);
+      alert(err.message || "Failed to check out");
+    } finally {
+      setCheckingOut(false);
+    }
+  };
+
   const goToPreviousWeek = () =>
     setHistoryWeekStart((prev) => addDaysToKey(prev, -7));
   const goToNextWeek = () =>
@@ -563,48 +567,6 @@ export default function Attendance() {
                     <div className="dgv-attendance-taker__label">Shift Timing</div>
                     <div className="dgv-attendance-taker__value">{lockedTiming}</div>
                   </div>
-                  {(() => {
-                    const compliance = attendanceCompliance({
-                      dateKey: todayKey,
-                      todayKey,
-                      record: todayRecord,
-                      shift: assignedShift,
-                    });
-                    return (
-                      <>
-                        <div>
-                          <div className="dgv-attendance-taker__label">
-                            Expected By
-                          </div>
-                          <div className="dgv-attendance-taker__value">
-                            {compliance.expectedByMs
-                              ? formatInstant(compliance.expectedByMs)
-                              : "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="dgv-attendance-taker__label">
-                            Marked At
-                          </div>
-                          <div className="dgv-attendance-taker__value">
-                            {compliance.markedAtMs
-                              ? formatInstant(compliance.markedAtMs)
-                              : "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="dgv-attendance-taker__label">Timing</div>
-                          <div className="dgv-attendance-taker__value">
-                            {compliance.status}
-                            {compliance.status === COMPLIANCE.LATE &&
-                            compliance.lateMinutes != null
-                              ? ` · ${lateByLabel(compliance.lateMinutes)} late`
-                              : ""}
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
                 </>
               ) : null}
               <p className="dgv-attendance-taker__hint" style={{ gridColumn: "1 / -1" }}>
@@ -650,7 +612,6 @@ export default function Attendance() {
                 <AssignedShiftReadOnly
                   shift={assignedShift}
                   loadError={shiftLoadError}
-                  dateKey={todayKey}
                 />
               </div>
 
@@ -726,8 +687,18 @@ export default function Attendance() {
         </section>
 
         {submitted && todayRecord.status === "Working" ? (
-          <div style={{ marginTop: 20 }}>
-            <WorkingTimeWidget />
+          <div className="dgv-attendance-taker__actions" style={{ marginTop: 20 }}>
+            <Button
+              type="button"
+              onClick={submitCheckOut}
+              disabled={checkingOut || !!todayRecord.actualCheckOutTime}
+            >
+              {todayRecord.actualCheckOutTime
+                ? "Checked Out"
+                : checkingOut
+                  ? "Checking out..."
+                  : "Check Out"}
+            </Button>
           </div>
         ) : null}
 

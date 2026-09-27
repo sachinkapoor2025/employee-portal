@@ -334,6 +334,8 @@ for (const role of ["ADMIN", "MANAGER", "EMPLOYEE"]) {
   assert.strictEqual(item.expectedEndTime, item.checkOutTime);
   assert.ok(item.submittedAt);
   assert.ok(item.attendanceSubmittedAt);
+  assert.strictEqual(item.actualCheckInTime, item.submittedAt);
+  assert.strictEqual(item.actualCheckInTime, item.attendanceSubmittedAt);
 }
 
 {
@@ -415,6 +417,11 @@ for (const role of ["ADMIN", "MANAGER", "EMPLOYEE"]) {
   const expectedIn = afterSubmit.checkInTime;
   const expectedOut = afterSubmit.checkOutTime;
   const hoursAfterSubmit = afterSubmit.hours;
+  const serverIn = new Date(Date.parse(`${date}T11:20:00+05:30`)).toISOString();
+  assert.strictEqual(afterSubmit.actualCheckInTime, afterSubmit.submittedAt);
+  assert.strictEqual(afterSubmit.actualCheckInTime, afterSubmit.attendanceSubmittedAt);
+  assert.strictEqual(afterSubmit.actualCheckInTime, serverIn);
+  assert.strictEqual(afterSubmit.timingStatus, TIMING_STATUS.LATE);
 
   const clientStamp = "2000-01-01T00:00:00.000Z";
   const checkedIn = parse(
@@ -427,14 +434,13 @@ for (const role of ["ADMIN", "MANAGER", "EMPLOYEE"]) {
     )
   );
   assert.strictEqual(checkedIn.statusCode, 200);
+  assert.strictEqual(checkedIn.body.message, "Already checked in");
   const afterIn = db.attendanceStore[`${email}|${date}`];
-  const serverIn = new Date(Date.parse(`${date}T11:20:00+05:30`)).toISOString();
   assert.strictEqual(afterIn.actualCheckInTime, serverIn);
   assert.notStrictEqual(afterIn.actualCheckInTime, clientStamp);
   assert.strictEqual(afterIn.checkInTime, expectedIn);
   assert.strictEqual(afterIn.expectedStartTime, expectedIn);
   assert.strictEqual(afterIn.submittedAt, afterSubmit.submittedAt);
-  assert.strictEqual(afterIn.sessionStatus, "Active");
 
   const duplicateIn = parse(
     await handler(postEvent(email, { action: "checkIn", date }, groups))
@@ -484,6 +490,53 @@ for (const role of ["ADMIN", "MANAGER", "EMPLOYEE"]) {
     serverOut
   );
   assert.deepStrictEqual(db.attendanceStore[historicalKey], historical);
+}
+
+{
+  const email = "legacyout@mydgv.com";
+  const date = todayKey();
+  const submittedAt = new Date(Date.parse(`${date}T11:20:00+05:30`)).toISOString();
+  const expectedOut = companyDateTimeIso(date, "20:00");
+  const db = createFakeDdb({
+    access: { [email]: { role: "EMPLOYEE", status: "ACTIVE" } },
+    work: morningAssignment(email),
+    attendance: {
+      [`${email}|${date}`]: {
+        PK: email,
+        SK: date,
+        email,
+        date,
+        status: "Working",
+        submittedAt,
+        attendanceSubmittedAt: submittedAt,
+        sessionStatus: "Present",
+        expectedEndTime: expectedOut,
+        checkInTime: companyDateTimeIso(date, "11:00"),
+        checkOutTime: expectedOut,
+      },
+    },
+  });
+  setDocumentClientForTests(db);
+  const groups = ["Employee"];
+  setNowMsForTests(() => Date.parse(`${date}T18:00:00+05:30`));
+  const out = parse(
+    await handler(postEvent(email, { action: "checkOut", date }, groups))
+  );
+  assert.strictEqual(out.statusCode, 200);
+  const row = db.attendanceStore[`${email}|${date}`];
+  const serverOut = new Date(Date.parse(`${date}T18:00:00+05:30`)).toISOString();
+  assert.strictEqual(row.actualCheckOutTime, serverOut);
+  assert.strictEqual(row.actualCheckInTime, submittedAt);
+  assert.strictEqual(row.checkOutTime, expectedOut);
+  const duplicate = parse(
+    await handler(postEvent(email, { action: "checkOut", date }, groups))
+  );
+  assert.strictEqual(duplicate.statusCode, 200);
+  assert.strictEqual(duplicate.body.message, "Already checked out");
+  assert.strictEqual(
+    db.attendanceStore[`${email}|${date}`].actualCheckOutTime,
+    serverOut
+  );
 }
 
 {

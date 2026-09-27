@@ -10,12 +10,6 @@ jest.mock("../components/WeeklyAttendanceHistory", () => {
   };
 });
 
-jest.mock("../components/WorkingTimeWidget", () => {
-  return function WorkingTimeWidget() {
-    return <div>Working time</div>;
-  };
-});
-
 jest.mock("../services/auth", () => ({
   getLoggedInEmail: jest.fn(() => "doer@mydgv.com"),
 }));
@@ -24,6 +18,7 @@ jest.mock("../services/api", () => ({
   fetchAttendance: jest.fn(),
   fetchEmployeeShift: jest.fn(),
   saveAttendance: jest.fn(),
+  attendanceCheckOut: jest.fn(),
 }));
 
 import { render, screen, waitFor, act } from "@testing-library/react";
@@ -33,6 +28,7 @@ import {
   fetchAttendance,
   fetchEmployeeShift,
   saveAttendance,
+  attendanceCheckOut,
 } from "../services/api";
 import { getLoggedInEmail } from "../services/auth";
 
@@ -62,7 +58,30 @@ beforeEach(() => {
   fetchAttendance.mockResolvedValue([]);
   fetchEmployeeShift.mockResolvedValue(ASSIGNED);
   saveAttendance.mockReset();
+  attendanceCheckOut.mockReset();
+  attendanceCheckOut.mockResolvedValue({
+    attendance: {
+      status: "Working",
+      submittedAt: "2026-09-23T05:50:00.000Z",
+      actualCheckOutTime: "2026-09-23T14:30:00.000Z",
+    },
+  });
 });
+
+function todayKey() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
+function assertNoEmployeeTiming() {
+  expect(screen.queryByText("Expected By")).not.toBeInTheDocument();
+  expect(screen.queryByText("Marked At")).not.toBeInTheDocument();
+  expect(screen.queryByText("Late By")).not.toBeInTheDocument();
+  expect(screen.queryByText("Grace Period")).not.toBeInTheDocument();
+  expect(screen.queryByText("ON TIME")).not.toBeInTheDocument();
+  expect(screen.queryByText("LATE")).not.toBeInTheDocument();
+  expect(screen.queryByText("Working Time Today")).not.toBeInTheDocument();
+  expect(screen.queryByText("Working time")).not.toBeInTheDocument();
+}
 
 test("shows assigned shift read-only and Working Full Day submits workPeriod", async () => {
   saveAttendance.mockResolvedValue({
@@ -85,9 +104,8 @@ test("shows assigned shift read-only and Working Full Day submits workPeriod", a
   expect(await screen.findByText("Morning Shift")).toBeInTheDocument();
   expect(screen.getByText(/11:00 AM/)).toBeInTheDocument();
   expect(screen.getByText(/8:00 PM/)).toBeInTheDocument();
-  expect(screen.getByText("15 min")).toBeInTheDocument();
-  expect(screen.getByText("Expected By")).toBeInTheDocument();
-  expect(screen.getByText(/11:15 AM/)).toBeInTheDocument();
+  assertNoEmployeeTiming();
+  expect(screen.queryByRole("button", { name: "Check Out" })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Shift")).not.toBeInTheDocument();
   expect(screen.queryByText("Afternoon Shift")).not.toBeInTheDocument();
 
@@ -107,8 +125,9 @@ test("shows assigned shift read-only and Working Full Day submits workPeriod", a
   expect(payload.status).toBe("Working");
   expect(payload.workPeriod).toBe("FULL_DAY");
   expect(payload.shift).toBeUndefined();
-  expect(await screen.findByText(/LATE/)).toBeInTheDocument();
-  expect(screen.getByText(/5 min late/)).toBeInTheDocument();
+  expect(await screen.findByText(/Working \/ Full Day/)).toBeInTheDocument();
+  assertNoEmployeeTiming();
+  expect(screen.getByRole("button", { name: "Check Out" })).toBeInTheDocument();
 });
 
 test("half-day enabled shows Full Day First Half and Second Half", async () => {
@@ -143,7 +162,9 @@ test("First Half and Second Half submit the Stage 2A workPeriod values", async (
   await userEvent.click(screen.getByRole("button", { name: "Submit Attendance" }));
   await waitFor(() => expect(saveAttendance).toHaveBeenCalled());
   expect(saveAttendance.mock.calls[0][0][0].workPeriod).toBe("FIRST_HALF");
-  expect(await screen.findByText("ON TIME")).toBeInTheDocument();
+  expect(await screen.findByText(/Working \/ First Half/)).toBeInTheDocument();
+  assertNoEmployeeTiming();
+  expect(screen.getByRole("button", { name: "Check Out" })).toBeInTheDocument();
   unmount();
 
   saveAttendance.mockReset();
@@ -165,7 +186,9 @@ test("First Half and Second Half submit the Stage 2A workPeriod values", async (
   await userEvent.click(screen.getByRole("button", { name: "Submit Attendance" }));
   await waitFor(() => expect(saveAttendance).toHaveBeenCalled());
   expect(saveAttendance.mock.calls[0][0][0].workPeriod).toBe("SECOND_HALF");
-  expect(await screen.findByText("ON TIME")).toBeInTheDocument();
+  expect(await screen.findByText(/Working \/ Second Half/)).toBeInTheDocument();
+  assertNoEmployeeTiming();
+  expect(screen.getByRole("button", { name: "Check Out" })).toBeInTheDocument();
 });
 
 test("hides halves and resets to Full Day when assignment disables half-day", async () => {
@@ -219,4 +242,56 @@ test("Working with no assigned shift shows a clear validation message", async ()
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Submit Attendance" })).toBeDisabled();
   expect(saveAttendance).not.toHaveBeenCalled();
+});
+
+test("Check Out appears after Working attendance and not for Leave WeeklyOff or Not Marked", async () => {
+  const today = todayKey();
+  fetchAttendance.mockResolvedValue([
+    {
+      date: today,
+      status: "Working",
+      workPeriod: "FULL_DAY",
+      dayType: "Full Day",
+      shiftName: "Morning Shift",
+      submittedAt: "2026-09-23T05:50:00.000Z",
+      expectedStartTime: "2026-09-23T05:30:00.000Z",
+      expectedEndTime: "2026-09-23T14:30:00.000Z",
+    },
+  ]);
+  const { unmount } = render(<Attendance />);
+  expect(await screen.findByRole("button", { name: "Check Out" })).toBeInTheDocument();
+  assertNoEmployeeTiming();
+  await userEvent.click(screen.getByRole("button", { name: "Check Out" }));
+  await waitFor(() => expect(attendanceCheckOut).toHaveBeenCalledTimes(1));
+  expect(await screen.findByRole("button", { name: "Checked Out" })).toBeDisabled();
+  unmount();
+
+  fetchAttendance.mockResolvedValue([
+    {
+      date: today,
+      status: "Leave",
+      submittedAt: "2026-09-23T05:50:00.000Z",
+    },
+  ]);
+  const leaveView = render(<Attendance />);
+  await screen.findByText(/Absent — Leave/);
+  expect(screen.queryByRole("button", { name: "Check Out" })).not.toBeInTheDocument();
+  leaveView.unmount();
+
+  fetchAttendance.mockResolvedValue([
+    {
+      date: today,
+      status: "WeeklyOff",
+      submittedAt: "2026-09-23T05:50:00.000Z",
+    },
+  ]);
+  const offView = render(<Attendance />);
+  await screen.findByText("Weekly Off");
+  expect(screen.queryByRole("button", { name: "Check Out" })).not.toBeInTheDocument();
+  offView.unmount();
+
+  fetchAttendance.mockResolvedValue([]);
+  render(<Attendance />);
+  await screen.findByText("Morning Shift");
+  expect(screen.queryByRole("button", { name: "Check Out" })).not.toBeInTheDocument();
 });

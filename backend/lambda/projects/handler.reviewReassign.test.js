@@ -301,7 +301,11 @@ async function run() {
     assert.strictEqual(created.description, "Original description");
     assert.strictEqual(created.priority, "HIGH");
     assert.strictEqual(created.category, "Marketing");
-    assert.strictEqual(assignmentItem(ddb, PRIYA, res.body.taskId).status, "TODO");
+    const newAssignment = assignmentItem(ddb, PRIYA, res.body.taskId);
+    assert.strictEqual(newAssignment.status, "TODO");
+    assert.ok(!newAssignment.completedAt);
+    assert.strictEqual(created.startDate, NEW_START);
+    assert.strictEqual(created.dueDate, NEW_DUE);
 
     const after = entityTask(ddb);
     assert.strictEqual(after.status, original.status);
