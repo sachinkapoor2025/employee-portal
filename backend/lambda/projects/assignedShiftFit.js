@@ -4,7 +4,11 @@ const {
   activeShiftDateKey,
   loadCurrentAssignedShift,
 } = require("../attendance/assignedShift");
-const { companyDateKey, parseInstantMs, taskFitsWindow } = require("../common/shiftWindows");
+const {
+  companyDateKey,
+  parseInstantMs,
+  taskFitsWindow,
+} = require("../common/shiftWindows");
 const { taskEvaluationRange } = require("./scheduledAttendance");
 
 const ASSIGNED_SHIFT_FIT = {
@@ -46,9 +50,84 @@ function conflictResult(extras = {}) {
   return fitResult(ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT, extras);
 }
 
+function instantFitsWindow(ms, window) {
+  return !!(
+    window && taskFitsWindow(ms, ms, window.startMs, window.endMs)
+  );
+}
+
+function addCompanyDateKey(key, days) {
+  const [y, m, d] = String(key || "")
+    .split("-")
+    .map((part) => Number(part));
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+function dayWindow(assignment, dateKey) {
+  return expectedWindow(assignment, dateKey, WORK_PERIODS.FULL_DAY);
+}
+
+function middleCompanyDateKeys(startDateKey, dueDateKey) {
+  const keys = [];
+  let current = addCompanyDateKey(startDateKey, 1);
+  let guard = 0;
+  while (current && current < dueDateKey && guard < 400) {
+    keys.push(current);
+    current = addCompanyDateKey(current, 1);
+    guard += 1;
+  }
+  return keys;
+}
+
+function evaluateEndpointDayAssignedShiftFit({
+  assignment,
+  assignmentSummary,
+  taskStartMs,
+  taskEndMs,
+}) {
+  const startDateKey = companyDateKey(new Date(taskStartMs));
+  const dueDateKey = companyDateKey(new Date(taskEndMs));
+  if (!startDateKey || !dueDateKey) return null;
+
+  const startWindow = dayWindow(assignment, startDateKey);
+  const dueWindow = dayWindow(assignment, dueDateKey);
+  const extras = {
+    assignment: assignmentSummary,
+    shiftDateKey: startDateKey,
+    window: startWindow,
+  };
+
+  if (!instantFitsWindow(taskStartMs, startWindow)) {
+    return conflictResult(extras);
+  }
+  if (!instantFitsWindow(taskEndMs, dueWindow)) {
+    return conflictResult({
+      ...extras,
+      shiftDateKey: dueDateKey,
+      window: dueWindow,
+    });
+  }
+  if (startDateKey !== dueDateKey) {
+    for (const middleKey of middleCompanyDateKeys(startDateKey, dueDateKey)) {
+      if (!dayWindow(assignment, middleKey)) {
+        return conflictResult({
+          ...extras,
+          shiftDateKey: middleKey,
+          window: null,
+        });
+      }
+    }
+  }
+  return fitResult(ASSIGNED_SHIFT_FIT.FIT, extras);
+}
+
 /**
- * Complete-interval containment against the employee's CURRENT assigned shift.
- * Does not use graceMinutes or hardcoded SHIFT_TIMES.
+ * Assignment shift-fit against the employee's CURRENT assigned shift.
+ * Overnight intervals that sit inside one active window remain FIT.
+ * Otherwise start and due must each sit inside that calendar day's window,
+ * and every intermediate company day must have a valid shift window.
+ * Does not use graceMinutes, hardcoded SHIFT_TIMES, or assignmentState.
  */
 function evaluateAssignedShiftFit({
   assignment,
@@ -72,19 +151,30 @@ function evaluateAssignedShiftFit({
 
   const dateKey = companyDateKey(new Date(evaluatedAtMs));
   const shiftDateKey = activeShiftDateKey(assignment, dateKey, evaluatedAtMs);
-  const window = expectedWindow(assignment, shiftDateKey, WORK_PERIODS.FULL_DAY);
+  const window = dayWindow(assignment, shiftDateKey);
   if (!window) {
     return conflictResult({ assignment: assignmentSummary, shiftDateKey });
   }
 
   const extras = { assignment: assignmentSummary, shiftDateKey, window };
-  if (!taskFitsWindow(taskStartMs, taskEndMs, window.startMs, window.endMs)) {
-    return conflictResult(extras);
+  if (taskFitsWindow(taskStartMs, taskEndMs, window.startMs, window.endMs)) {
+    return fitResult(ASSIGNED_SHIFT_FIT.FIT, extras);
   }
-  return fitResult(ASSIGNED_SHIFT_FIT.FIT, extras);
+  return (
+    evaluateEndpointDayAssignedShiftFit({
+      assignment,
+      assignmentSummary,
+      taskStartMs,
+      taskEndMs,
+    }) || conflictResult(extras)
+  );
 }
 
-async function assignedShiftFit(ddb, tableName, { email, taskStart, taskEnd, evaluatedAt } = {}) {
+async function assignedShiftFit(
+  ddb,
+  tableName,
+  { email, taskStart, taskEnd, evaluatedAt } = {}
+) {
   const assignment = await loadCurrentAssignedShift(ddb, tableName, email);
   if (!assignment) return noShiftResult();
   return evaluateAssignedShiftFit({

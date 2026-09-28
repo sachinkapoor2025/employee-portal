@@ -38,12 +38,16 @@ const taskMutateAccess = require("./taskMutateAccess");
 const workflowAccess = require("./workflowAccess");
 const shiftCatalog = require("./shiftCatalog");
 const myActivity = require("./myActivity");
-const { notifyBlockerReported } = require("./taskBlockerNotify");
+const { notifyBlockerReported, notifyBlockerResolved } = require("./taskBlockerNotify");
 const {
   putChangesAssignedShiftFit,
   shiftFitConflictBody,
-  validateAssigneesAssignedShiftFit,
 } = require("./assignedShiftFit");
+const {
+  planAssignmentSchedule,
+  notifyAssignmentPlanFailure,
+  notifyAssignmentPlanPostponement,
+} = require("./assignmentPlan");
 const taskReviewReassign = require("./taskReviewReassign");
 const { materializeTodaysConfirmedLeave } = require("../leave/materialize");
 const { canViewTask } = taskReadAccess;
@@ -434,6 +438,25 @@ async function handleResolveBlocker({ user, task, taskId, body, cache }) {
       blockerResolvedBy: actorEmail,
     }
   );
+  try {
+    await notifyBlockerResolved({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      task,
+      assignmentEmail: targetEmail,
+      remark: target.blockerRemark,
+      reportedAt: target.blockerReportedAt,
+      resolvedAt: now,
+      resolvedBy: actorEmail,
+      resolvedByName: user.name,
+    });
+  } catch (err) {
+    console.error(
+      "TASK_BLOCKER_RESOLVED_NOTIFY_ERROR",
+      JSON.stringify({ taskId })
+    );
+    console.error(err);
+  }
   return json(200, decoratedTaskResponse(task, assignments, actorEmail));
 }
 
@@ -926,6 +949,39 @@ async function getProjectName(projectId) {
   return res.Item?.name || "";
 }
 
+async function attachProjectNames(tasks) {
+  const ids = [
+    ...new Set(
+      (tasks || [])
+        .filter((task) => !String(task?.projectName || "").trim())
+        .map((task) => String(task?.projectId || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+  const namesById = new Map();
+  await Promise.all(
+    ids.map(async (projectId) => {
+      let name = "";
+      try {
+        name = String((await getProjectName(projectId)) || "").trim();
+      } catch (err) {
+        console.error("TASK_LIST_PROJECT_NAME_ERROR", err?.name);
+        name = "";
+      }
+      namesById.set(projectId, name);
+    })
+  );
+  return (tasks || []).map((task) => {
+    const existing = String(task?.projectName || "").trim();
+    if (existing) return { ...task, projectName: existing };
+    const projectId = String(task?.projectId || "").trim();
+    return {
+      ...task,
+      projectName: (projectId && namesById.get(projectId)) || "",
+    };
+  });
+}
+
 async function getAssigneeProfile(email) {
   if (!email || !process.env.USER_PROFILE_TABLE) {
     return {
@@ -1061,18 +1117,28 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
   const memberDenied = denyAuthz(user, memberAssign);
   if (memberDenied) return memberDenied;
 
-  const fitCheck = await validateAssigneesAssignedShiftFit(
+  const plan = await planAssignmentSchedule({
     ddb,
-    process.env.WORK_TABLE,
-    {
-      emails: [parsedReview.targetEmail],
-      startDate: createParsed.startDate,
-      dueDate: createParsed.dueDate,
-      assignmentState: "ASSIGNED",
-    }
-  );
-  if (!fitCheck.ok) {
-    return json(400, shiftFitConflictBody(fitCheck.conflicts));
+    tableName: process.env.WORK_TABLE,
+    attendanceTable: process.env.ATTENDANCE_TABLE,
+    emails: [parsedReview.targetEmail],
+    startDate: createParsed.startDate,
+    dueDate: createParsed.dueDate,
+  });
+  if (!plan.ok) {
+    await notifyAssignmentPlanFailure({
+      ddb,
+      accessTable: process.env.USER_ACCESS_TABLE,
+      tableName: process.env.WORK_TABLE,
+      task: {
+        title: sourceTask.title,
+        startDate: plan.startDate,
+        dueDate: plan.dueDate,
+      },
+      plan,
+      extraRecipients: [user.email],
+    });
+    return json(400, shiftFitConflictBody(plan.conflicts));
   }
 
   const id = randomUUID();
@@ -1086,7 +1152,7 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       assignedAt: now,
       assignedBy: user.email,
       recordedZone: escalation.zoneAt(
-        escalation.parseDeadlineMs(createParsed.dueDate),
+        escalation.parseDeadlineMs(plan.dueDate),
         nowMs
       ),
     },
@@ -1103,8 +1169,8 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       assignee: parsedReview.targetEmail,
       priority: createParsed.priority,
       status: "TODO",
-      dueDate: createParsed.dueDate,
-      startDate: createParsed.startDate,
+      dueDate: plan.dueDate,
+      startDate: plan.startDate,
       durationType: null,
       durationHours: null,
       durationDays: null,
@@ -1127,6 +1193,14 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
   );
 
   await persistAssignmentsAndTask(item, assignments, { create: true });
+  await notifyAssignmentPlanPostponement({
+    ddb,
+    accessTable: process.env.USER_ACCESS_TABLE,
+    task: item,
+    emails: [parsedReview.targetEmail],
+    plan,
+    extraRecipients: [user.email],
+  });
 
   const reasonText = taskReviewReassign.reasonLabel(parsedReview.reason);
   const newLabel = taskReviewReassign.shortTaskId(id);
@@ -1134,17 +1208,17 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
   await appendActivity(
     sourceTaskId,
     "task_reassigned",
-    `${reasonText}: ${parsedReview.sourceEmail} → ${parsedReview.targetEmail}. New task ${newLabel}. Schedule ${createParsed.startDate} → ${createParsed.dueDate}. ${parsedReview.remark}`,
-    user.email,
-    {
-      assignmentEmail: parsedReview.sourceEmail,
-      newTaskId: id,
-      targetEmail: parsedReview.targetEmail,
-      reassignmentReason: parsedReview.reason,
-      reassignmentRemark: parsedReview.remark,
-      startDate: createParsed.startDate,
-      dueDate: createParsed.dueDate,
-    }
+      `${reasonText}: ${parsedReview.sourceEmail} → ${parsedReview.targetEmail}. New task ${newLabel}. Schedule ${plan.startDate} → ${plan.dueDate}. ${parsedReview.remark}`,
+      user.email,
+      {
+        assignmentEmail: parsedReview.sourceEmail,
+        newTaskId: id,
+        targetEmail: parsedReview.targetEmail,
+        reassignmentReason: parsedReview.reason,
+        reassignmentRemark: parsedReview.remark,
+        startDate: plan.startDate,
+        dueDate: plan.dueDate,
+      }
   );
   await appendActivity(
     id,
@@ -1224,6 +1298,39 @@ async function listByPrefix(pk, prefix) {
     })
   );
   return res.Items || [];
+}
+
+function isRegisteredProof(item) {
+  if (!item) return false;
+  const sk = String(item.SK || "");
+  if (!sk.startsWith("ATTACHMENT#")) return false;
+  return Boolean(
+    String(item.s3Key || "").trim() || String(item.attachmentId || "").trim()
+  );
+}
+
+function parseTimeMs(value) {
+  const ms = Date.parse(String(value || "").trim());
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isCompletionProof(item, { employeeEmail, assignedAt } = {}) {
+  if (!isRegisteredProof(item)) return false;
+  const employee = escalation.normalizeEmail(employeeEmail);
+  const uploader = escalation.normalizeEmail(item.uploadedBy);
+  if (!employee || uploader !== employee) return false;
+  const assignedMs = parseTimeMs(assignedAt);
+  if (assignedMs == null) return true;
+  const uploadedMs = parseTimeMs(item.uploadedAt);
+  if (uploadedMs == null) return false;
+  return uploadedMs >= assignedMs;
+}
+
+async function hasCompletionProof(taskId, { employeeEmail, assignedAt } = {}) {
+  const items = await listByPrefix(`TASK#${taskId}`, "ATTACHMENT#");
+  return items.some((item) =>
+    isCompletionProof(item, { employeeEmail, assignedAt })
+  );
 }
 
 exports.handler = async (event) => {
@@ -1785,6 +1892,7 @@ exports.handler = async (event) => {
         zone,
         focusEmail || undefined
       );
+      items = await attachProjectNames(items);
 
       return json(200, { tasks: items, zoneCounts: counts });
     }
@@ -1845,6 +1953,30 @@ exports.handler = async (event) => {
       );
       const memberDenied = denyAuthz(user, memberAssign);
       if (memberDenied) return memberDenied;
+      const plan = await planAssignmentSchedule({
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        attendanceTable: process.env.ATTENDANCE_TABLE,
+        emails,
+        startDate: parsed.startDate,
+        dueDate: parsed.dueDate,
+        scheduledAssignAt: body.scheduledAssignAt,
+      });
+      if (!plan.ok) {
+        await notifyAssignmentPlanFailure({
+          ddb,
+          accessTable: process.env.USER_ACCESS_TABLE,
+          tableName: process.env.WORK_TABLE,
+          task: {
+            title: parsed.title,
+            startDate: plan.startDate,
+            dueDate: plan.dueDate,
+          },
+          plan,
+          extraRecipients: [user.email],
+        });
+        return json(400, shiftFitConflictBody(plan.conflicts));
+      }
       const initialStatus = "TODO";
       const createdByName = await resolveCreatorName(
         event,
@@ -1857,7 +1989,7 @@ exports.handler = async (event) => {
         assignedAt: now,
         assignedBy: user.email,
         recordedZone: escalation.zoneAt(
-          escalation.parseDeadlineMs(parsed.dueDate),
+          escalation.parseDeadlineMs(plan.dueDate),
           nowMs
         ),
       }));
@@ -1874,8 +2006,8 @@ exports.handler = async (event) => {
           assignee: emails[0] || "",
           priority: parsed.priority,
           status: initialStatus,
-          dueDate: parsed.dueDate,
-          startDate: parsed.startDate,
+          dueDate: plan.dueDate,
+          startDate: plan.startDate,
           durationType: null,
           durationHours: null,
           durationDays: null,
@@ -1893,6 +2025,14 @@ exports.handler = async (event) => {
       );
 
       await persistAssignmentsAndTask(item, assignments, { create: true });
+      await notifyAssignmentPlanPostponement({
+        ddb,
+        accessTable: process.env.USER_ACCESS_TABLE,
+        task: item,
+        emails,
+        plan,
+        extraRecipients: [user.email],
+      });
       await appendActivity(
         id,
         "task_created",
@@ -1931,13 +2071,15 @@ exports.handler = async (event) => {
             { taskId: id },
             { channel: "inapp" }
           );
-          await notifyAssignedEmployeeEmail(email, item, {
-            assignedByName: createdByName,
-            assignedByEmail: user.email,
-            projectName,
-            assignedAt: now,
-            kind: "assigned",
-          });
+          if (!plan.postponementCount) {
+            await notifyAssignedEmployeeEmail(email, item, {
+              assignedByName: createdByName,
+              assignedByEmail: user.email,
+              projectName,
+              assignedAt: now,
+              kind: "assigned",
+            });
+          }
         }
       }
 
@@ -2113,20 +2255,35 @@ exports.handler = async (event) => {
           nextScheduledAssignAt: merged.scheduledAssignAt,
         })
       ) {
-        const fitCheck = await validateAssigneesAssignedShiftFit(
+        const plan = await planAssignmentSchedule({
           ddb,
-          process.env.WORK_TABLE,
-          {
-            emails: nextEmails,
-            startDate: merged.startDate,
-            dueDate: merged.dueDate,
-            scheduledAssignAt: merged.scheduledAssignAt,
-            assignmentState: existing.assignmentState,
-          }
-        );
-        if (!fitCheck.ok) {
-          return json(400, shiftFitConflictBody(fitCheck.conflicts));
+          tableName: process.env.WORK_TABLE,
+          attendanceTable: process.env.ATTENDANCE_TABLE,
+          emails: nextEmails,
+          startDate: merged.startDate,
+          dueDate: merged.dueDate,
+          scheduledAssignAt: merged.scheduledAssignAt,
+        });
+        if (!plan.ok) {
+          await notifyAssignmentPlanFailure({
+            ddb,
+            accessTable: process.env.USER_ACCESS_TABLE,
+            tableName: process.env.WORK_TABLE,
+            task: {
+              taskId,
+              title: merged.title,
+              startDate: plan.startDate,
+              dueDate: plan.dueDate,
+            },
+            plan,
+            extraRecipients: [user.email],
+          });
+          return json(400, shiftFitConflictBody(plan.conflicts));
         }
+        merged.startDate = plan.startDate;
+        merged.dueDate = plan.dueDate;
+        if (plan.scheduledAssignAt) merged.scheduledAssignAt = plan.scheduledAssignAt;
+        merged.__assignmentPlan = plan;
       }
 
       const statusLabel = (s) => {
@@ -2251,6 +2408,15 @@ exports.handler = async (event) => {
                   error: "Completion Remark is required.",
                 });
               }
+              const hasProof = await hasCompletionProof(taskId, {
+                employeeEmail: mine.email,
+                assignedAt: mine.assignedAt,
+              });
+              if (!hasProof) {
+                return json(400, {
+                  error: "Please upload at least one proof file.",
+                });
+              }
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(
                 mine,
@@ -2347,14 +2513,16 @@ exports.handler = async (event) => {
               { taskId },
               { channel: "inapp" }
             );
-            await notifyAssignedEmployeeEmail(email, merged, {
-              assignedByName:
-                escalation.pickPersonName(user.name) ||
-                escalation.displayNameFromEmail(user.email),
-              assignedByEmail: user.email,
-              assignedAt: nowIso,
-              kind: "assigned",
-            });
+            if (!merged.__assignmentPlan?.postponementCount) {
+              await notifyAssignedEmployeeEmail(email, merged, {
+                assignedByName:
+                  escalation.pickPersonName(user.name) ||
+                  escalation.displayNameFromEmail(user.email),
+                assignedByEmail: user.email,
+                assignedAt: nowIso,
+                kind: "assigned",
+              });
+            }
           } else if (existingA.removed) {
             existingA.removed = false;
             existingA.assignedAt = nowIso;
@@ -2382,14 +2550,16 @@ exports.handler = async (event) => {
               { taskId },
               { channel: "inapp" }
             );
-            await notifyAssignedEmployeeEmail(email, merged, {
-              assignedByName:
-                escalation.pickPersonName(user.name) ||
-                escalation.displayNameFromEmail(user.email),
-              assignedByEmail: user.email,
-              assignedAt: nowIso,
-              kind: "assigned",
-            });
+            if (!merged.__assignmentPlan?.postponementCount) {
+              await notifyAssignedEmployeeEmail(email, merged, {
+                assignedByName:
+                  escalation.pickPersonName(user.name) ||
+                  escalation.displayNameFromEmail(user.email),
+                assignedByEmail: user.email,
+                assignedAt: nowIso,
+                kind: "assigned",
+              });
+            }
           }
         }
         if ([...nextSet].sort().join(",") !== [...current].sort().join(",")) {
@@ -2454,7 +2624,20 @@ exports.handler = async (event) => {
         );
       }
 
+      const assignmentPlan = merged.__assignmentPlan;
+      delete merged.__assignmentPlan;
+
       const saved = await persistAssignmentsAndTask(merged, assignments);
+      if (assignmentPlan?.postponementCount) {
+        await notifyAssignmentPlanPostponement({
+          ddb,
+          accessTable: process.env.USER_ACCESS_TABLE,
+          task: saved,
+          emails: nextEmails,
+          plan: assignmentPlan,
+          extraRecipients: [user.email],
+        });
+      }
       if (reviewSubmitted) {
         try {
           let projectName = "";

@@ -3,6 +3,7 @@ process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.AWS_REGION = "ap-south-1";
 process.env.WORK_TABLE = "work-table";
 process.env.USER_ACCESS_TABLE = "access-table";
+process.env.ATTENDANCE_TABLE = "attendance-table";
 process.env.PORTAL_URL = "https://login.mydgv.com";
 process.env.NOTIFICATION_FROM_EMAIL = "noreply@mydgv.com";
 process.env.TASK_NOTIFY_FROM_EMAIL = "noreply@mydgv.com";
@@ -13,6 +14,7 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   TransactWriteCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const email = require("../common/email");
@@ -21,6 +23,7 @@ const { TYPE_EMPLOYEE_EMAIL } = require("./taskImportAssignNotify");
 
 const WORK = process.env.WORK_TABLE;
 const ACCESS = process.env.USER_ACCESS_TABLE;
+const ATTENDANCE = process.env.ATTENDANCE_TABLE;
 const PROJECT_ID = "proj-assign-mail-1";
 const TASK_ID = "task-assign-mail-1";
 const ADMIN = "admin@mydgv.com";
@@ -79,6 +82,14 @@ function createMemoryDdb() {
           .map((row) => ({ ...row.Item }));
         return { Items: found };
       }
+      if (command instanceof ScanCommand) {
+        const { TableName } = command.input;
+        return {
+          Items: items
+            .filter((row) => row.TableName === TableName)
+            .map((row) => ({ ...row.Item })),
+        };
+      }
       if (command instanceof TransactWriteCommand) {
         for (const op of command.input.TransactItems || []) {
           if (op.Put) this.seed(op.Put.TableName, op.Put.Item);
@@ -97,6 +108,16 @@ function seedAccess(ddb, emailAddr, role = "EMPLOYEE", status = "ACTIVE") {
     email: emailAddr,
     role,
     status,
+  });
+}
+
+function seedAttendance(ddb, emailAddr, date, extra = {}) {
+  ddb.seed(ATTENDANCE, {
+    PK: emailAddr,
+    SK: date,
+    email: emailAddr,
+    date,
+    ...extra,
   });
 }
 
@@ -457,6 +478,134 @@ async function run() {
     } finally {
       email.sendEmail = orig;
     }
+  });
+
+  await test("Week Off postponement emails employee and admin without Task Assigned", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup(false);
+      seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Week Off" });
+      const res = parse(
+        await handler(
+          eventFor(
+            "POST",
+            createBody({
+              startDate: "2026-09-28T16:00:00+05:30",
+              dueDate: "2026-09-30T19:00:00+05:30",
+            })
+          )
+        )
+      );
+      assert.strictEqual(res.statusCode, 201);
+      assert.strictEqual(
+        Date.parse(res.body.startDate),
+        Date.parse("2026-09-29T16:00:00+05:30")
+      );
+      const postpone = mails.filter((mail) =>
+        /Task Schedule Postponed/.test(mail.subject)
+      );
+      const assigned = mails.filter((mail) => /Task Assigned:/.test(mail.subject));
+      assert.ok(postpone.length >= 1);
+      assert.ok(postpone.some((mail) => mail.to === PRIYA));
+      assert.ok(postpone.some((mail) => mail.to === ADMIN));
+      assert.ok(postpone.every((mail) => /Week Off/.test(mail.text)));
+      assert.strictEqual(assigned.length, 0);
+    });
+  });
+
+  await test("Leave postponement emails Approved Leave without Task Assigned", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup(false);
+      seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Leave" });
+      const res = parse(
+        await handler(
+          eventFor(
+            "POST",
+            createBody({
+              startDate: "2026-09-28T16:00:00+05:30",
+              dueDate: "2026-09-30T19:00:00+05:30",
+            })
+          )
+        )
+      );
+      assert.strictEqual(res.statusCode, 201);
+      const postpone = mails.filter((mail) =>
+        /Task Schedule Postponed/.test(mail.subject)
+      );
+      assert.ok(postpone.every((mail) => /Approved Leave/.test(mail.text)));
+      assert.strictEqual(
+        mails.filter((mail) => /Task Assigned:/.test(mail.subject)).length,
+        0
+      );
+    });
+  });
+
+  await test("NO_SHIFT emails admin and does not send Task Assigned", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup(false);
+      seedAccess(ddb, "noshift@mydgv.com");
+      const res = parse(
+        await handler(
+          eventFor(
+            "POST",
+            createBody({
+              assignees: ["noshift@mydgv.com"],
+              startDate: "2026-09-28T16:00:00+05:30",
+              dueDate: "2026-09-28T18:00:00+05:30",
+            })
+          )
+        )
+      );
+      assert.strictEqual(res.statusCode, 400);
+      const failed = mails.filter((mail) =>
+        /Task Assignment Failed/.test(mail.subject)
+      );
+      assert.ok(failed.length >= 1);
+      assert.ok(failed.every((mail) => /No assigned shift/.test(mail.text)));
+      assert.ok(!failed.some((mail) => mail.to === "noshift@mydgv.com"));
+      assert.strictEqual(
+        mails.filter((mail) => /Task Assigned:/.test(mail.subject)).length,
+        0
+      );
+    });
+  });
+
+  await test("SHIFT_CONFLICT emails admin and does not send Task Assigned", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup(false);
+      ddb.seed(WORK, {
+        PK: `USER#${PRIYA}`,
+        SK: "SHIFT#CURRENT",
+        shiftId: "afternoon",
+        name: "Afternoon Shift",
+        startTime: "14:00",
+        endTime: "19:00",
+        graceMinutes: 15,
+        crossesMidnight: false,
+      });
+      const res = parse(
+        await handler(
+          eventFor(
+            "POST",
+            createBody({
+              startDate: "2026-09-28T11:00:00+05:30",
+              dueDate: "2026-09-30T20:00:00+05:30",
+            })
+          )
+        )
+      );
+      assert.strictEqual(res.statusCode, 400);
+      const failed = mails.filter((mail) =>
+        /Task Assignment Failed/.test(mail.subject)
+      );
+      assert.ok(failed.length >= 1);
+      assert.ok(
+        failed.every((mail) => /Task time does not fit employee shift/.test(mail.text))
+      );
+      assert.strictEqual(
+        mails.filter((mail) => /Task Assigned:/.test(mail.subject)).length,
+        0
+      );
+    });
   });
 
   await test("Excel/scheduled assignment email path is unchanged", async () => {

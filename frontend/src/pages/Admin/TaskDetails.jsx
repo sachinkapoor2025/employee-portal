@@ -63,7 +63,15 @@ const COMPLETION_MODAL_TITLE = "Submit Task for Review";
 const COMPLETION_REMARK_HELPER =
   "Add a final remark describing the work you completed. The task will be sent to Admin for review.";
 const COMPLETION_SUBMIT_LABEL = "Submit for Review";
-const COMPLETION_REMARK_REQUIRED = "Completion Remark is required.";
+const COMPLETION_PROOF_HELPER =
+  "Upload sheet of work. If there is no sheet, upload the screenshot.";
+const COMPLETION_PROOF_REQUIRED = "Please upload at least one proof file.";
+const COMPLETION_REMARK_REQUIRED = "Please enter a completion remark.";
+const COMPLETION_PROOF_UPLOAD_FAILED = "Proof upload failed. Please try again.";
+
+function attachmentKey(item) {
+  return String(item?.attachmentId || item?.s3Key || item?.fileName || "").trim();
+}
 const REVIEW_WAIT_HEADER =
   "Your task has been submitted for Admin review.";
 const REVIEW_WAIT_ASSIGNMENT = "Waiting for Admin review.";
@@ -128,6 +136,9 @@ export default function TaskDetails() {
   const [modal, setModal] = useState(null); // edit | status | reassign | complete | blocker
   const [completeRemark, setCompleteRemark] = useState("");
   const [completeError, setCompleteError] = useState("");
+  const [completeProofError, setCompleteProofError] = useState("");
+  const [completeRemarkError, setCompleteRemarkError] = useState("");
+  const [completeProofBaselineIds, setCompleteProofBaselineIds] = useState([]);
   const [blockerRemark, setBlockerRemark] = useState("");
   const [blockerError, setBlockerError] = useState("");
   const [reviewDecision, setReviewDecision] = useState("");
@@ -341,6 +352,7 @@ export default function TaskDetails() {
       setAttachmentError(invalid);
       return;
     }
+    setCompleteProofError("");
     setUploadingAttachment(true);
     try {
       const contentType = file.type || "application/octet-stream";
@@ -368,9 +380,14 @@ export default function TaskDetails() {
         contentType: signed.contentType || contentType,
         s3Key: signed.s3Key,
       });
+      setCompleteProofError("");
       await refreshAttachmentsAndActivity();
     } catch (err) {
-      setAttachmentError(err.message || "Unable to upload attachment.");
+      setAttachmentError(
+        modal === "complete"
+          ? COMPLETION_PROOF_UPLOAD_FAILED
+          : err.message || "Unable to upload attachment."
+      );
     } finally {
       setUploadingAttachment(false);
     }
@@ -664,6 +681,12 @@ export default function TaskDetails() {
     if (wanted === "DONE") {
       setCompleteRemark("");
       setCompleteError("");
+      setCompleteProofError("");
+      setCompleteRemarkError("");
+      setAttachmentError("");
+      setCompleteProofBaselineIds(
+        (attachments || []).map(attachmentKey).filter(Boolean)
+      );
       setModal("complete");
       return;
     }
@@ -688,6 +711,9 @@ export default function TaskDetails() {
     setModal(null);
     setCompleteRemark("");
     setCompleteError("");
+    setCompleteProofError("");
+    setCompleteRemarkError("");
+    setCompleteProofBaselineIds([]);
   };
 
   const handleEmployeeComplete = async () => {
@@ -702,11 +728,17 @@ export default function TaskDetails() {
       setCompleteError(RED_ZONE_MESSAGE);
       return;
     }
+    if (uploadingAttachment) return;
     const remark = String(completeRemark || "").trim();
-    if (!remark) {
-      setCompleteError(COMPLETION_REMARK_REQUIRED);
-      return;
-    }
+    const hasProof = (attachments || []).some((item) => {
+      const key = attachmentKey(item);
+      return key && !completeProofBaselineIds.includes(key);
+    });
+    const proofErr = hasProof ? "" : COMPLETION_PROOF_REQUIRED;
+    const remarkErr = remark ? "" : COMPLETION_REMARK_REQUIRED;
+    setCompleteProofError(proofErr);
+    setCompleteRemarkError(remarkErr);
+    if (proofErr || remarkErr) return;
     setSaving(true);
     setCompleteError("");
     setError("");
@@ -786,16 +818,6 @@ export default function TaskDetails() {
   }
 
   const assignees = getTaskAssignees(task);
-  const assigneeNames = assignees
-    .map((a) => {
-      const info = personLabel(users, a.email);
-      const profile = (task.assigneeProfiles || []).find(
-        (p) => String(p.email).toLowerCase() === String(a.email).toLowerCase()
-      );
-      return profile?.name || info.name;
-    })
-    .join(", ");
-  const creator = task.createdByName || creatorName || personLabel(users, task.createdBy).name;
   const zone = getTaskZone(task);
   const timing = getTaskTiming(task);
   const viewerEmail = String(getLoggedInEmail() || "").trim().toLowerCase();
@@ -988,12 +1010,17 @@ export default function TaskDetails() {
             onSelectAttachment={handleAttachmentFile}
             onDownloadAttachment={handleAttachmentDownload}
           />
-        ) : (
+        ) : reviewedAssignment ? (
         <>
-        {!employeeView && reviewedAssignment ? (
           <AdminReviewPanel
             assignment={reviewedAssignment}
             users={users}
+            projectName={task.projectName || task.projectId || ""}
+            taskDescription={task.description}
+            attachments={attachments}
+            attachmentError={attachmentError}
+            downloadingId={downloadingAttachmentId}
+            onDownload={handleAttachmentDownload}
             decision={reviewDecision}
             onDecision={setReviewDecision}
             reason={reviewReason}
@@ -1042,38 +1069,15 @@ export default function TaskDetails() {
               </button>
             </div>
           ) : null}
-          <InfoRow
-            label="Author"
-            value={
-              creator || task.createdByName || task.createdBy
-                ? `${creator || task.createdByName || task.createdBy}${
-                    task.createdBy &&
-                    creator &&
-                    creator !== task.createdBy
-                      ? `\n${task.createdBy}`
-                      : ""
-                  }`
-                : "—"
-            }
-          />
-          <InfoRow
-            label="Assigned To"
-            value={
-              assignees.length
-                ? `${assigneeNames}\n${assignees.map((a) => a.email).join("\n")}`
-                : "Unassigned"
-            }
-          />
           <InfoRow label="Priority" value={priorityLabel(task.priority)} />
           <InfoRow label="Category" value={task.category || "—"} />
-          <InfoRow label="Created Date" value={formatTaskDate(task.createdAt)} />
-          <InfoRow label="Created Time" value={formatTaskTime(task.createdAt)} />
+          <InfoRow label="Created Date" value={formatTaskDateTime(task.createdAt) || "—"} />
           <InfoRow
-            label="Assigned / Start Date"
+            label="Start Date"
             value={formatTaskDate(task.startDate || task.createdAt)}
           />
           <InfoRow
-            label="Assigned / Start Time"
+            label="Start Time"
             value={formatTaskTime(task.startDate || task.createdAt)}
           />
           <InfoRow
@@ -1090,61 +1094,13 @@ export default function TaskDetails() {
             label="Current Zone"
             value={`${zoneDisplay(zone, task.status).emoji} ${zoneDisplay(zone, task.status).label}`.trim()}
           />
-          <InfoRow
-            label="Duration"
-            value={formatTaskDuration(task) || "—"}
-          />
         </section>
 
-        <section style={{ ...sectionBox, marginTop: 14 }}>
-          <h3 style={sectionTitle}>INDIVIDUAL EMPLOYEE PROGRESS</h3>
-          {assignees.length === 0 ? (
-            <p style={{ margin: 0, color: colors.textMuted }}>No assignees yet.</p>
-          ) : (
-            assignees.map((a) => {
-              const info = personLabel(users, a.email);
-              const profile = (task.assigneeProfiles || []).find(
-                (p) =>
-                  String(p.email).toLowerCase() === String(a.email).toLowerCase()
-              );
-              const name = profile?.name || info.name;
-              return (
-                <div
-                  key={a.email}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    padding: "10px 0",
-                    borderBottom: "1px solid var(--dgv-border)",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{name}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>
-                      {a.email}
-                    </div>
-                    {a.completedAt ? (
-                      <div style={{ fontSize: 12, color: colors.textMuted }}>
-                        Completed {formatTaskDateTime(a.completedAt)}
-                      </div>
-                    ) : a.timing ? (
-                      <div style={{ fontSize: 12, color: colors.textMuted }}>
-                        {a.timing}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <ZoneBadge zone={a.zone} status={a.status} />
-                    <StatusBadge taskOrStatus={a.status} />
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </section>
+        <AdminAssigneeProgress
+          assignees={assignees}
+          users={users}
+          profiles={task.assigneeProfiles}
+        />
 
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>TASK DESCRIPTION</h3>
@@ -1207,6 +1163,50 @@ export default function TaskDetails() {
           )}
         </section>
         </>
+        ) : (
+          <EmployeeTaskBody
+            task={task}
+            mine={null}
+            employeeStatus={String(task.status || "").toUpperCase()}
+            employeeZone={zone}
+            employeeTiming={timing}
+            showActiveBlocker={false}
+            timeline={timeline}
+            users={users}
+            attachments={attachments}
+            attachmentError={attachmentError}
+            uploadingAttachment={uploadingAttachment}
+            downloadingAttachmentId={downloadingAttachmentId}
+            onSelectAttachment={handleAttachmentFile}
+            onDownloadAttachment={handleAttachmentDownload}
+            extraInfo={
+              task.sourceTaskId ? (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
+                    Source task:
+                  </div>
+                  <button
+                    type="button"
+                    className="dgv-btn dgv-btn--outline"
+                    onClick={() =>
+                      navigate(
+                        `/admin/tasks/${encodeURIComponent(task.sourceTaskId)}`
+                      )
+                    }
+                  >
+                    {displayTaskId(task.sourceTaskId)}
+                  </button>
+                </div>
+              ) : null
+            }
+            afterSchedule={
+              <AdminAssigneeProgress
+                assignees={assignees}
+                users={users}
+                profiles={task.assigneeProfiles}
+              />
+            }
+          />
         )}
       </div>
 
@@ -1468,8 +1468,21 @@ export default function TaskDetails() {
 
       {modal === "complete" ? (
         <Modal title={COMPLETION_MODAL_TITLE} onClose={closeCompletionModal}>
-          <label style={formLabel} htmlFor="completion-remark">
-            Completion Remark *
+          <TaskAttachmentsSection
+            variant="completion"
+            attachments={attachments}
+            users={users}
+            error={attachmentError || completeProofError}
+            uploading={uploadingAttachment}
+            downloadingId={downloadingAttachmentId}
+            onSelectFile={handleAttachmentFile}
+            onDownload={handleAttachmentDownload}
+          />
+          <label
+            style={{ ...formLabel, marginTop: 18 }}
+            htmlFor="completion-remark"
+          >
+            2. Completion Remark *
           </label>
           <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
             {COMPLETION_REMARK_HELPER}
@@ -1481,11 +1494,23 @@ export default function TaskDetails() {
             value={completeRemark}
             onChange={(e) => {
               setCompleteRemark(e.target.value);
+              if (completeRemarkError) setCompleteRemarkError("");
               if (completeError) setCompleteError("");
             }}
           />
+          {completeRemarkError ? (
+            <p
+              role="alert"
+              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
+            >
+              {completeRemarkError}
+            </p>
+          ) : null}
           {completeError ? (
-            <p style={{ margin: "0 0 8px", color: colors.error, fontSize: 13 }}>
+            <p
+              role="alert"
+              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
+            >
               {completeError}
             </p>
           ) : null}
@@ -1499,8 +1524,8 @@ export default function TaskDetails() {
             </Button>
             <Button
               type="button"
-              loading={saving}
-              disabled={saving}
+              loading={saving || uploadingAttachment}
+              disabled={saving || uploadingAttachment}
               onClick={handleEmployeeComplete}
             >
               {COMPLETION_SUBMIT_LABEL}
@@ -1569,6 +1594,12 @@ function radioRow(style) {
 function AdminReviewPanel({
   assignment,
   users,
+  projectName,
+  taskDescription,
+  attachments,
+  attachmentError,
+  downloadingId,
+  onDownload,
   decision,
   onDecision,
   reason,
@@ -1597,26 +1628,123 @@ function AdminReviewPanel({
 }) {
   const employee = personLabel(users, assignment.email);
   const employeeName = employee.name || assignment.email;
+  const proofItems = Array.isArray(attachments) ? attachments : [];
+  const taskContext = String(taskDescription || "").trim();
   return (
-    <section style={{ ...sectionBox, marginTop: 14 }}>
-      <h3 style={sectionTitle}>Review Task</h3>
-      <Label>CURRENT STATUS</Label>
-      <div style={{ marginBottom: 12 }}>
-        <StatusBadge taskOrStatus="REVIEW" />
+    <section style={{ ...sectionBox, marginTop: 14 }} aria-labelledby="admin-review-task-heading">
+      <h3 id="admin-review-task-heading" style={{ ...sectionTitle, fontSize: 15, color: colors.text }}>
+        Review Task
+      </h3>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <Label>Employee</Label>
+          <div style={{ fontWeight: 700, fontSize: 14, wordBreak: "break-word" }}>
+            {employeeName}
+          </div>
+          <div style={{ fontSize: 13, color: colors.textMuted, wordBreak: "break-word" }}>
+            {assignment.email}
+          </div>
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <Label>Project</Label>
+          <div style={{ fontWeight: 700, fontSize: 14, wordBreak: "break-word" }}>
+            {projectName || "—"}
+          </div>
+        </div>
       </div>
-      {assignment.completionRemark ? (
-        <div style={{ marginBottom: 14 }}>
-          <Label>EMPLOYEE SUBMISSION REMARK</Label>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Task</Label>
+        <p
+          style={{
+            margin: 0,
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.5,
+            fontSize: 14,
+            color: colors.text,
+          }}
+        >
+          {taskContext || "No description added."}
+        </p>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Employee Submission</Label>
+        {assignment.completionRemark ? (
           <p style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 14 }}>
             {assignment.completionRemark}
           </p>
-        </div>
-      ) : (
-        <p style={{ margin: "0 0 14px", color: colors.textMuted, fontSize: 13 }}>
-          No submission remark was provided.
-        </p>
-      )}
-      <Label>REVIEW DECISION</Label>
+        ) : (
+          <p style={{ margin: 0, color: colors.textMuted, fontSize: 13 }}>
+            No submission remark was provided.
+          </p>
+        )}
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Proof / Attachments</Label>
+        {attachmentError ? (
+          <p
+            role="alert"
+            style={{ margin: "0 0 8px", fontSize: 13, color: "var(--dgv-danger)" }}
+          >
+            {attachmentError}
+          </p>
+        ) : null}
+        {proofItems.length === 0 ? (
+          <p style={{ margin: 0, color: colors.textMuted, fontSize: 13 }}>
+            No proof attached.
+          </p>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            {proofItems.map((item) => {
+              const id = item.attachmentId || item.s3Key || item.fileName;
+              const who =
+                personLabel(users, item.uploadedBy).name || item.uploadedBy || "";
+              return (
+                <li
+                  key={id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    padding: "8px 0",
+                    borderTop: "1px solid var(--dgv-border)",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div className="dgv-file-name" style={{ fontWeight: 600, fontSize: 14 }}>
+                      {item.fileName || "Attachment"}
+                    </div>
+                    {who || item.uploadedAt ? (
+                      <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                        {[who, item.uploadedAt ? formatTaskDateTime(item.uploadedAt) : ""]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    ) : null}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={downloadingId === id}
+                    onClick={() => onDownload(item)}
+                  >
+                    Download {item.fileName || "file"}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+      <Label>Review Decision</Label>
       <div style={radioRow()}>
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
@@ -1636,7 +1764,7 @@ function AdminReviewPanel({
             checked={decision === "REASSIGN"}
             onChange={() => onDecision("REASSIGN")}
           />
-          Reassign
+          Reassign / Changes Required
         </label>
       </div>
 
@@ -1834,24 +1962,53 @@ function TaskAttachmentsSection({
   downloadingId,
   onSelectFile,
   onDownload,
+  variant = "page",
 }) {
   const items = Array.isArray(attachments) ? attachments : [];
+  const completion = variant === "completion";
+  const inputId = completion ? "completion-proof-file" : "task-attachment-file";
+  const fileAriaLabel = completion ? "Upload Proof" : "Attach a file";
   return (
-    <section style={{ ...sectionBox, marginTop: 14 }}>
-      <h3 style={sectionTitle}>ATTACHMENTS</h3>
-      <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
-        Attachments are optional. You can complete this task without attaching a
-        file.
-      </p>
-      <label style={{ ...formLabel, display: "block" }} htmlFor="task-attachment-file">
-        Attach a file
-      </label>
+    <section style={completion ? { marginBottom: 4 } : { ...sectionBox, marginTop: 14 }}>
+      {completion ? (
+        <>
+          <label style={{ ...formLabel, display: "block" }} htmlFor={inputId}>
+            1. Upload Proof *
+          </label>
+          <p
+            style={{
+              margin: "0 0 12px",
+              padding: "10px 12px",
+              fontSize: 14,
+              fontWeight: 600,
+              lineHeight: 1.45,
+              background: "var(--dgv-surface-muted, #f4f6f8)",
+              border: "1px solid var(--dgv-border)",
+              borderRadius: 8,
+              color: colors.text,
+            }}
+          >
+            {COMPLETION_PROOF_HELPER}
+          </p>
+        </>
+      ) : (
+        <>
+          <h3 style={sectionTitle}>ATTACHMENTS</h3>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+            Attachments are optional. You can complete this task without attaching a
+            file.
+          </p>
+          <label style={{ ...formLabel, display: "block" }} htmlFor={inputId}>
+            Attach a file
+          </label>
+        </>
+      )}
       <input
-        id="task-attachment-file"
+        id={inputId}
         type="file"
         accept={ATTACHMENT_ACCEPT}
         disabled={uploading}
-        aria-label="Attach a file"
+        aria-label={fileAriaLabel}
         style={{ ...formInput, padding: "8px 10px" }}
         onChange={(e) => {
           const file = e.target.files && e.target.files[0];
@@ -1874,7 +2031,7 @@ function TaskAttachmentsSection({
       ) : null}
       {items.length === 0 ? (
         <p style={{ margin: "14px 0 0", color: colors.textMuted }}>
-          No attachments yet.
+          {completion ? "No proof uploaded yet." : "No attachments yet."}
         </p>
       ) : (
         <ul style={{ listStyle: "none", margin: "14px 0 0", padding: 0 }}>
@@ -1899,7 +2056,7 @@ function TaskAttachmentsSection({
                     {item.fileName || "Attachment"}
                   </div>
                   <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-                    {who}
+                    {completion ? "Uploaded" : who}
                     {item.uploadedAt ? ` · ${formatTaskDateTime(item.uploadedAt)}` : ""}
                   </div>
                 </div>
@@ -1920,6 +2077,61 @@ function TaskAttachmentsSection({
   );
 }
 
+function AdminAssigneeProgress({ assignees, users, profiles }) {
+  const rows = Array.isArray(assignees) ? assignees : [];
+  return (
+    <section style={{ ...sectionBox, marginTop: 14 }}>
+      <h3 style={sectionTitle}>INDIVIDUAL EMPLOYEE PROGRESS</h3>
+      {rows.length === 0 ? (
+        <p style={{ margin: 0, color: colors.textMuted }}>No assignees yet.</p>
+      ) : (
+        rows.map((a) => {
+          const info = personLabel(users, a.email);
+          const profile = (profiles || []).find(
+            (p) =>
+              String(p.email).toLowerCase() === String(a.email).toLowerCase()
+          );
+          const name = profile?.name || info.name;
+          return (
+            <div
+              key={a.email}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
+                padding: "10px 0",
+                borderBottom: "1px solid var(--dgv-border)",
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 700 }}>{name}</div>
+                <div style={{ fontSize: 12, color: colors.textMuted }}>
+                  {a.email}
+                </div>
+                {a.completedAt ? (
+                  <div style={{ fontSize: 12, color: colors.textMuted }}>
+                    Completed {formatTaskDateTime(a.completedAt)}
+                  </div>
+                ) : a.timing ? (
+                  <div style={{ fontSize: 12, color: colors.textMuted }}>
+                    {a.timing}
+                  </div>
+                ) : null}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <ZoneBadge zone={a.zone} status={a.status} />
+                <StatusBadge taskOrStatus={a.status} />
+              </div>
+            </div>
+          );
+        })
+      )}
+    </section>
+  );
+}
+
 function EmployeeTaskBody({
   task,
   mine,
@@ -1935,6 +2147,8 @@ function EmployeeTaskBody({
   downloadingAttachmentId,
   onSelectAttachment,
   onDownloadAttachment,
+  extraInfo,
+  afterSchedule,
 }) {
   return (
     <>
@@ -1947,6 +2161,7 @@ function EmployeeTaskBody({
         />
         <InfoRow label="Priority" value={priorityLabel(task.priority)} />
         <InfoRow label="Category" value={task.category || "—"} />
+        {extraInfo}
       </section>
 
       <section style={{ ...sectionBox, marginTop: 14 }}>
@@ -2006,6 +2221,7 @@ function EmployeeTaskBody({
         <InfoRow label="Duration" value={formatTaskDuration(task) || "—"} />
       </section>
 
+      {afterSchedule || (
       <section style={{ ...sectionBox, marginTop: 14 }}>
         <h3 style={sectionTitle}>YOUR ASSIGNMENT</h3>
         {!mine ? (
@@ -2071,6 +2287,7 @@ function EmployeeTaskBody({
           </>
         )}
       </section>
+      )}
 
       <section style={{ ...sectionBox, marginTop: 14 }}>
         <h3 style={sectionTitle}>Task Activity</h3>

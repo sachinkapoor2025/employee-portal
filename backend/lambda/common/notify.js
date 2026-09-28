@@ -69,6 +69,7 @@ const TASK_IN_APP_ONLY_TYPES = new Set([
   "TASK_ORANGE",
   "TASK_RED",
   "TASK_BLOCKER_REPORTED",
+  "TASK_BLOCKER_RESOLVED",
 ]);
 
 function resolveChannels({ channel, emailEnabled, inAppEnabled, type }) {

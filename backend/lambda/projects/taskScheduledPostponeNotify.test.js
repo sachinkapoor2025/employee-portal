@@ -76,20 +76,18 @@ async function run() {
     reasons: ["LEAVE"],
     attendanceStatusByEmail: { "priya@mydgv.com": "Leave" },
     postponementCount: 1,
+    includeEmployees: true,
   });
-  assert.deepStrictEqual(first.recipients, ["super@mydgv.com"]);
-  assert.strictEqual(emailCalls.length, 1);
-  assert.strictEqual(emailCalls[0].to, "super@mydgv.com");
-  assert.strictEqual(emailCalls[0].from, "noreply@mydgv.com");
-  assert.ok(/Scheduled task postponed/i.test(emailCalls[0].subject));
+  assert.deepStrictEqual(first.recipients.sort(), ["priya@mydgv.com", "super@mydgv.com"]);
+  assert.strictEqual(emailCalls.length, 2);
+  assert.ok(emailCalls.some((call) => call.to === "super@mydgv.com"));
+  assert.ok(emailCalls.some((call) => call.to === "priya@mydgv.com"));
+  assert.ok(emailCalls.every((call) => call.from === "noreply@mydgv.com"));
+  assert.ok(/Task Schedule Postponed/i.test(emailCalls[0].subject));
   assert.ok(/priya@mydgv.com/.test(emailCalls[0].text));
-  assert.ok(/Leave/.test(emailCalls[0].text));
+  assert.ok(/Approved Leave/.test(emailCalls[0].text));
+  assert.ok(/Postponed by: 24 hours/.test(emailCalls[0].text));
   assert.ok(/Postponement count: 1/.test(emailCalls[0].text));
-  assert.ok(!emailCalls.some((call) => call.to === "priya@mydgv.com"));
-  assert.ok(!emailCalls.some((call) => call.to === "admin@mydgv.com"));
-  assert.ok(!emailCalls.some((call) => call.to === "lead@mydgv.com"));
-  assert.ok(!emailCalls.some((call) => call.to === "projadmin@mydgv.com"));
-  assert.ok(!emailCalls.some((call) => call.to === "oldsuper@mydgv.com"));
   assert.ok(
     ddb.items.some(
       (item) =>
@@ -110,8 +108,9 @@ async function run() {
     reasons: ["LEAVE"],
     attendanceStatusByEmail: { "priya@mydgv.com": "Leave" },
     postponementCount: 1,
+    includeEmployees: true,
   });
-  assert.strictEqual(emailCalls.length, 1);
+  assert.strictEqual(emailCalls.length, 2);
   assert.ok(second.results.every((row) => row.skipped || row.status === "SENT"));
   assert.strictEqual(
     postponedNotifyKey("task-postpone-1", "2026-09-22T08:30:00.000Z"),

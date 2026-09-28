@@ -299,6 +299,21 @@ function seedTask(ddb, extra = {}) {
       removed: false,
     });
   }
+  if (extra.proof !== false) {
+    emails.forEach((emailAddr, idx) => {
+      ddb.seed(WORK, {
+        PK: `TASK#${taskId}`,
+        SK: `ATTACHMENT#att-proof-${idx + 1}`,
+        attachmentId: `att-proof-${idx + 1}`,
+        taskId,
+        fileName: "brief.pdf",
+        contentType: "application/pdf",
+        s3Key: `tasks/${taskId}/${idx + 1}-brief.pdf`,
+        uploadedBy: emailAddr,
+        uploadedAt: "2026-09-20T10:00:00.000Z",
+      });
+    });
+  }
   return item;
 }
 
@@ -412,6 +427,60 @@ async function run() {
       assert.ok(reviewMails[0].html.includes(`/admin/tasks/${TASK_ID}`));
       assert.ok(reviewMails[0].html.includes("REVIEW TASK"));
       assert.ok(!reviewMails[0].html.includes("priya@mydgv.com"));
+    });
+  });
+
+  await test("employee DONE with remark but no proof does not send review email", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup({ assignmentStatus: "IN_PROGRESS", proof: false });
+      const res = parse(
+        await handler(
+          eventFor({
+            taskId: TASK_ID,
+            status: "DONE",
+            completionRemark: "Completed the product upload.",
+          })
+        )
+      );
+      assert.strictEqual(res.statusCode, 400);
+      assert.strictEqual(res.body.error, "Please upload at least one proof file.");
+      assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+      assert.ok(!activityItems(ddb).some((a) => /IN REVIEW/.test(a.detail || "")));
+      assert.strictEqual(
+        mails.filter((m) => /Submitted for Review/.test(m.subject)).length,
+        0
+      );
+    });
+  });
+
+  await test("older or other-user attachment does not send review email", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup({ assignmentStatus: "IN_PROGRESS", proof: false });
+      ddb.seed(WORK, {
+        PK: `TASK#${TASK_ID}`,
+        SK: "ATTACHMENT#att-old",
+        attachmentId: "att-old",
+        taskId: TASK_ID,
+        fileName: "spec.pdf",
+        s3Key: `tasks/${TASK_ID}/spec.pdf`,
+        uploadedBy: ADMIN,
+        uploadedAt: "2026-09-20T10:00:00.000Z",
+      });
+      const res = parse(
+        await handler(
+          eventFor({
+            taskId: TASK_ID,
+            status: "DONE",
+            completionRemark: "Completed the product upload.",
+          })
+        )
+      );
+      assert.strictEqual(res.statusCode, 400);
+      assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+      assert.strictEqual(
+        mails.filter((m) => /Submitted for Review/.test(m.subject)).length,
+        0
+      );
     });
   });
 

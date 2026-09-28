@@ -936,6 +936,20 @@ a {
   overflow-wrap: anywhere;
 }
 
+.dgv-task-card__project {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--dgv-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dgv-task-card__project strong {
+  color: var(--dgv-text-muted);
+  font-weight: 500;
+  margin-right: 4px;
+}
+
 .dgv-task-card__meta {
   display: flex;
   flex-wrap: wrap;

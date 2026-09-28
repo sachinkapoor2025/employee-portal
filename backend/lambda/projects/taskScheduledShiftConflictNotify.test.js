@@ -99,16 +99,18 @@ async function run() {
     "super@mydgv.com",
   ]);
   const conflictMail = emailCalls.filter((call) =>
-    /shift conflict/i.test(String(call.subject || ""))
+    /task assignment failed|shift conflict/i.test(String(call.subject || ""))
   );
   assert.strictEqual(conflictMail.length, 2);
   assert.ok(conflictMail.some((call) => call.to === "super@mydgv.com"));
   assert.ok(conflictMail.some((call) => call.to === "admin@mydgv.com"));
   assert.ok(conflictMail.every((call) => call.from === "noreply@mydgv.com"));
   assert.ok(conflictMail.every((call) => /priya@mydgv.com/.test(call.text)));
+  assert.ok(conflictMail.every((call) => /Task Assignment Failed/.test(call.subject)));
+  assert.ok(conflictMail.every((call) => /Task time does not fit employee shift/.test(call.text)));
   assert.ok(conflictMail.every((call) => /SHIFT_CONFLICT/.test(call.text)));
   assert.ok(conflictMail.every((call) => /Morning Shift/.test(call.text)));
-  assert.ok(conflictMail.every((call) => /11:00/.test(call.text)));
+  assert.ok(conflictMail.every((call) => /Employee shift/.test(call.text)));
   assert.ok(conflictMail.every((call) => /Edit or reassign/.test(call.text)));
   assert.ok(!emailCalls.some((call) => call.to === "priya@mydgv.com"));
   assert.ok(!emailCalls.some((call) => call.to === "lead@mydgv.com"));
@@ -133,7 +135,9 @@ async function run() {
     fitByEmail: { "priya@mydgv.com": ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT },
   });
   assert.strictEqual(
-    emailCalls.filter((call) => /shift conflict/i.test(String(call.subject || ""))).length,
+    emailCalls.filter((call) =>
+      /task assignment failed|shift conflict/i.test(String(call.subject || ""))
+    ).length,
     2
   );
   assert.ok(second.results.every((row) => row.skipped || row.status === "SENT"));
@@ -151,11 +155,11 @@ async function run() {
   assert.ok(noShift.recipients.includes("admin@mydgv.com"));
   assert.ok(noShift.recipients.includes("super@mydgv.com"));
   const noShiftMail = emailCalls.filter((call) =>
-    /shift conflict/i.test(String(call.subject || ""))
+    /task assignment failed|shift conflict/i.test(String(call.subject || ""))
   );
   assert.strictEqual(noShiftMail.length, 2);
   assert.ok(noShiftMail.every((call) => /NO_SHIFT/.test(call.text)));
-  assert.ok(noShiftMail.every((call) => /Assigned shift: none/.test(call.text)));
+  assert.ok(noShiftMail.every((call) => /Employee shift: none/.test(call.text)));
   assert.ok(noShiftMail.every((call) => /rahul@mydgv.com/.test(call.text)));
 
   emailCalls.length = 0;
@@ -210,3 +214,4 @@ run().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+  

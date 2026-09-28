@@ -3,6 +3,7 @@ process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.AWS_REGION = "ap-south-1";
 process.env.WORK_TABLE = "work-table";
 process.env.USER_ACCESS_TABLE = "access-table";
+process.env.ATTENDANCE_TABLE = "attendance-table";
 
 const assert = require("assert");
 const email = require("../common/email");
@@ -22,6 +23,7 @@ const { handler, setClientsForTests } = require("./handler");
 
 const WORK = process.env.WORK_TABLE;
 const ACCESS = process.env.USER_ACCESS_TABLE;
+const ATTENDANCE = process.env.ATTENDANCE_TABLE;
 const PROJECT_ID = "proj-put-1";
 const TASK_ID = "task-put-1";
 const ADMIN = "admin@mydgv.com";
@@ -160,6 +162,16 @@ function seedShift(ddb, email, extra = {}) {
   });
 }
 
+function seedAttendance(ddb, email, date, extra = {}) {
+  ddb.seed(ATTENDANCE, {
+    PK: email,
+    SK: date,
+    email,
+    date,
+    ...extra,
+  });
+}
+
 function seedTask(ddb, extra = {}) {
   const emails = extra.assignees || [PRIYA];
   const item = {
@@ -205,7 +217,7 @@ function seedTask(ddb, extra = {}) {
   return item;
 }
 
-function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuses, assignmentStatus } = {}) {
+function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuses, assignmentStatus, proof = false } = {}) {
   const ddb = createMemoryDdb();
   ddb.seed(WORK, {
     PK: "ENTITY#PROJECT",
@@ -237,8 +249,24 @@ function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuse
     assignmentStatuses,
     assignmentStatus,
   });
+  if (proof) seedProof(ddb, TASK_ID, emails[0]);
   setClientsForTests({ ddb });
   return { ddb, task };
+}
+
+function seedProof(ddb, taskId = TASK_ID, uploadedBy = PRIYA, extra = {}) {
+  const attachmentId = extra.attachmentId || "att-proof-1";
+  ddb.seed(WORK, {
+    PK: `TASK#${taskId}`,
+    SK: `ATTACHMENT#${attachmentId}`,
+    attachmentId,
+    taskId,
+    fileName: extra.fileName || "brief.pdf",
+    contentType: "application/pdf",
+    s3Key: extra.s3Key || `tasks/${taskId}/brief.pdf`,
+    uploadedBy,
+    uploadedAt: extra.uploadedAt || "2026-09-20T10:00:00.000Z",
+  });
 }
 
 function adminEvent(body, email = ADMIN) {
@@ -544,6 +572,173 @@ async function run() {
     assert.deepStrictEqual(snapshot(ddb).task, before.task);
   });
 
+  await test("assigned multi-day afternoon edit 16:00 to next-day 19:00 succeeds", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-28T18:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          startDate: "2026-09-28T16:00:00+05:30",
+          dueDate: "2026-09-30T19:00:00+05:30",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(entityTask(ddb).startDate, "2026-09-28T16:00:00+05:30");
+    assert.strictEqual(entityTask(ddb).dueDate, "2026-09-30T19:00:00+05:30");
+    assert.strictEqual(entityTask(ddb).assignmentState, "ASSIGNED");
+  });
+
+  await test("assigned multi-day afternoon edit Week Off postpones then succeeds", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-28T18:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Week Off" });
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          startDate: "2026-09-28T16:00:00+05:30",
+          dueDate: "2026-09-30T19:00:00+05:30",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(Date.parse(entityTask(ddb).startDate), Date.parse("2026-09-29T16:00:00+05:30"));
+    assert.strictEqual(Date.parse(entityTask(ddb).dueDate), Date.parse("2026-10-01T19:00:00+05:30"));
+  });
+
+  await test("assigned description-only PUT does not revalidate Week Off", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-30T19:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Week Off" });
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          description: "Copy tweak only.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(entityTask(ddb).startDate, "2026-09-28T16:00:00+05:30");
+    assert.strictEqual(entityTask(ddb).dueDate, "2026-09-30T19:00:00+05:30");
+  });
+
+  await test("assigned multi-day afternoon edit due after shift is SHIFT_CONFLICT", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-28T18:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    const before = snapshot(ddb);
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          startDate: "2026-09-28T16:00:00+05:30",
+          dueDate: "2026-09-30T20:00:00+05:30",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT);
+    assert.deepStrictEqual(snapshot(ddb).task, before.task);
+  });
+
+  await test("assigned multi-day afternoon edit start before shift is SHIFT_CONFLICT", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-28T18:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    const before = snapshot(ddb);
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          startDate: "2026-09-28T13:00:00+05:30",
+          dueDate: "2026-09-30T19:00:00+05:30",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT);
+    assert.deepStrictEqual(snapshot(ddb).task, before.task);
+  });
+
+  await test("assigned same-day afternoon overrun remains SHIFT_CONFLICT", async () => {
+    const { ddb } = setup({
+      startDate: "2026-09-28T16:00:00+05:30",
+      dueDate: "2026-09-28T18:00:00+05:30",
+      shifts: {
+        [PRIYA]: {
+          shiftId: "afternoon",
+          name: "Afternoon Shift",
+          startTime: "14:00",
+          endTime: "19:00",
+        },
+      },
+    });
+    const before = snapshot(ddb);
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          startDate: "2026-09-28T18:00:00+05:30",
+          dueDate: "2026-09-28T20:00:00+05:30",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT);
+    assert.deepStrictEqual(snapshot(ddb).task, before.task);
+  });
+
   await test("unrelated task edit does not invoke shift-fit", async () => {
     const { ddb } = setup();
     ddb.shiftGets = 0;
@@ -665,6 +860,7 @@ async function run() {
     const { ddb } = setup({
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
+      proof: true,
     });
     const remark = "Finished from the employee portal.";
     const res = parse(
@@ -692,6 +888,7 @@ async function run() {
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
       assignmentStatus: "IN_PROGRESS",
+      proof: true,
     });
     const remark = "Completed the product upload and verified all 50 items.";
     const res = parse(
@@ -720,6 +917,126 @@ async function run() {
     assert.strictEqual(changed.length, 1);
     assert.strictEqual(changed[0].assignmentEmail, PRIYA);
     assert.match(changed[0].detail || "", /IN PROGRESS → IN REVIEW/);
+  });
+
+  await test("employee DONE with remark but no proof is 400", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    const before = snapshot(ddb);
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Completed without uploading proof.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.error, "Please upload at least one proof file.");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.ok(!assignmentItem(ddb, PRIYA).completionRemark);
+    assert.strictEqual(snapshot(ddb).activities, before.activities);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("employee DONE with only another user's attachment is 400", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    seedProof(ddb, TASK_ID, ADMIN);
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Completed using the existing brief.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.error, "Please upload at least one proof file.");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
+  });
+
+  await test("employee DONE with attachment from before assignment is 400", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    seedProof(ddb, TASK_ID, PRIYA, { uploadedAt: "2026-09-01T08:00:00.000Z" });
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Completed using an older file.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.error, "Please upload at least one proof file.");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
+  });
+
+  await test("employee DONE without proof and without remark is 400", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(res.body.error || "", /Completion Remark/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
+  });
+
+  await test("employee DONE with proof and missing remark is 400", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(res.body.error || "", /Completion Remark/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
   });
 
   await test("employee TODO IN_PROGRESS remain unchanged without remark", async () => {
@@ -868,6 +1185,7 @@ async function run() {
       assignees: [ANKIT, PRIYA, RAHUL],
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
+      proof: true,
       assignmentStatuses: {
         [ANKIT]: "TODO",
         [PRIYA]: "IN_PROGRESS",
@@ -985,6 +1303,7 @@ async function run() {
       assignees: [ADMIN],
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
+      proof: true,
     });
     const remark = "Completed";
     const res = parse(
@@ -1018,6 +1337,7 @@ async function run() {
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
       assignmentStatus: "IN_PROGRESS",
+      proof: true,
     });
     const res = parse(
       await handler(

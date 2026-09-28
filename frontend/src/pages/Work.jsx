@@ -42,6 +42,10 @@ function normalizeZone(value) {
   return MY_TASK_ZONES.includes(key) ? key : "GREEN";
 }
 
+function taskProjectLabel(task) {
+  return String(task?.projectName || "").trim();
+}
+
 export default function Work() {
   const [tasks, setTasks] = useState([]);
   const [zoneCounts, setZoneCounts] = useState({
@@ -169,6 +173,7 @@ export default function Work() {
           const status = mine?.status || task.status || "TODO";
           const taskZone = mine?.zone || getTaskZone(task);
           const timing = mine?.timing || getTaskTiming(task);
+          const projectLabel = taskProjectLabel(task);
           const zoneClass =
             String(status).toUpperCase() === "DONE"
               ? ""
@@ -191,6 +196,11 @@ export default function Work() {
               }}
             >
               <h3 className="dgv-task-card__title">{task.title}</h3>
+              {projectLabel ? (
+                <p className="dgv-task-card__project">
+                  <strong>Project:</strong> {projectLabel}
+                </p>
+              ) : null}
               {task.description ? (
                 <p className="dgv-wrap-text" style={{ color: colors.textMuted, fontSize: 14, margin: "8px 0 0" }}>
                   {task.description}

@@ -54,6 +54,29 @@ function uniqueList(values) {
   return out;
 }
 
+function portalBaseUrl() {
+  return String(process.env.PORTAL_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+function adminTaskUrl(taskId) {
+  const base = portalBaseUrl();
+  const id = String(taskId || "").trim();
+  if (!base || !id) return "";
+  return `${base}/admin/tasks/${encodeURIComponent(id)}`;
+}
+
+function postponementReasonLabel(reason) {
+  const code = String(reason || "").trim().toUpperCase();
+  if (code === "WEEKLY_OFF") return "Week Off";
+  if (code === "LEAVE") return "Approved Leave";
+  if (code === "HOLIDAY") return "Holiday";
+  if (code === "PLANNED_OFF") return "Planned Off";
+  if (code === "ABSENT") return "Absent";
+  return safeLine(reason, "UNAVAILABLE");
+}
+
 function postponementCopy({
   title,
   employees,
@@ -65,27 +88,32 @@ function postponementCopy({
   attendanceStatus,
   postponementCount,
   dateKey,
+  taskId,
 }) {
   const safeTitle = safeLine(title, "a task");
   const people = uniqueList(employees);
   const peopleLine = people.length ? people.join(", ") : "unassigned employees";
-  const reasons = uniqueList(Array.isArray(reason) ? reason : [reason]);
+  const reasons = uniqueList(
+    (Array.isArray(reason) ? reason : [reason]).map(postponementReasonLabel)
+  );
   const statuses = uniqueList(
     Array.isArray(attendanceStatus) ? attendanceStatus : [attendanceStatus]
   );
-  const subject = `Scheduled task postponed: ${safeTitle}`;
+  const subject = `Task Schedule Postponed: ${safeTitle}`;
   const lines = [
     `Task "${safeTitle}" was postponed by 24 hours.`,
     `Employee(s): ${peopleLine}`,
-    `Previous scheduled start: ${formatCompanyInstant(previousStart) || previousStart || "—"}`,
-    `Previous deadline: ${formatCompanyInstant(previousDue) || previousDue || "—"}`,
-    `New scheduled start: ${formatCompanyInstant(nextStart) || nextStart || "—"}`,
-    `New deadline: ${formatCompanyInstant(nextDue) || nextDue || "—"}`,
+    `Task: ${safeTitle}`,
     `Reason: ${reasons.join(", ") || "UNAVAILABLE"}`,
+    `Previous schedule: ${formatCompanyInstant(previousStart) || previousStart || "—"} → ${formatCompanyInstant(previousDue) || previousDue || "—"}`,
+    `Updated schedule: ${formatCompanyInstant(nextStart) || nextStart || "—"} → ${formatCompanyInstant(nextDue) || nextDue || "—"}`,
+    `Postponed by: 24 hours`,
     `Attendance status: ${statuses.join(", ") || "—"}`,
     `Postponement count: ${Number(postponementCount || 0) || 1}`,
   ];
   if (dateKey) lines.push(`Attendance date: ${dateKey}`);
+  const portal = adminTaskUrl(taskId);
+  if (portal) lines.push(`Task link: ${portal}`);
   const text = lines.join("\n");
   const html = lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
   return { title: subject, subject, text, html };
@@ -121,6 +149,8 @@ async function notifyScheduledPostponement({
   attendanceStatusByEmail = {},
   postponementCount,
   listAccessRows,
+  includeEmployees = false,
+  extraRecipients = [],
 } = {}) {
   const taskId = task.taskId;
   const emails = uniqueList(
@@ -146,7 +176,11 @@ async function notifyScheduledPostponement({
     return { skipped: true, reason: "RECIPIENT_LOOKUP_FAILED" };
   }
 
-  const recipients = uniqueList(superAdmins);
+  const recipients = uniqueList([
+    ...superAdmins,
+    ...(includeEmployees ? emails : []),
+    ...(extraRecipients || []),
+  ]);
   if (!recipients.length) {
     return { skipped: true, reason: "NO_SUPER_ADMINS" };
   }
@@ -165,6 +199,7 @@ async function notifyScheduledPostponement({
     attendanceStatus: statuses,
     postponementCount,
     dateKey: companyDateKey(previousScheduledAssignAt || task.scheduledAssignAt),
+    taskId,
   });
   const from = notifyFromAddress();
   const fromName = notifyFromName();
@@ -180,7 +215,7 @@ async function notifyScheduledPostponement({
         message: copy.text,
         html: copy.html,
         reason: TYPE_SCHEDULED_POSTPONED_EMAIL,
-        dedupKey,
+        dedupKey: `${dedupKey}#${adminEmail}`,
         extra: {
           taskId,
           postponedEmails: emails,
@@ -201,5 +236,6 @@ module.exports = {
   TYPE_SCHEDULED_POSTPONED_EMAIL,
   postponedNotifyKey,
   postponementCopy,
+  postponementReasonLabel,
   notifyScheduledPostponement,
 };

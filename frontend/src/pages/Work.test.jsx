@@ -264,6 +264,98 @@ test("completed task cards still navigate to Task Details", async () => {
   expect(mockNavigate).toHaveBeenCalledWith("/work/TASK-DONE-1");
 });
 
+test("project name renders on the task card when available", async () => {
+  fetchTaskList.mockResolvedValue({
+    tasks: [{ ...GREEN_TASK, projectName: "Alpha Project" }],
+    zoneCounts: COUNTS,
+  });
+  renderWork();
+  const card = await screen.findByRole("link", {
+    name: /View task Write backlinks/i,
+  });
+  expect(card).toHaveTextContent("Project:");
+  expect(card).toHaveTextContent("Alpha Project");
+  expect(card).not.toHaveTextContent(GREEN_TASK.taskId);
+  expect(card.textContent.indexOf("Alpha Project")).toBeLessThan(
+    card.textContent.indexOf("Create outreach list")
+  );
+});
+
+test("resolved project name is shown instead of the projectId", async () => {
+  const projectId = "6e7e628c-0408-4b2f-85e4-42f4decaf46f";
+  fetchTaskList.mockResolvedValue({
+    tasks: [
+      {
+        ...GREEN_TASK,
+        projectId,
+        projectName: "Alpha Project",
+      },
+    ],
+    zoneCounts: COUNTS,
+  });
+  renderWork();
+  const card = await screen.findByRole("link", {
+    name: /View task Write backlinks/i,
+  });
+  expect(card).toHaveTextContent("Project: Alpha Project");
+  expect(card).not.toHaveTextContent(projectId);
+});
+
+test("each task card shows the project name for its own project", async () => {
+  fetchTaskList.mockResolvedValue({
+    tasks: [
+      {
+        ...GREEN_TASK,
+        taskId: "TASK-A",
+        title: "Task A",
+        description: "First description",
+        projectId: "project-a-id",
+        projectName: "Alpha Project",
+      },
+      {
+        ...GREEN_TASK,
+        taskId: "TASK-B",
+        title: "Task B",
+        description: "Second description",
+        projectId: "project-b-id",
+        projectName: "Beta Project",
+      },
+    ],
+    zoneCounts: { ALL: 2, GREEN: 2, ORANGE: 0, RED: 0, COMPLETED: 0 },
+  });
+  renderWork();
+  const cardA = await screen.findByRole("link", { name: /View task Task A/i });
+  const cardB = await screen.findByRole("link", { name: /View task Task B/i });
+  expect(cardA).toHaveTextContent("Project: Alpha Project");
+  expect(cardA).not.toHaveTextContent("Beta Project");
+  expect(cardA).not.toHaveTextContent("project-a-id");
+  expect(cardB).toHaveTextContent("Project: Beta Project");
+  expect(cardB).not.toHaveTextContent("Alpha Project");
+  expect(cardB).not.toHaveTextContent("project-b-id");
+});
+
+test("unresolved projectId is not shown as the project name", async () => {
+  const projectId = "6e7e628c-0408-4b2f-85e4-42f4decaf46f";
+  fetchTaskList.mockResolvedValue({
+    tasks: [{ ...GREEN_TASK, projectId, projectName: "" }],
+    zoneCounts: COUNTS,
+  });
+  renderWork();
+  const card = await screen.findByRole("link", {
+    name: /View task Write backlinks/i,
+  });
+  expect(card).not.toHaveTextContent("Project:");
+  expect(card).not.toHaveTextContent(projectId);
+});
+
+test("project row is omitted when project is unavailable", async () => {
+  renderWork();
+  const card = await screen.findByRole("link", {
+    name: /View task Write backlinks/i,
+  });
+  expect(card).not.toHaveTextContent("Project:");
+});
+
 test("valid stored category is preserved", async () => {
   sessionStorage.setItem(ZONE_KEY, "RED");
   fetchTaskList.mockResolvedValue(emptyList());

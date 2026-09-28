@@ -97,19 +97,24 @@ function conflictCopy({
   taskId,
 }) {
   const safeTitle = safeLine(title, "a task");
-  const conflictType =
-    result === ASSIGNED_SHIFT_FIT.NO_SHIFT
-      ? ASSIGNED_SHIFT_FIT.NO_SHIFT
-      : ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT;
-  const subject = `Scheduled task shift conflict: ${safeTitle}`;
+  const isNoShift = result === ASSIGNED_SHIFT_FIT.NO_SHIFT;
+  const conflictType = isNoShift
+    ? ASSIGNED_SHIFT_FIT.NO_SHIFT
+    : ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT;
+  const reason = isNoShift
+    ? "No assigned shift"
+    : "Task time does not fit employee shift";
+  const subject = `Task Assignment Failed: ${safeTitle}`;
   const startLabel = formatCompanyInstant(startIso) || startIso || "—";
   const dueLabel = formatCompanyInstant(dueIso) || dueIso || "—";
   const lines = [
     `Task "${safeTitle}" was not assigned to ${safeLine(employee)}.`,
-    `Conflict: ${conflictType}`,
     `Employee: ${safeLine(employee)}`,
-    `Assigned shift: ${safeLine(shiftLabel, "none")}`,
-    `Task time: ${startLabel} – ${dueLabel}`,
+    `Task: ${safeTitle}`,
+    `Employee shift: ${safeLine(shiftLabel, "none")}`,
+    `Requested start/due: ${startLabel} – ${dueLabel}`,
+    `Reason: ${reason}`,
+    `Conflict: ${conflictType}`,
     "Action: Edit or reassign this task so the work fits the employee's assigned shift.",
   ];
   const portal = adminTaskUrl(taskId);
@@ -150,8 +155,9 @@ async function notifyScheduledShiftConflicts({
   conflictEmails = [],
   fitByEmail = {},
   listAccessRows,
+  extraRecipients = [],
 } = {}) {
-  const taskId = task.taskId;
+  const taskId = String(task.taskId || "").trim();
   const emails = uniqueList(
     (conflictEmails || []).map((email) => escalation.normalizeEmail(email))
   ).filter((email) => {
@@ -161,23 +167,24 @@ async function notifyScheduledShiftConflicts({
       result === ASSIGNED_SHIFT_FIT.NO_SHIFT
     );
   });
-  if (!ddb || !taskId || !emails.length) {
+  if (!ddb || !emails.length) {
     return { skipped: true, reason: "INVALID_INPUT" };
   }
 
   let recipients = [];
   try {
-    recipients = uniqueList(
-      await listPortalAdminEmails({
+    recipients = uniqueList([
+      ...(await listPortalAdminEmails({
         ddb,
         accessTable,
         listAccessRows,
-      })
-    );
+      })),
+      ...(extraRecipients || []),
+    ]);
   } catch (err) {
     console.error(
       "TASK_SCHEDULED_SHIFT_CONFLICT_RECIPIENT_ERROR",
-      JSON.stringify({ taskId })
+      JSON.stringify({ taskId: taskId || null })
     );
     console.error(err);
     return { skipped: true, reason: "RECIPIENT_LOOKUP_FAILED" };
@@ -192,6 +199,7 @@ async function notifyScheduledShiftConflicts({
   const from = notifyFromAddress();
   const fromName = notifyFromName();
   const results = [];
+  const notifyTaskId = taskId || `unpersisted#${safeLine(task.title, "task")}`;
 
   for (const employee of emails) {
     const result =
@@ -209,14 +217,14 @@ async function notifyScheduledShiftConflicts({
       taskId,
     });
     const inAppKey = shiftConflictNotifyKey(
-      taskId,
+      notifyTaskId,
       employee,
       result,
       task.startDate,
       task.dueDate
     );
     const emailKey = shiftConflictEmailKey(
-      taskId,
+      notifyTaskId,
       employee,
       result,
       task.startDate,

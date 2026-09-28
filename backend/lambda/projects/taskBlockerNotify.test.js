@@ -18,12 +18,19 @@ email.sendEmail = async () => ({ ok: true, messageId: "ses-test" });
 const {
   TYPE_BLOCKER_REPORTED,
   TYPE_BLOCKER_REPORTED_EMAIL,
+  TYPE_BLOCKER_RESOLVED,
+  TYPE_BLOCKER_RESOLVED_EMAIL,
   ADMIN_BLOCKERS_PATH,
   blockerNotifyKey,
   blockerReportedEmailKey,
+  blockerResolvedNotifyKey,
+  blockerResolvedEmailKey,
   adminTaskUrl,
+  employeeTaskUrl,
   blockerReportedCopy,
+  blockerResolvedCopy,
   notifyBlockerReported,
+  notifyBlockerResolved,
 } = require("./taskBlockerNotify");
 const { TASK_IN_APP_ONLY_TYPES, resolveChannels } = require("../common/notify");
 const { activeCompletionAdminEmailsFromAccess } = require("../common/roles");
@@ -133,13 +140,13 @@ function seedRestrictedProject(ddb) {
   });
 }
 
-function notifyItems(ddb) {
+function notifyItems(ddb, type = TYPE_BLOCKER_REPORTED) {
   return ddb
     .of(WORK)
     .filter(
       (item) =>
         String(item.SK || "").startsWith("NOTIFY#") &&
-        item.type === TYPE_BLOCKER_REPORTED
+        item.type === type
     );
 }
 
@@ -589,6 +596,124 @@ async function run() {
     } finally {
       email.sendEmail = orig;
     }
+  });
+
+  await test("TASK_BLOCKER_RESOLVED is a dedicated in-app-only type", () => {
+    assert.ok(TASK_IN_APP_ONLY_TYPES.has(TYPE_BLOCKER_RESOLVED));
+    assert.deepStrictEqual(resolveChannels({ type: TYPE_BLOCKER_RESOLVED }), {
+      emailEnabled: false,
+      inAppEnabled: true,
+    });
+    assert.ok(!TASK_IN_APP_ONLY_TYPES.has(TYPE_BLOCKER_RESOLVED_EMAIL));
+    assert.deepStrictEqual(
+      resolveChannels({ type: TYPE_BLOCKER_RESOLVED_EMAIL, channel: "email" }),
+      { emailEnabled: true, inAppEnabled: false }
+    );
+  });
+
+  await test("blocker resolved copy emails the employee work link", () => {
+    const copy = blockerResolvedCopy({
+      title: "Create SEO report",
+      projectName: "Open project",
+      blockerRemark: "Waiting for client credentials",
+      resolvedByName: "Admin User",
+      resolvedByEmail: ADMIN,
+      resolvedAt: "2026-09-25T12:00:00.000Z",
+      viewTaskUrl: employeeTaskUrl(TASK_ID),
+      timeZone: "Asia/Kolkata",
+    });
+    assert.strictEqual(copy.type, TYPE_BLOCKER_RESOLVED_EMAIL);
+    assert.strictEqual(copy.subject, "Blocker Resolved: Create SEO report");
+    assert.ok(copy.message.includes("Waiting for client credentials"));
+    assert.ok(copy.message.includes("The blocker has been resolved."));
+    assert.ok(copy.message.includes("Admin User"));
+    assert.ok(copy.html.includes("VIEW TASK"));
+    assert.ok(copy.html.includes(`/work/${TASK_ID}`));
+    assert.ok(!copy.html.includes("/admin/blockers"));
+    assert.ok(!copy.html.includes(ADMIN));
+  });
+
+  await test("resolved notify goes to the assignment employee only", async () => {
+    await withMail(async (mails) => {
+      const ddb = createMemoryDdb();
+      seedOpenProject(ddb);
+      seedAccess(ddb, ADMIN, "ADMIN");
+      seedAccess(ddb, SUPER, "SUPER_ADMIN");
+      seedAccess(ddb, ANKIT);
+      const result = await notifyBlockerResolved({
+        ddb,
+        tableName: WORK,
+        accessTable: ACCESS,
+        task: {
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          title: "Create SEO report",
+        },
+        assignmentEmail: ANKIT,
+        remark: "Waiting for client credentials",
+        resolvedAt: "2026-09-25T12:00:00.000Z",
+        resolvedBy: ADMIN,
+        resolvedByName: "Admin User",
+      });
+      assert.strictEqual(result.skipped, false);
+      assert.strictEqual(result.recipient, ANKIT);
+      const inApp = notifyItems(ddb, TYPE_BLOCKER_RESOLVED);
+      assert.strictEqual(inApp.length, 1);
+      assert.strictEqual(inApp[0].email, ANKIT);
+      assert.ok(inApp[0].path.includes(`/work/${TASK_ID}`));
+      assert.ok(!notifyItems(ddb, TYPE_BLOCKER_REPORTED).length);
+      assert.deepStrictEqual(
+        mails.map((mail) => mail.to),
+        [ANKIT]
+      );
+      assert.strictEqual(mails[0].subject, "Blocker Resolved: Create SEO report");
+      assert.ok(mails[0].html.includes(`/work/${TASK_ID}`));
+    });
+  });
+
+  await test("resolved notify does not duplicate for the same resolution", async () => {
+    await withMail(async (mails) => {
+      const ddb = createMemoryDdb();
+      seedOpenProject(ddb);
+      seedAccess(ddb, ADMIN, "ADMIN");
+      seedAccess(ddb, ANKIT);
+      const args = {
+        ddb,
+        tableName: WORK,
+        accessTable: ACCESS,
+        task: { taskId: TASK_ID, projectId: PROJECT_ID, title: "Task" },
+        assignmentEmail: ANKIT,
+        remark: "Stuck",
+        resolvedAt: "2026-09-25T12:00:00.000Z",
+        resolvedBy: ADMIN,
+      };
+      await notifyBlockerResolved(args);
+      const firstInApp = notifyItems(ddb, TYPE_BLOCKER_RESOLVED).length;
+      const firstMails = mails.length;
+      assert.ok(firstInApp > 0);
+      assert.ok(firstMails > 0);
+      await notifyBlockerResolved(args);
+      assert.strictEqual(notifyItems(ddb, TYPE_BLOCKER_RESOLVED).length, firstInApp);
+      assert.strictEqual(mails.length, firstMails);
+      assert.strictEqual(
+        blockerResolvedNotifyKey(TASK_ID, ANKIT, "2026-09-25T12:00:00.000Z"),
+        `${TASK_ID}#${ANKIT}#2026-09-25T12:00:00.000Z#blocker-resolved`
+      );
+      assert.strictEqual(
+        blockerResolvedEmailKey(TASK_ID, ANKIT, "2026-09-25T12:00:00.000Z"),
+        `${TASK_ID}#${ANKIT}#2026-09-25T12:00:00.000Z#blocker-resolved`
+      );
+    });
+  });
+
+  await test("invalid resolved notify is skipped", async () => {
+    const result = await notifyBlockerResolved({
+      ddb: null,
+      task: { taskId: TASK_ID },
+      assignmentEmail: ANKIT,
+    });
+    assert.strictEqual(result.skipped, true);
+    assert.strictEqual(result.reason, "INVALID_INPUT");
   });
 }
 

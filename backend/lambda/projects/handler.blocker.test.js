@@ -190,6 +190,20 @@ function seedTask(ddb, extra = {}) {
   return item;
 }
 
+function seedProof(ddb, taskId = TASK_ID, uploadedBy = PRIYA) {
+  ddb.seed(WORK, {
+    PK: `TASK#${taskId}`,
+    SK: "ATTACHMENT#att-proof-1",
+    attachmentId: "att-proof-1",
+    taskId,
+    fileName: "brief.pdf",
+    contentType: "application/pdf",
+    s3Key: `tasks/${taskId}/brief.pdf`,
+    uploadedBy,
+    uploadedAt: "2026-09-20T10:00:00.000Z",
+  });
+}
+
 function setup(extra = {}) {
   const ddb = createMemoryDdb();
   seedProject(ddb, PROJECT_ID);
@@ -730,6 +744,7 @@ async function run() {
 
   await test("safe assignment write preserves blocker fields", async () => {
     const { ddb } = setup({ assignees: [PRIYA], status: "IN_PROGRESS" });
+    seedProof(ddb);
     assert.strictEqual(
       parse(await handler(reportEvent(PRIYA, { remark: "Need legal" }))).statusCode,
       200
@@ -799,23 +814,99 @@ async function run() {
     assert.ok(notified.every((n) => n.assignmentEmail === ANKIT));
   });
 
-  await test("resolve does not send TASK_BLOCKER_REPORTED or BLOCKER_RESOLVED notify", async () => {
-    const { ddb } = setup();
-    assert.strictEqual(
-      parse(await handler(reportEvent(PRIYA, { remark: "Need legal" }))).statusCode,
-      200
-    );
-    const afterReport = notifyItems(ddb).length;
-    assert.ok(afterReport > 0);
-    assert.strictEqual(
-      parse(await handler(resolveEvent(ADMIN, { assignmentEmail: PRIYA }))).statusCode,
-      200
-    );
-    assert.strictEqual(notifyItems(ddb).length, afterReport);
-    assert.strictEqual(
-      notifyItems(ddb, "TASK_BLOCKER_RESOLVED").length,
-      0
-    );
+  await test("admin resolve notifies the assignment employee", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup();
+      assert.strictEqual(
+        parse(await handler(reportEvent(PRIYA, { remark: "Need legal" }))).statusCode,
+        200
+      );
+      const reportedInApp = notifyItems(ddb).length;
+      const reportedMails = mails.length;
+      assert.ok(reportedInApp > 0);
+      assert.ok(reportedMails > 0);
+      assert.ok(!mails.some((mail) => mail.to === PRIYA));
+      mails.length = 0;
+      const res = parse(
+        await handler(resolveEvent(ADMIN, { assignmentEmail: PRIYA }))
+      );
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(assignmentItem(ddb, PRIYA).blockerStatus, "RESOLVED");
+      assert.strictEqual(
+        activityItems(ddb).filter((a) => a.action === "BLOCKER_RESOLVED").length,
+        1
+      );
+      assert.strictEqual(notifyItems(ddb).length, reportedInApp);
+      const resolvedInApp = notifyItems(ddb, "TASK_BLOCKER_RESOLVED");
+      assert.strictEqual(resolvedInApp.length, 1);
+      assert.strictEqual(resolvedInApp[0].email, PRIYA);
+      assert.ok(resolvedInApp[0].path.includes(`/work/${TASK_ID}`));
+      assert.ok(!resolvedInApp.some((n) => n.email === ADMIN));
+      assert.ok(!resolvedInApp.some((n) => n.email === SUPER));
+      const resolvedMails = mails.filter((mail) =>
+        String(mail.subject || "").startsWith("Blocker Resolved:")
+      );
+      assert.strictEqual(resolvedMails.length, 1);
+      assert.strictEqual(resolvedMails[0].to, PRIYA);
+      assert.ok(resolvedMails[0].html.includes("Banner update"));
+      assert.ok(resolvedMails[0].html.includes("Need legal"));
+      assert.ok(resolvedMails[0].html.includes("The blocker has been resolved."));
+      assert.ok(resolvedMails[0].html.includes(`/work/${TASK_ID}`));
+      assert.ok(!resolvedMails[0].html.includes("/admin/blockers"));
+    });
+  });
+
+  await test("blocker resolution failure does not notify", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup();
+      assert.strictEqual(
+        parse(await handler(reportEvent(PRIYA, { remark: "Need legal" }))).statusCode,
+        200
+      );
+      mails.length = 0;
+      const res = parse(await handler(resolveEvent(ADMIN, {})));
+      assert.strictEqual(res.statusCode, 400);
+      assert.strictEqual(assignmentItem(ddb, PRIYA).blockerStatus, "ACTIVE");
+      assert.strictEqual(
+        activityItems(ddb).filter((a) => a.action === "BLOCKER_RESOLVED").length,
+        0
+      );
+      assert.strictEqual(notifyItems(ddb, "TASK_BLOCKER_RESOLVED").length, 0);
+      assert.strictEqual(
+        mails.filter((mail) => /Blocker Resolved:/.test(mail.subject)).length,
+        0
+      );
+    });
+  });
+
+  await test("resolve does not duplicate employee notification", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup();
+      assert.strictEqual(
+        parse(await handler(reportEvent(PRIYA, { remark: "Need legal" }))).statusCode,
+        200
+      );
+      mails.length = 0;
+      assert.strictEqual(
+        parse(await handler(resolveEvent(ADMIN, { assignmentEmail: PRIYA }))).statusCode,
+        200
+      );
+      const firstInApp = notifyItems(ddb, "TASK_BLOCKER_RESOLVED").length;
+      const firstMails = mails.filter((mail) =>
+        /Blocker Resolved:/.test(mail.subject)
+      ).length;
+      assert.strictEqual(firstInApp, 1);
+      assert.strictEqual(firstMails, 1);
+      const second = parse(
+        await handler(resolveEvent(ADMIN, { assignmentEmail: PRIYA }))
+      );
+      assert.strictEqual(second.statusCode, 400);
+      assert.strictEqual(notifyItems(ddb, "TASK_BLOCKER_RESOLVED").length, firstInApp);
+      assert.strictEqual(
+        mails.filter((mail) => /Blocker Resolved:/.test(mail.subject)).length,
+        firstMails
+      );
+    });
   });
 
   await test("task status enum does not include BLOCKED", async () => {

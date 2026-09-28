@@ -3,6 +3,7 @@ process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.AWS_REGION = "ap-south-1";
 process.env.WORK_TABLE = "work-table";
 process.env.USER_ACCESS_TABLE = "access-table";
+process.env.ATTENDANCE_TABLE = "attendance-table";
 
 const assert = require("assert");
 const email = require("../common/email");
@@ -11,12 +12,15 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   TransactWriteCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { handler, setClientsForTests } = require("./handler");
+const { ASSIGNED_SHIFT_FIT } = require("./assignedShiftFit");
 
 const WORK = process.env.WORK_TABLE;
 const ACCESS = process.env.USER_ACCESS_TABLE;
+const ATTENDANCE = process.env.ATTENDANCE_TABLE;
 const PROJECT_ID = "proj-review-1";
 const TASK_ID = "task-review-1";
 const ADMIN = "admin@mydgv.com";
@@ -77,6 +81,14 @@ function createMemoryDdb() {
           .map((row) => ({ ...row.Item }));
         return { Items: found };
       }
+      if (command instanceof ScanCommand) {
+        const { TableName } = command.input;
+        return {
+          Items: items
+            .filter((row) => row.TableName === TableName)
+            .map((row) => ({ ...row.Item })),
+        };
+      }
       if (command instanceof TransactWriteCommand) {
         for (const op of command.input.TransactItems || []) {
           if (op.Put) this.seed(op.Put.TableName, op.Put.Item);
@@ -98,16 +110,27 @@ function seedAccess(ddb, email, role = "EMPLOYEE", status = "ACTIVE") {
   });
 }
 
-function seedShift(ddb, email) {
+function seedShift(ddb, email, extra = {}) {
   ddb.seed(WORK, {
     PK: `USER#${email}`,
     SK: "SHIFT#CURRENT",
-    shiftId: "morning",
-    name: "Morning Shift",
-    startTime: "11:00",
-    endTime: "20:00",
-    graceMinutes: 15,
-    crossesMidnight: false,
+    shiftId: extra.shiftId || "morning",
+    name: extra.name || "Morning Shift",
+    startTime: extra.startTime || "11:00",
+    endTime: extra.endTime || "20:00",
+    graceMinutes: extra.graceMinutes ?? 15,
+    crossesMidnight: extra.crossesMidnight === true,
+    ...extra,
+  });
+}
+
+function seedAttendance(ddb, email, date, extra = {}) {
+  ddb.seed(ATTENDANCE, {
+    PK: email,
+    SK: date,
+    email,
+    date,
+    ...extra,
   });
 }
 
@@ -115,6 +138,7 @@ function setup({
   assignees = [PRIYA],
   assignmentStatuses,
   assignmentStatus = "REVIEW",
+  seedShifts = true,
 } = {}) {
   const ddb = createMemoryDdb();
   ddb.seed(WORK, {
@@ -129,9 +153,11 @@ function setup({
   seedAccess(ddb, RAHUL);
   seedAccess(ddb, ANKIT);
   seedAccess(ddb, OUTSIDER);
-  seedShift(ddb, PRIYA);
-  seedShift(ddb, RAHUL);
-  seedShift(ddb, ANKIT);
+  if (seedShifts) {
+    seedShift(ddb, PRIYA);
+    seedShift(ddb, RAHUL);
+    seedShift(ddb, ANKIT);
+  }
   const item = {
     PK: "ENTITY#TASK",
     SK: `TASK#${TASK_ID}`,
@@ -472,6 +498,124 @@ async function run() {
     assert.strictEqual(res.statusCode, 201);
     assert.strictEqual(entityTask(ddb, res.body.taskId).description, "Revised banner copy.");
     assert.strictEqual(entityTask(ddb).description, "Original description");
+  });
+
+  await test("valid multi-day afternoon reassign succeeds", async () => {
+    const { ddb } = setup();
+    seedShift(ddb, PRIYA, {
+      shiftId: "afternoon",
+      name: "Afternoon Shift",
+      startTime: "14:00",
+      endTime: "19:00",
+    });
+    const res = parse(
+      await handler(
+        eventFor(
+          "POST",
+          reassignBody({
+            startDate: "2026-09-28T16:00:00+05:30",
+            dueDate: "2026-09-30T19:00:00+05:30",
+          })
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 201);
+    assert.ok(res.body.taskId);
+    assert.strictEqual(res.body.startDate, "2026-09-28T16:00:00+05:30");
+    assert.strictEqual(res.body.dueDate, "2026-09-30T19:00:00+05:30");
+    assert.ok(assignmentItem(ddb, PRIYA, res.body.taskId));
+  });
+
+  await test("invalid multi-day afternoon reassign is SHIFT_CONFLICT", async () => {
+    const { ddb } = setup();
+    seedShift(ddb, PRIYA, {
+      shiftId: "afternoon",
+      name: "Afternoon Shift",
+      startTime: "14:00",
+      endTime: "19:00",
+    });
+    const res = parse(
+      await handler(
+        eventFor(
+          "POST",
+          reassignBody({
+            startDate: "2026-09-28T11:00:00+05:30",
+            dueDate: "2026-09-30T20:00:00+05:30",
+          })
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, ASSIGNED_SHIFT_FIT.SHIFT_CONFLICT);
+    assert.strictEqual(createdFollowUps(ddb).length, 0);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+  });
+
+  await test("Week Off reassign postpones then succeeds", async () => {
+    const { ddb } = setup();
+    seedShift(ddb, PRIYA, {
+      shiftId: "afternoon",
+      name: "Afternoon Shift",
+      startTime: "14:00",
+      endTime: "19:00",
+    });
+    seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Week Off" });
+    const res = parse(
+      await handler(
+        eventFor(
+          "POST",
+          reassignBody({
+            startDate: "2026-09-28T16:00:00+05:30",
+            dueDate: "2026-09-30T19:00:00+05:30",
+          })
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 201);
+    assert.strictEqual(Date.parse(res.body.startDate), Date.parse("2026-09-29T16:00:00+05:30"));
+    assert.strictEqual(Date.parse(res.body.dueDate), Date.parse("2026-10-01T19:00:00+05:30"));
+  });
+
+  await test("Leave reassign postpones then succeeds", async () => {
+    const { ddb } = setup();
+    seedShift(ddb, PRIYA, {
+      shiftId: "afternoon",
+      name: "Afternoon Shift",
+      startTime: "14:00",
+      endTime: "19:00",
+    });
+    seedAttendance(ddb, PRIYA, "2026-09-28", { status: "Leave" });
+    const res = parse(
+      await handler(
+        eventFor(
+          "POST",
+          reassignBody({
+            startDate: "2026-09-28T16:00:00+05:30",
+            dueDate: "2026-09-30T19:00:00+05:30",
+          })
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 201);
+    assert.strictEqual(Date.parse(res.body.startDate), Date.parse("2026-09-29T16:00:00+05:30"));
+  });
+
+  await test("NO_SHIFT reassign is rejected", async () => {
+    const { ddb } = setup({ seedShifts: false });
+    const res = parse(
+      await handler(
+        eventFor(
+          "POST",
+          reassignBody({
+            startDate: "2026-09-28T16:00:00+05:30",
+            dueDate: "2026-09-28T18:00:00+05:30",
+          })
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, ASSIGNED_SHIFT_FIT.NO_SHIFT);
+    assert.strictEqual(createdFollowUps(ddb).length, 0);
   });
 }
 

@@ -13,6 +13,8 @@ const {
 const EMAIL = "doer@mydgv.com";
 const DATE = "2026-09-23";
 const NEXT = "2026-09-24";
+const SEP28 = "2026-09-28";
+const SEP30 = "2026-09-30";
 
 function iso(dateKey, hhmm) {
   return companyDateTimeIso(dateKey, hhmm);
@@ -52,6 +54,15 @@ const overnight = {
   endTime: "06:00",
   graceMinutes: 10,
   crossesMidnight: true,
+};
+
+const ashazAfternoon = {
+  shiftId: "afternoon",
+  name: "Afternoon Shift",
+  startTime: "14:00",
+  endTime: "19:00",
+  graceMinutes: 0,
+  crossesMidnight: false,
 };
 
 function fit(assignment, startIso, endIso, evaluatedAt) {
@@ -101,6 +112,32 @@ assertFit(overnight, iso(NEXT, "05:00"), iso(NEXT, "06:00"));
 assertConflict(overnight, iso(NEXT, "05:00"), iso(NEXT, "07:00"));
 assertConflict(overnight, iso(DATE, "21:00"), iso(DATE, "23:00"));
 assertFit(overnight, iso(DATE, "22:00"), iso(NEXT, "06:00"));
+
+// same-day Afternoon 14:00–19:00
+assertFit(ashazAfternoon, iso(SEP28, "16:00"), iso(SEP28, "18:00"));
+assertConflict(ashazAfternoon, iso(SEP28, "13:00"), iso(SEP28, "18:00"));
+assertConflict(ashazAfternoon, iso(SEP28, "18:00"), iso(SEP28, "20:00"));
+
+// multi-day Afternoon 14:00–19:00: start-day, middle-day shift, due-day
+assertFit(ashazAfternoon, iso(SEP28, "16:00"), iso(SEP30, "19:00"));
+assertFit(ashazAfternoon, iso(SEP28, "16:00"), iso(SEP30, "18:00"));
+assertConflict(ashazAfternoon, iso(SEP28, "11:00"), iso(SEP30, "19:00"));
+assertConflict(ashazAfternoon, iso(SEP28, "16:00"), iso(SEP30, "20:00"));
+assertConflict(ashazAfternoon, iso(SEP28, "11:00"), iso(SEP30, "20:00"));
+
+// multi-day recurring morning: start and due each inside that day's window
+assertFit(morning, iso(DATE, "11:00"), iso(NEXT, "20:00"));
+assertConflict(morning, iso(DATE, "11:00"), iso(NEXT, "21:00"));
+assertConflict(morning, iso(DATE, "10:00"), iso(NEXT, "20:00"));
+assert.strictEqual(
+  evaluateAssignedShiftFit({
+    assignment: morning,
+    taskStart: iso(DATE, "11:00"),
+    taskEnd: iso(NEXT, "20:00"),
+    assignmentState: "ASSIGNED",
+  }).result,
+  ASSIGNED_SHIFT_FIT.FIT
+);
 
 {
   const at0100 = iso(NEXT, "01:00");
