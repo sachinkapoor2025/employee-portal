@@ -106,14 +106,7 @@ export default function Dashboard() {
         />
       </div>
 
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          flexWrap: "wrap",
-          marginBottom: 8,
-        }}
-      >
+      <div className="dgv-dashboard-shortcuts">
         <Button onClick={() => navigate("/attendance")}>
           Mark Attendance
         </Button>
@@ -123,7 +116,11 @@ export default function Dashboard() {
         <Button variant="outline" onClick={() => navigate("/leave")}>
           Apply Leave
         </Button>
-        <Button variant="outline" onClick={() => navigate("/software-center")}>
+        <Button
+          className="dgv-hide-phone"
+          variant="outline"
+          onClick={() => navigate("/software-center")}
+        >
           Software Center
         </Button>
       </div>
@@ -153,7 +150,7 @@ export default function Dashboard() {
               }}
             >
               <div>
-                <div style={{ fontWeight: 600 }}>{t.title}</div>
+                <div className="dgv-wrap-text" style={{ fontWeight: 600 }}>{t.title}</div>
                 <div
                   style={{
                     marginTop: 8,

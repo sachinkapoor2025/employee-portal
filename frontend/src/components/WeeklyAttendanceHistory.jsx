@@ -318,7 +318,7 @@ export default function WeeklyAttendanceHistory({
           {error}
         </div>
       ) : (
-        <div className="dgv-table-wrap">
+        <div className="dgv-table-wrap dgv-table-wrap--stack">
           <table className="dgv-table dgv-weekly-attendance__table">
             <thead>
               <tr>
@@ -339,7 +339,7 @@ export default function WeeklyAttendanceHistory({
                       row.isToday ? "dgv-weekly-attendance__today" : undefined
                     }
                   >
-                    <td>
+                    <td data-label="Day">
                       <strong>{row.dayName}</strong>
                       {row.isToday ? (
                         <span className="dgv-weekly-attendance__today-tag">
@@ -347,8 +347,8 @@ export default function WeeklyAttendanceHistory({
                         </span>
                       ) : null}
                     </td>
-                    <td>{formatDisplayDate(row.dateKey)}</td>
-                    <td>
+                    <td data-label="Date">{formatDisplayDate(row.dateKey)}</td>
+                    <td data-label="Status">
                       <span
                         className={
                           STATUS_CLASS[status] || STATUS_CLASS["Not Marked"]
@@ -357,8 +357,8 @@ export default function WeeklyAttendanceHistory({
                         {status}
                       </span>
                     </td>
-                    <td>{workingTypeLabel(row.record)}</td>
-                    <td>{shiftLabelOf(row.record, assignedShift)}</td>
+                    <td data-label="Working Type">{workingTypeLabel(row.record)}</td>
+                    <td data-label="Shift">{shiftLabelOf(row.record, assignedShift)}</td>
                   </tr>
                 );
               })}

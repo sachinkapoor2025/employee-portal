@@ -67,7 +67,7 @@ function MeetingCard({ meeting, onView, onJoin, joiningId }) {
       ) : (
         <div style={{ height: 12 }} />
       )}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <div className="dgv-meeting-actions">
         <Button variant="ghost" onClick={() => onView(meeting)}>
           View Details
         </Button>

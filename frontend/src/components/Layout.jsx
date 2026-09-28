@@ -492,7 +492,7 @@ export default function Layout({ children }) {
           </label>
 
           <div className="dgv-navbar__actions">
-            <div style={{ position: "relative" }} ref={notifyWrapRef}>
+            <div className="dgv-notify-wrap" ref={notifyWrapRef}>
               <button
                 type="button"
                 className="dgv-icon-btn"

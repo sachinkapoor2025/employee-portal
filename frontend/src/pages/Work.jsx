@@ -192,7 +192,7 @@ export default function Work() {
             >
               <h3 className="dgv-task-card__title">{task.title}</h3>
               {task.description ? (
-                <p style={{ color: colors.textMuted, fontSize: 14, margin: "8px 0 0" }}>
+                <p className="dgv-wrap-text" style={{ color: colors.textMuted, fontSize: 14, margin: "8px 0 0" }}>
                   {task.description}
                 </p>
               ) : null}

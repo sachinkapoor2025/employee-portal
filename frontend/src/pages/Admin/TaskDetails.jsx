@@ -848,7 +848,10 @@ export default function TaskDetails() {
 
   return (
     <Layout>
-      <div style={{ ...pageCard, maxWidth: 760 }}>
+      <div
+        className={`dgv-task-details${employeeView ? " dgv-task-details--employee" : ""}`}
+        style={{ ...pageCard, maxWidth: 760 }}
+      >
         {error ? (
           <div
             className="dgv-alert dgv-alert--error"
@@ -906,7 +909,7 @@ export default function TaskDetails() {
           >
             <div style={{ minWidth: 0, flex: "1 1 180px" }}>
               <Label>TASK NAME</Label>
-              <h3 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
+              <h3 className="dgv-task-details__title" style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
                 {task.title}
               </h3>
             </div>
@@ -1892,7 +1895,7 @@ function TaskAttachmentsSection({
                 }}
               >
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, wordBreak: "break-word" }}>
+                  <div className="dgv-file-name" style={{ fontWeight: 600, fontSize: 14 }}>
                     {item.fileName || "Attachment"}
                   </div>
                   <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
@@ -1949,6 +1952,7 @@ function EmployeeTaskBody({
       <section style={{ ...sectionBox, marginTop: 14 }}>
         <h3 style={sectionTitle}>TASK DESCRIPTION</h3>
         <p
+          className="dgv-wrap-text"
           style={{
             margin: 0,
             whiteSpace: "pre-wrap",

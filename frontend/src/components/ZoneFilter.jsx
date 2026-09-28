@@ -29,17 +29,9 @@ export default function ZoneFilter({
   ).toUpperCase();
   return (
     <div
+      className="dgv-zone-filter"
       role="tablist"
       aria-label="Task zone filter"
-      style={{
-        display: "flex",
-        gap: 8,
-        flexWrap: "nowrap",
-        overflowX: "auto",
-        paddingBottom: 4,
-        margin: "8px 0 4px",
-        WebkitOverflowScrolling: "touch",
-      }}
     >
       {options.map((opt) => {
         const active = selected === opt.value;
@@ -54,22 +46,12 @@ export default function ZoneFilter({
             type="button"
             role="tab"
             aria-selected={active}
+            className="dgv-zone-filter__chip"
             onClick={() => onChange(opt.value)}
             style={{
-              flex: "0 0 auto",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              minHeight: 40,
-              padding: "8px 12px",
-              borderRadius: 8,
               border: `1px solid ${active ? "transparent" : colors.border}`,
               background: active ? "var(--dgv-accent-soft)" : "var(--dgv-surface-solid)",
               color: active ? colors.text : colors.textSecondary || colors.text,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
             }}
           >
             {opt.value !== "ALL" ? (

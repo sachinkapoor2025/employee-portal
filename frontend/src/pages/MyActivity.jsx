@@ -85,6 +85,7 @@ export default function MyActivity() {
           <div>
             <h2 style={{ ...pageTitle, marginBottom: 4 }}>My Activity</h2>
             <p
+              className="dgv-wrap-text"
               style={{ ...pageSubtitle, marginBottom: 0 }}
               aria-label="Selected week"
             >

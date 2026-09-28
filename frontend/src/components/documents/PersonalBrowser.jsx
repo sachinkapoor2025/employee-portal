@@ -125,14 +125,13 @@ function IconAction({ label, onClick, children }) {
   return (
     <button
       type="button"
-      className="dgv-icon-btn"
+      className="dgv-icon-btn dgv-icon-btn--compact"
       title={label}
       aria-label={label}
       onClick={(e) => {
         e.stopPropagation();
         onClick?.(e);
       }}
-      style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }}
     >
       {children}
     </button>
@@ -533,7 +532,7 @@ export default function PersonalBrowser() {
             </div>
           )}
         </div>
-        <div style={{ fontWeight: 600, wordBreak: "break-word" }}>{item.name}</div>
+        <div style={{ fontWeight: 600 }} className="dgv-file-name">{item.name}</div>
       </Card>
     );
   };
@@ -643,10 +642,9 @@ export default function PersonalBrowser() {
                     fontWeight: 600,
                     fontSize: 12,
                     padding: 0,
-                    maxWidth: 180,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    maxWidth: "none",
+                    overflowWrap: "anywhere",
+                    whiteSpace: "normal",
                   }}
                 >
                   {step.name}
@@ -655,7 +653,7 @@ export default function PersonalBrowser() {
             ))}
           </nav>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div className="dgv-docs-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!tooDeep ? (
             <Button variant="outline" onClick={openCreateFolder}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -702,7 +700,7 @@ export default function PersonalBrowser() {
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                 <FileText size={18} color="var(--dgv-text-muted)" />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, wordBreak: "break-word" }}>{file.name}</div>
+                  <div className="dgv-file-name" style={{ fontWeight: 600 }}>{file.name}</div>
                   <div style={{ fontSize: 12, color: colors.textMuted }}>
                     {[formatSize(file.size), formatWhen(file.uploadedAt), file.description]
                       .filter(Boolean)

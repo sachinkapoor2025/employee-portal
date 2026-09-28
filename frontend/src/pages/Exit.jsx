@@ -6,7 +6,6 @@ import {
   pageTitle,
   formLabel,
   formInput,
-  buttonPrimary,
   colors,
 } from "../theme";
 import { fetchMyResignations, submitResignation as submitResignationApi } from "../services/api";
@@ -119,13 +118,11 @@ export default function Exit() {
         />
 
         <button
+          type="button"
+          className="dgv-exit-btn"
           onClick={submitResignation}
           disabled={loading}
-          style={{
-            ...buttonPrimary,
-            background: "var(--dgv-danger)",
-            marginTop: 8,
-          }}
+          style={{ marginTop: 8 }}
         >
           {loading ? "Submitting..." : "Submit Resignation"}
         </button>
@@ -143,7 +140,7 @@ export default function Exit() {
             No resignation has been submitted yet.
           </p>
         ) : (
-          <div className="dgv-table-wrap">
+          <div className="dgv-table-wrap dgv-table-wrap--stack">
             <table className="dgv-table">
               <thead>
                 <tr>
@@ -156,10 +153,10 @@ export default function Exit() {
               <tbody>
                 {history.map((row) => (
                   <tr key={row.resignationId || row.createdAt}>
-                    <td>{formatDate(row.createdAt)}</td>
-                    <td>{formatDate(row.lastWorkingDay)}</td>
-                    <td>{row.reason || "—"}</td>
-                    <td>
+                    <td data-label="Submitted">{formatDate(row.createdAt)}</td>
+                    <td data-label="Last Working Day">{formatDate(row.lastWorkingDay)}</td>
+                    <td data-label="Reason" className="dgv-wrap-text">{row.reason || "—"}</td>
+                    <td data-label="Status">
                       <span className={statusClass(row.status)}>
                         {row.status || "SUBMITTED"}
                       </span>

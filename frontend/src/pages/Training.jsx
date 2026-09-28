@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import { fetchUserTrainings, fetchTrainingVideoUrl } from "../services/api";
-import { pageCard, pageTitle, colors, buttonPrimary } from "../theme";
+import { pageCard, pageTitle, colors } from "../theme";
 
 function normalizeLevel(level = "") {
   const value = level.toUpperCase();
@@ -147,15 +147,14 @@ export default function Training() {
                       transition: "transform 0.3s ease, box-shadow 0.3s ease",
                     }}
                   >
-                    <div style={{ fontWeight: 600 }}>{video.title}</div>
+                    <div className="dgv-wrap-text" style={{ fontWeight: 600 }}>{video.title}</div>
                     <div style={{ color: colors.textMuted }}>Status: {video.status}</div>
 
                     <button
+                      type="button"
+                      className="dgv-btn dgv-btn--primary"
                       onClick={() => handleStart(video)}
-                      style={{
-                        ...buttonPrimary,
-                        marginTop: 8,
-                      }}
+                      style={{ marginTop: 8 }}
                     >
                       {video.status === "Completed" ? "Watch Again" : "Start"}
                     </button>
@@ -168,28 +167,13 @@ export default function Training() {
 
       {/* VIDEO MODAL */}
       {showModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.85)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 9999,
-          }}
-        >
-          <div style={{ width: "90%", maxWidth: 1000 }}>
+        <div className="dgv-training-overlay">
+          <div className="dgv-training-overlay__panel">
             <button
+              type="button"
+              className="dgv-training-overlay__close"
               onClick={closeModal}
-              style={{
-                float: "right",
-                background: "transparent",
-                color: "#fff",
-                fontSize: 28,
-                border: "none",
-                cursor: "pointer",
-              }}
+              aria-label="Close video"
             >
               ✕
             </button>
@@ -200,13 +184,13 @@ export default function Training() {
               controlsList="nodownload"
               onContextMenu={(e) => e.preventDefault()}
               onEnded={() => setVideoCompleted(true)}
-              style={{ width: "100%", borderRadius: 8 }}
             >
               <source src={videoUrl} type="video/mp4" />
             </video>
 
             <div style={{ textAlign: "right", marginTop: 10 }}>
               <button
+                type="button"
                 disabled={!videoCompleted}
                 onClick={handleMarkComplete}
                 className="dgv-btn dgv-btn--success"

@@ -93,8 +93,6 @@ function canCancelLeave(row) {
 }
 
 const choiceCard = (active) => ({
-  flex: 1,
-  minWidth: 220,
   textAlign: "left",
   padding: "18px 16px",
   borderRadius: 12,
@@ -238,12 +236,12 @@ export default function Leave() {
           Choose Week Off for a scheduled day off, or Apply for Leave when approval is required.
         </p>
 
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-          <button type="button" style={choiceCard(mode === "planned")} onClick={() => { setMode("planned"); setError(""); setMsg(""); }}>
+        <div className="dgv-leave-choice">
+          <button type="button" className="dgv-leave-choice__btn" style={choiceCard(mode === "planned")} onClick={() => { setMode("planned"); setError(""); setMsg(""); }}>
             <div style={{ fontWeight: 800, fontSize: 16 }}>WEEK OFF</div>
             <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>No approval needed</div>
           </button>
-          <button type="button" style={choiceCard(mode === "leave")} onClick={() => { setMode("leave"); setError(""); setMsg(""); }}>
+          <button type="button" className="dgv-leave-choice__btn" style={choiceCard(mode === "leave")} onClick={() => { setMode("leave"); setError(""); setMsg(""); }}>
             <div style={{ fontWeight: 800, fontSize: 16 }}>APPLY FOR LEAVE</div>
             <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>Approval required</div>
           </button>
@@ -257,7 +255,7 @@ export default function Leave() {
         {msg ? <div style={alertSuccess}>{msg}</div> : null}
 
         {mode === "planned" ? (
-          <section style={sectionBox}>
+          <section className="dgv-leave-form" style={sectionBox}>
             <h3 style={{ marginTop: 0 }}>Week Off</h3>
             <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 0 }}>
               Submit at least 1 day before the date. Same-day / few hours before is allowed only with an emergency reason.
@@ -297,7 +295,7 @@ export default function Leave() {
         ) : null}
 
         {mode === "leave" ? (
-          <section style={sectionBox}>
+          <section className="dgv-leave-form" style={sectionBox}>
             <h3 style={{ marginTop: 0 }}>Leave Request</h3>
             <label style={formLabel}>Leave Type</label>
             <select
@@ -359,7 +357,7 @@ export default function Leave() {
         ) : null}
 
         <h3 style={{ marginTop: 28 }}>My Requests</h3>
-        <div className="dgv-table-wrap">
+        <div className="dgv-table-wrap dgv-table-wrap--stack dgv-leave-history">
           <table className="dgv-table">
             <thead>
               <tr>
@@ -378,33 +376,32 @@ export default function Leave() {
             <tbody>
               {rows.map((l) => (
                 <tr key={l.leaveId}>
-                  <td>{typeLabel(l)}</td>
-                  <td>{formatDate(l.fromDate || l.startDate)}</td>
-                  <td>{formatDate(l.toDate || l.endDate)}</td>
-                  <td>{l.days || daysInclusive(l.fromDate, l.toDate) || "—"}</td>
-                  <td style={{ maxWidth: 180, wordBreak: "break-word" }}>
+                  <td data-label="Type">{typeLabel(l)}</td>
+                  <td data-label="Start Date">{formatDate(l.fromDate || l.startDate)}</td>
+                  <td data-label="End Date">{formatDate(l.toDate || l.endDate)}</td>
+                  <td data-label="Days">{l.days || daysInclusive(l.fromDate, l.toDate) || "—"}</td>
+                  <td data-label="Reason" className="dgv-wrap-text">
                     {l.reason || l.emergencyReason || "—"}
                   </td>
-                  <td>{formatDateTime(l.submittedAt || l.createdAt)}</td>
-                  <td>
+                  <td data-label="Submitted">{formatDateTime(l.submittedAt || l.createdAt)}</td>
+                  <td data-label="Status">
                     <span className={statusClass(l)}>{displayStatus(l)}</span>
                   </td>
-                  <td>
+                  <td data-label="Approved / Rejected By">
                     {l.status === "PLANNED_OFF"
                       ? "No approval required"
                       : l.approvedBy || l.rejectedBy || l.reviewedBy || "—"}
                   </td>
-                  <td>
+                  <td data-label="Action Date">
                     {formatDateTime(
                       l.cancelledAt || l.approvedAt || l.rejectedAt || l.reviewedAt
                     )}
                   </td>
-                  <td>
+                  <td data-label="Action">
                     {canCancelLeave(l) ? (
                       <button
                         type="button"
                         className="dgv-btn dgv-btn--outline"
-                        style={{ padding: "4px 12px", fontSize: 13 }}
                         disabled={cancellingId === l.leaveId}
                         onClick={() => cancelRequest(l)}
                       >
