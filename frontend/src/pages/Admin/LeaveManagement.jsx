@@ -201,6 +201,8 @@ export default function LeaveManagement() {
 
   useEffect(() => {
     load();
+    // Mount-only: load is recreated each render and must not re-fetch in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
