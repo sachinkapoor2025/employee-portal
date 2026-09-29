@@ -46,6 +46,7 @@ jest.mock("../../services/api", () => ({
   fetchAdminActivity: jest.fn(),
   fetchEmployeeShift: jest.fn(),
   fetchTaskActivity: jest.fn(),
+  fetchWeekOffState: jest.fn(),
 }));
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -60,6 +61,7 @@ import {
   fetchAdminActivity,
   fetchEmployeeShift,
   fetchTaskActivity,
+  fetchWeekOffState,
 } from "../../services/api";
 import {
   addDaysToKey,
@@ -318,6 +320,15 @@ beforeEach(() => {
   fetchTasks.mockResolvedValue([SOLO, MULTI, UNRELATED]);
   fetchEmployeeShift.mockResolvedValue({ shift: CURRENT_SHIFT });
   fetchTaskActivity.mockResolvedValue([]);
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: currentWeekStartKey(),
+    weekEnd: addDaysToKey(currentWeekStartKey(), 6),
+    weekOffEntitlement: 1,
+    weekOffUsed: 0,
+    weekOffAvailable: 1,
+    leaveUsed: 0,
+    balance: 1,
+  });
 });
 
 test("tracked employee first assignee task is displayed", async () => {
@@ -536,6 +547,39 @@ test("Activity tab Monday-Sunday week is displayed", async () => {
   expect(screen.getByLabelText("Selected week")).toHaveTextContent(
     formatWeekRange(currentWeekStartKey())
   );
+});
+
+test("Admin employee activity TIME OFF shows the same weekly data", async () => {
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: currentWeekStartKey(),
+    weekEnd: addDaysToKey(currentWeekStartKey(), 6),
+    weekOffEntitlement: 1,
+    weekOffUsed: 1,
+    weekOffAvailable: 0,
+    leaveUsed: 2,
+    balance: -2,
+  });
+  await renderActivityLoaded();
+  expect(screen.getByRole("heading", { name: "TIME OFF" })).toBeInTheDocument();
+  expect(cardValue("Week Off Entitlement")).toBe("1");
+  expect(cardValue("Week Off Used")).toBe("1/1");
+  expect(cardValue("Leave Used")).toBe("2");
+  expect(cardValue("Balance")).toBe("-2");
+});
+
+test("Admin TIME OFF pending and cancelled leave do not reduce leave used", async () => {
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: currentWeekStartKey(),
+    weekEnd: addDaysToKey(currentWeekStartKey(), 6),
+    weekOffEntitlement: 1,
+    weekOffUsed: 0,
+    weekOffAvailable: 1,
+    leaveUsed: 0,
+    balance: 1,
+  });
+  await renderActivityLoaded();
+  expect(cardValue("Leave Used")).toBe("0");
+  expect(cardValue("Balance")).toBe("1");
 });
 
 test("Activity Previous Week works", async () => {

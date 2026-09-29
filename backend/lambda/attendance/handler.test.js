@@ -16,6 +16,8 @@ const { isSuperAdminRole, normalizeRole, ROLES } = require("../common/roles");
 const { TIME_SOURCE_EXPECTED_WINDOW, TIMING_STATUS } = require("./assignedShift");
 const { companyDateTimeIso } = require("../common/shiftWindows");
 
+const { applyTransactWrite, queryStore, isTransactWrite } = require("../common/memoryTransact");
+
 function todayKey() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
@@ -34,13 +36,29 @@ function createFakeDdb({ access = {}, attendance = {}, work = {} } = {}) {
   return {
     puts,
     attendanceStore,
+    workStore,
     send: async (cmd) => {
       const input = cmd.input || {};
       const table = input.TableName;
+      if (isTransactWrite(cmd, input)) {
+        const written = applyTransactWrite(input, {
+          [process.env.ATTENDANCE_TABLE]: attendanceStore,
+          [process.env.WORK_TABLE]: workStore,
+        });
+        puts.push(...written);
+        return {};
+      }
       if (input.Item) {
         puts.push({ table, item: input.Item });
-        attendanceStore[`${input.Item.PK}|${input.Item.SK}`] = { ...input.Item };
+        const key = `${input.Item.PK}|${input.Item.SK}`;
+        if (table === process.env.WORK_TABLE) workStore[key] = { ...input.Item };
+        else attendanceStore[key] = { ...input.Item };
         return {};
+      }
+      if (input.KeyConditionExpression) {
+        const store =
+          table === process.env.WORK_TABLE ? workStore : attendanceStore;
+        return { Items: queryStore(store, input) };
       }
       if (input.Key) {
         if (table === process.env.USER_ACCESS_TABLE) {
@@ -259,9 +277,11 @@ for (const role of ["ADMIN", "MANAGER", "EMPLOYEE"]) {
     )
   );
   assert.strictEqual(res.statusCode, 200);
-  assert.strictEqual(db.puts.length, 1);
-  assert.strictEqual(db.puts[0].item.status, "WeeklyOff");
-  assert.ok(db.puts[0].item.submittedAt);
+  const weeklyOff = db.puts.find((row) => row.item?.status === "WeeklyOff");
+  assert.ok(weeklyOff);
+  assert.ok(weeklyOff.item.submittedAt);
+  const claim = db.puts.find((row) => String(row.item?.SK || "").startsWith("WEEKOFF#"));
+  assert.ok(claim);
 }
 
 {

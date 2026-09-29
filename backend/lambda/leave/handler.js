@@ -8,6 +8,15 @@ const {
   GetCommand,
   DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const {
+  WEEK_OFF_EXHAUSTED_MESSAGE,
+  getWeekOffWeekState,
+  validateSingleWeekOffDate,
+  leaveConflictsWithWeekOff,
+  weekOffConflictsWithLeave,
+  consumeWeekOffEntitlement,
+  releaseWeekOffClaim,
+} = require("../common/weekOffEntitlement");
 const { randomUUID } = require("crypto");
 const { isSuperAdminRole } = require("../common/roles");
 const {
@@ -458,6 +467,9 @@ async function cancelOwnApprovedLeave(user, body, now = new Date()) {
   };
   await putLeaveCopies(updated);
   await clearUnstartedFutureLeaveAttendance(owner, fromDate, toDate, now);
+  if (item.category === "PLANNED_OFF" || item.status === "PLANNED_OFF") {
+    await releaseWeekOffClaim(ddb, owner, fromDate, item.leaveId);
+  }
   return json(200, withComputed(updated));
 }
 
@@ -505,6 +517,8 @@ async function sameDayShiftCutoffError(
 }
 
 function validatePlannedOff({ fromDate, toDate, emergencyReason, now }) {
+  const oneDateError = validateSingleWeekOffDate(fromDate, toDate);
+  if (oneDateError) return oneDateError;
   if (!isValidDateKey(fromDate) || !isValidDateKey(toDate)) {
     return "Valid Planned Off date is required.";
   }
@@ -665,6 +679,31 @@ exports.handler = async (event) => {
         await autoApproveExpiredSafe();
       }
 
+      if (event.queryStringParameters?.weekOff === "true") {
+        if (!user.email) return json(401, { error: "Unauthorized" });
+        const requestedEmail = String(
+          event.queryStringParameters?.email || ""
+        )
+          .trim()
+          .toLowerCase();
+        if (requestedEmail && requestedEmail !== String(user.email).toLowerCase() && !user.isAdmin) {
+          return json(403, { error: "Admin required" });
+        }
+        const email = requestedEmail || String(user.email).toLowerCase();
+        const weekStart = String(
+          event.queryStringParameters?.weekStart ||
+            event.queryStringParameters?.date ||
+            ""
+        ).trim();
+        const state = await getWeekOffWeekState(
+          ddb,
+          email,
+          weekStart || todayKey(currentNow()),
+          currentNow()
+        );
+        return json(200, state);
+      }
+
       if (event.queryStringParameters?.notifications === "true") {
         if (!user.email) return json(401, { error: "Unauthorized" });
         const res = await ddb.send(
@@ -725,6 +764,8 @@ exports.handler = async (event) => {
         if (error) return json(400, { error });
         const cutoffError = await sameDayShiftCutoffError(user.email, fromDate, now);
         if (cutoffError) return json(400, { error: cutoffError });
+        const leaveOverlap = await weekOffConflictsWithLeave(ddb, user.email, fromDate);
+        if (leaveOverlap) return json(400, { error: leaveOverlap });
 
         const days = daysInclusive(fromDate, toDate);
         const item = {
@@ -752,7 +793,29 @@ exports.handler = async (event) => {
           rejectionReason: null,
           timezone: COMPANY_TZ,
         };
-        await putLeaveCopies(item);
+        try {
+          await consumeWeekOffEntitlement(ddb, {
+            email: user.email,
+            dateKey: fromDate,
+            source: "PLANNED_OFF",
+            leaveId: id,
+            nowIso: submittedAt,
+            extraPuts: [
+              { Put: { TableName: process.env.WORK_TABLE, Item: item } },
+              {
+                Put: {
+                  TableName: process.env.WORK_TABLE,
+                  Item: { ...item, PK: `USER#${item.email}`, SK: `LEAVE#${item.leaveId}` },
+                },
+              },
+            ],
+          });
+        } catch (err) {
+          if (err?.code === "WEEK_OFF_EXHAUSTED") {
+            return json(err.statusCode || 409, { error: WEEK_OFF_EXHAUSTED_MESSAGE });
+          }
+          throw err;
+        }
         await applyTodayAttendanceStatus(
           user.email,
           fromDate,
@@ -776,6 +839,13 @@ exports.handler = async (event) => {
       if (error) return json(400, { error });
       const cutoffError = await sameDayShiftCutoffError(user.email, fromDate, now);
       if (cutoffError) return json(400, { error: cutoffError });
+      const weekOffOverlap = await leaveConflictsWithWeekOff(
+        ddb,
+        user.email,
+        fromDate,
+        toDate
+      );
+      if (weekOffOverlap) return json(400, { error: weekOffOverlap });
 
       const days = daysInclusive(fromDate, toDate);
       const shortNotice = days > 1 && daysUntilStart(fromDate, now) < 3;

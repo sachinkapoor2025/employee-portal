@@ -10,6 +10,7 @@ import {
   fetchTasks,
   fetchAllLeave,
   fetchEmployeeShift,
+  fetchWeekOffState,
 } from "../../services/api";
 import { roleLabel } from "../../constants/roles";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
@@ -36,6 +37,7 @@ import {
   startOfWeekKey,
   summarizeAttendanceWeek,
 } from "../../utils/myActivityReport";
+import { weekOffDisplay } from "../../utils/weekOffState";
 import {
   buildEmployeeActivityTrend,
   EMPTY_WORK_METRICS,
@@ -1198,6 +1200,7 @@ function ActivityPanel({ email, profile }) {
   const [workloadMetrics, setWorkloadMetrics] = useState(EMPTY_WORKLOAD_METRICS);
   const [workMetrics, setWorkMetrics] = useState(EMPTY_WORK_METRICS);
   const [trend, setTrend] = useState({ ready: false, averages: null });
+  const [weekOffState, setWeekOffState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -1209,9 +1212,10 @@ function ActivityPanel({ email, profile }) {
       const range = trendRangeForSelectedWeek(selected);
       const getAssignment = (task) => assignmentForEmployee(task, email);
       try {
-        const [attendanceRows, taskList] = await Promise.all([
+        const [attendanceRows, taskList, weekOff] = await Promise.all([
           fetchAttendance(range.rangeStart, range.rangeEnd, email),
           fetchTasks({ assignee: email }),
+          fetchWeekOffState({ weekStart: selected, email }),
         ]);
         const tasks = Array.isArray(taskList) ? taskList : [];
         const recordsByDate = indexAttendanceByDate(attendanceRows);
@@ -1232,6 +1236,7 @@ function ActivityPanel({ email, profile }) {
         setAttendanceMetrics(attendance);
         setWorkloadMetrics(workload);
         setWorkMetrics(work);
+        setWeekOffState(weekOff && typeof weekOff === "object" ? weekOff : null);
         setTrend(
           buildEmployeeActivityTrend({
             selectedWeekStart: selected,
@@ -1247,6 +1252,7 @@ function ActivityPanel({ email, profile }) {
         setAttendanceMetrics(EMPTY_ATTENDANCE_METRICS);
         setWorkloadMetrics(EMPTY_WORKLOAD_METRICS);
         setWorkMetrics(EMPTY_WORK_METRICS);
+        setWeekOffState(null);
         setTrend({ ready: false, averages: null });
         setError(err.message || "Unable to load activity.");
       } finally {
@@ -1272,6 +1278,7 @@ function ActivityPanel({ email, profile }) {
   const critical = metricNumber(workloadMetrics, "critical");
   const highCritical = metricNumber(workloadMetrics, "highCritical");
   const completed = metricNumber(workMetrics, "completed");
+  const timeOff = weekOffDisplay(weekOffState);
 
   return (
     <>
@@ -1355,6 +1362,18 @@ function ActivityPanel({ email, profile }) {
             label="Not Marked"
             value={metricNumber(attendanceMetrics, "notMarked")}
           />
+        </div>
+      </section>
+
+      <section aria-labelledby="employee-activity-time-off" style={{ marginTop: 20 }}>
+        <h3 id="employee-activity-time-off" style={{ marginTop: 0, marginBottom: 8 }}>
+          TIME OFF
+        </h3>
+        <div className="dgv-kpi-grid dgv-kpi-grid--3">
+          <StatCard label="Week Off Entitlement" value={timeOff.entitlement} />
+          <StatCard label="Week Off Used" value={timeOff.weekOffUsedLabel} />
+          <StatCard label="Leave Used" value={timeOff.leaveUsed} />
+          <StatCard label="Balance" value={timeOff.balance} />
         </div>
       </section>
 

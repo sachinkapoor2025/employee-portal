@@ -8,6 +8,7 @@ const {
   companyDateTimeIso,
   resolveShiftTimes,
   addDaysIso,
+  addDaysToKey,
   parseInstantMs,
   isSameCompanyDay,
   taskFitsWindow,
@@ -42,6 +43,9 @@ assert.strictEqual(
   companyDateKey("2026-09-22T08:30:00.000Z"),
   "2026-09-22"
 );
+
+assert.strictEqual(addDaysToKey("2026-09-28", 6), "2026-10-04");
+assert.strictEqual(addDaysToKey("2026-09-30", -2), "2026-09-28");
 
 assert.strictEqual(
   isSameCompanyDay(

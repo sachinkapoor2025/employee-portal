@@ -22,6 +22,12 @@ const {
   isEffectiveLeaveLock,
   overlayStatusForConfirmedLeave,
 } = require("../leave/materialize");
+const {
+  WEEK_OFF_EXHAUSTED_MESSAGE,
+  weekOffConflictsWithLeave,
+  consumeWeekOffEntitlement,
+  isTransactionConflict,
+} = require("../common/weekOffEntitlement");
 
 let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -67,8 +73,12 @@ function recordEmail(item) {
     .toLowerCase();
 }
 
+function isWeekOffClaimItem(item) {
+  return String(item?.SK || "").startsWith("WEEKOFF#");
+}
+
 function toPublicRecord(item) {
-  if (!item) return null;
+  if (!item || isWeekOffClaimItem(item)) return null;
   const email = recordEmail(item);
   return {
     attendanceId: item.attendanceId || null,
@@ -176,7 +186,7 @@ async function queryAttendanceByEmail(email) {
       ExpressionAttributeValues: { ":pk": email },
     })
   );
-  return result.Items || [];
+  return (result.Items || []).filter((item) => !isWeekOffClaimItem(item));
 }
 
 async function enrichRecords(records) {
@@ -382,6 +392,7 @@ exports.handler = async (event) => {
       }
 
       let records = items
+        .filter((item) => !isWeekOffClaimItem(item))
         .map(toPublicRecord)
         .filter((r) => r && (r.checkInTime || r.sessionStatus || r.status || r.date));
 
@@ -649,6 +660,14 @@ exports.handler = async (event) => {
             attendance: toPublicRecord(existing),
           });
         }
+        if (status === "WeeklyOff") {
+          const leaveOverlap = await weekOffConflictsWithLeave(
+            ddb,
+            user.email,
+            todayKey
+          );
+          if (leaveOverlap) return json(400, { error: leaveOverlap });
+        }
         const reason =
           status === "Leave"
             ? "Leave"
@@ -763,9 +782,32 @@ exports.handler = async (event) => {
         };
 
         try {
-          await putFirstEmployeeSubmission(item);
+          if (status === "WeeklyOff") {
+            await consumeWeekOffEntitlement(ddb, {
+              email: user.email,
+              dateKey: todayKey,
+              source: "WeeklyOff",
+              nowIso,
+              extraPuts: [
+                {
+                  Put: {
+                    TableName: process.env.ATTENDANCE_TABLE,
+                    Item: item,
+                    ConditionExpression: "attribute_not_exists(submittedAt)",
+                  },
+                },
+              ],
+            });
+          } else {
+            await putFirstEmployeeSubmission(item);
+          }
         } catch (err) {
-          if (isConditionalCheckFailed(err)) {
+          if (err?.code === "WEEK_OFF_EXHAUSTED") {
+            return json(err.statusCode || 409, {
+              error: WEEK_OFF_EXHAUSTED_MESSAGE,
+            });
+          }
+          if (isConditionalCheckFailed(err) || isTransactionConflict(err)) {
             const locked = await getDayRecord(user.email, todayKey);
             return json(409, {
               error: "Today's attendance has already been submitted.",
@@ -808,7 +850,9 @@ exports.handler = async (event) => {
         })
       );
 
-      const attendance = (result.Items || []).map((item) => ({
+      const attendance = (result.Items || [])
+        .filter((item) => !isWeekOffClaimItem(item))
+        .map((item) => ({
         date: item.SK || item.date,
         status: item.status || null,
         hours: item.hours ?? null,

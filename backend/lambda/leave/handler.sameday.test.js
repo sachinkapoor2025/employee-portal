@@ -17,6 +17,8 @@ const {
   setNowMsForTests,
 } = require("./handler");
 
+const { applyTransactWrite, queryStore, isTransactWrite } = require("../common/memoryTransact");
+
 const EMAIL = "worker@mydgv.com";
 const TODAY = "2026-09-23";
 const TOMORROW = "2026-09-24";
@@ -43,25 +45,36 @@ const overnight = {
   crossesMidnight: true,
 };
 
-function createFakeDdb({ access = {}, work = {} } = {}) {
+function createFakeDdb({ access = {}, work = {}, attendance = {} } = {}) {
   const puts = [];
   const workStore = { ...work };
+  const attendanceStore = { ...attendance };
   return {
     puts,
     workStore,
+    attendanceStore,
     send: async (cmd) => {
       const input = cmd.input || {};
       const table = input.TableName;
+      if (isTransactWrite(cmd, input)) {
+        const written = applyTransactWrite(input, {
+          [process.env.ATTENDANCE_TABLE]: attendanceStore,
+          [process.env.WORK_TABLE]: workStore,
+        });
+        puts.push(...written);
+        return {};
+      }
       if (input.Item) {
         puts.push({ table, item: input.Item });
-        workStore[`${input.Item.PK}|${input.Item.SK}`] = { ...input.Item };
+        const key = `${input.Item.PK}|${input.Item.SK}`;
+        if (table === process.env.ATTENDANCE_TABLE) attendanceStore[key] = { ...input.Item };
+        else workStore[key] = { ...input.Item };
         return {};
       }
       if (input.KeyConditionExpression) {
-        const pk = input.ExpressionAttributeValues?.[":pk"];
-        return {
-          Items: Object.values(workStore).filter((row) => row.PK === pk),
-        };
+        const store =
+          table === process.env.ATTENDANCE_TABLE ? attendanceStore : workStore;
+        return { Items: queryStore(store, input) };
       }
       if (input.Key) {
         const key = `${input.Key.PK}|${input.Key.SK}`;
@@ -70,6 +83,9 @@ function createFakeDdb({ access = {}, work = {} } = {}) {
         }
         if (table === process.env.USER_PROFILE_TABLE) {
           return { Item: { name: "Pat", empId: "E1" } };
+        }
+        if (table === process.env.ATTENDANCE_TABLE) {
+          return { Item: attendanceStore[key] || null };
         }
         return { Item: workStore[key] || null };
       }

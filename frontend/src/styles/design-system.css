@@ -780,6 +780,10 @@ a {
   grid-column: span 3;
 }
 
+.dgv-kpi-grid--2 > * {
+  grid-column: span 6;
+}
+
 .dgv-kpi-grid--3 > * {
   grid-column: span 4;
 }
@@ -795,6 +799,9 @@ a {
     grid-template-columns: repeat(8, minmax(0, 1fr));
   }
   .dgv-kpi-grid > * {
+    grid-column: span 4;
+  }
+  .dgv-kpi-grid--2 > * {
     grid-column: span 4;
   }
 }

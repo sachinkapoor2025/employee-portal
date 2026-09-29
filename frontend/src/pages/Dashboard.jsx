@@ -12,7 +12,7 @@ import { StatCard } from "../components/ui/Card";
 import {
   fetchAnnouncements,
   fetchTasks,
-  fetchMyLeave,
+  fetchWeekOffState,
 } from "../services/api";
 import { colors, pageTitle, pageSubtitle } from "../theme";
 import ZoneBadge from "../components/ZoneBadge";
@@ -26,7 +26,7 @@ import { displayNameFromEmail } from "../utils/meetings";
 export default function Dashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [leave, setLeave] = useState([]);
+  const [weekOffState, setWeekOffState] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,9 +34,9 @@ export default function Dashboard() {
       Promise.all([
         fetchAnnouncements(),
         fetchTasks({ mine: "true" }),
-        fetchMyLeave(),
+        fetchWeekOffState(),
       ])
-        .then(([a, t, l]) => {
+        .then(([a, t, weekOff]) => {
           setAnnouncements(Array.isArray(a) ? a.slice(0, 3) : []);
           const seen = new Set();
           const open = [];
@@ -67,12 +67,10 @@ export default function Dashboard() {
               (Number.isFinite(leftMs) ? leftMs : 0);
           });
           setTasks(open);
-          setLeave(
-            Array.isArray(l)
-              ? l.filter(
-                  (x) => x.status === "PENDING" || x.status === "PENDING_APPROVAL"
-                )
-              : []
+          setWeekOffState(
+            weekOff && typeof weekOff === "object" && !Array.isArray(weekOff)
+              ? weekOff
+              : null
           );
         })
         .catch(console.error);
@@ -82,12 +80,14 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, []);
 
+  const weekOffUsed = Number(weekOffState?.weekOffUsed) === 1;
+
   return (
     <Layout>
       <h1 style={pageTitle}>Welcome to DGV Portal</h1>
       <p style={pageSubtitle}>Your gateway to company resources</p>
 
-      <div className="dgv-kpi-grid dgv-kpi-grid--3">
+      <div className="dgv-kpi-grid dgv-kpi-grid--2">
         <StatCard
           label="Open Tasks"
           value={tasks.length}
@@ -99,9 +99,15 @@ export default function Dashboard() {
           icon={<ListTodo size={18} strokeWidth={1.75} />}
         />
         <StatCard
-          label="Pending Leave"
-          value={leave.length}
-          hint={leave.length ? "Awaiting approval" : "No pending requests"}
+          label="Week Off"
+          value={weekOffState == null ? "—" : weekOffUsed ? 0 : 1}
+          hint={
+            weekOffState == null
+              ? "This week"
+              : weekOffUsed
+                ? "This week · Used"
+                : "This week · Available"
+          }
           icon={<CalendarDays size={18} strokeWidth={1.75} />}
         />
       </div>

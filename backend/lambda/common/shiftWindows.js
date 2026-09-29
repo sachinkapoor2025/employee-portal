@@ -56,6 +56,16 @@ function addDaysIso(iso, days = 1) {
   return new Date(ms + days * DAY_MS).toISOString();
 }
 
+function addDaysToKey(key, days = 0) {
+  const [y, m, d] = String(key || "")
+    .split("-")
+    .map(Number);
+  if (!y || !m || !d) return null;
+  const next = new Date(Date.UTC(y, m - 1, d + Number(days || 0)));
+  if (!Number.isFinite(next.getTime())) return null;
+  return next.toISOString().slice(0, 10);
+}
+
 function isSameCompanyDay(startMs, endMs) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
   const startKey = companyDateKey(new Date(startMs));
@@ -103,6 +113,7 @@ module.exports = {
   companyTodayKey,
   parseInstantMs,
   addDaysIso,
+  addDaysToKey,
   isSameCompanyDay,
   taskFitsWindow,
   windowMsFromRecord,

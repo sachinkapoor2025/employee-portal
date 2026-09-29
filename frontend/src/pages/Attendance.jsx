@@ -8,7 +8,9 @@ import {
   fetchEmployeeShift,
   saveAttendance,
   attendanceCheckOut,
+  fetchWeekOffState,
 } from "../services/api";
+import { weekOffDisplay, WEEK_OFF_EXHAUSTED_MESSAGE } from "../utils/weekOffState";
 import { getLoggedInEmail } from "../services/auth";
 
 const COMPANY_TZ = "Asia/Kolkata";
@@ -244,12 +246,15 @@ export default function Attendance() {
   const [shiftReady, setShiftReady] = useState(false);
   const [formError, setFormError] = useState("");
   const [checkingOut, setCheckingOut] = useState(false);
+  const [weekOffState, setWeekOffState] = useState(null);
 
   const [status, setStatus] = useState("");
   const [workPeriod, setWorkPeriod] = useState("");
 
   const todayRecord = attendanceData[todayKey] || {};
   const submitted = !!todayRecord.submittedAt;
+  const weekOff = weekOffDisplay(weekOffState);
+  const weekOffDisabled = weekOff.used;
 
   const loadRange = useCallback(async (start, end) => {
     const data = await fetchAttendanceApi(start, end);
@@ -340,6 +345,15 @@ export default function Attendance() {
     }
   }, [historyWeekStart, loadRange]);
 
+  const loadWeekOff = useCallback(async () => {
+    try {
+      const state = await fetchWeekOffState();
+      setWeekOffState(state);
+    } catch (err) {
+      console.error("Fetch week off state error:", err);
+    }
+  }, []);
+
   useEffect(() => {
     loadAttendance();
   }, [loadAttendance]);
@@ -347,6 +361,10 @@ export default function Attendance() {
   useEffect(() => {
     loadAssignedShift();
   }, [loadAssignedShift]);
+
+  useEffect(() => {
+    loadWeekOff();
+  }, [loadWeekOff]);
 
   useEffect(() => {
     if (assignmentAllowsHalfDay(assignedShift)) return;
@@ -375,6 +393,10 @@ export default function Attendance() {
   }, [loadAttendance, loadAssignedShift]);
 
   const selectStatus = (item) => {
+    if (item === "WeeklyOff" && weekOffDisabled) {
+      setFormError(WEEK_OFF_EXHAUSTED_MESSAGE);
+      return;
+    }
     setStatus(item);
     setFormError("");
     if (item !== "Working") {
@@ -399,6 +421,10 @@ export default function Attendance() {
     }
     if (!status) {
       alert("Please select today's attendance status.");
+      return;
+    }
+    if (status === "WeeklyOff" && weekOffDisabled) {
+      setFormError(WEEK_OFF_EXHAUSTED_MESSAGE);
       return;
     }
     if (status === "Working") {
@@ -433,6 +459,7 @@ export default function Attendance() {
       setStatus("");
       setWorkPeriod("");
       await loadAttendance({ silent: true });
+      await loadWeekOff();
     } catch (err) {
       console.error("Submit error:", err);
       const already = /already been submitted|already submitted/i.test(
@@ -512,6 +539,15 @@ export default function Attendance() {
         <p style={{ color: colors.textMuted, marginTop: 0, marginBottom: 16 }}>
           Submit today&apos;s attendance, then review history in My Attendance.
         </p>
+        {weekOffState ? (
+          <p style={{ color: colors.textMuted, marginTop: 0 }} data-testid="week-off-state">
+            {weekOff.weekLabel}
+            <br />
+            {weekOff.statusLabel}
+            <br />
+            {weekOffDisabled ? weekOff.exhaustedMessage : weekOff.detail}
+          </p>
+        ) : null}
 
         <section className="dgv-attendance-taker" aria-labelledby="today-attendance-title">
           <div className="dgv-attendance-taker__head">
@@ -600,6 +636,7 @@ export default function Attendance() {
                           status === item ? "is-active" : ""
                         }`}
                         aria-pressed={status === item}
+                        disabled={item === "WeeklyOff" && weekOffDisabled}
                       >
                         {item === "WeeklyOff" ? "Weekly Off" : item}
                       </button>

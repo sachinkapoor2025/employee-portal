@@ -7,6 +7,7 @@ jest.mock("../components/Layout", () => {
 jest.mock("../services/api", () => ({
   fetchAttendance: jest.fn(),
   fetchTaskList: jest.fn(),
+  fetchWeekOffState: jest.fn(),
 }));
 
 jest.mock("../services/auth", () => ({
@@ -17,7 +18,7 @@ jest.mock("../services/auth", () => ({
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import MyActivity from "./MyActivity";
-import { fetchAttendance, fetchTaskList } from "../services/api";
+import { fetchAttendance, fetchTaskList, fetchWeekOffState } from "../services/api";
 import {
   addDaysToKey,
   currentWeekStartKey,
@@ -77,8 +78,18 @@ function workingLate(date) {
 beforeEach(() => {
   fetchAttendance.mockReset();
   fetchTaskList.mockReset();
+  fetchWeekOffState.mockReset();
   fetchAttendance.mockResolvedValue([]);
   fetchTaskList.mockResolvedValue({ tasks: [] });
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: WEEK_START,
+    weekEnd: WEEK_END,
+    weekOffEntitlement: 1,
+    weekOffUsed: 0,
+    weekOffAvailable: 1,
+    leaveUsed: 0,
+    balance: 1,
+  });
 });
 
 test("Monday-Sunday selected week is generated correctly", () => {
@@ -489,4 +500,37 @@ test("page shows weekly attendance numbers without a task list", async () => {
   expect(screen.queryByText("Shared banner")).not.toBeInTheDocument();
   expect(screen.queryByText("Holiday")).not.toBeInTheDocument();
   expect(screen.queryByText("Absent")).not.toBeInTheDocument();
+});
+
+test("My Activity TIME OFF shows entitlement used leave and balance", async () => {
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: currentWeekStartKey(),
+    weekEnd: addDaysToKey(currentWeekStartKey(), 6),
+    weekOffEntitlement: 1,
+    weekOffUsed: 1,
+    weekOffAvailable: 0,
+    leaveUsed: 2,
+    balance: -2,
+  });
+  await renderLoaded();
+  expect(screen.getByRole("heading", { name: "TIME OFF" })).toBeInTheDocument();
+  expect(cardValue("Week Off Entitlement")).toBe("1");
+  expect(cardValue("Week Off Used")).toBe("1/1");
+  expect(cardValue("Leave Used")).toBe("2");
+  expect(cardValue("Balance")).toBe("-2");
+});
+
+test("Pending and rejected leave from the API do not reduce TIME OFF leave used", async () => {
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: currentWeekStartKey(),
+    weekEnd: addDaysToKey(currentWeekStartKey(), 6),
+    weekOffEntitlement: 1,
+    weekOffUsed: 0,
+    weekOffAvailable: 1,
+    leaveUsed: 0,
+    balance: 1,
+  });
+  await renderLoaded();
+  expect(cardValue("Leave Used")).toBe("0");
+  expect(cardValue("Balance")).toBe("1");
 });

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
-import { fetchMyLeave, applyLeave, cancelLeave } from "../services/api";
+import { fetchMyLeave, applyLeave, cancelLeave, fetchWeekOffState } from "../services/api";
+import { companyTodayKey } from "../utils/attendanceCompliance";
+import { weekOffDisplay } from "../utils/weekOffState";
 import {
   colors,
   pageCard,
@@ -22,11 +24,7 @@ function daysInclusive(fromDate, toDate) {
 }
 
 function todayKey() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return companyTodayKey();
 }
 
 function daysUntil(startDate) {
@@ -104,6 +102,7 @@ const choiceCard = (active) => ({
 
 export default function Leave() {
   const [leaves, setLeaves] = useState([]);
+  const [weekOffState, setWeekOffState] = useState(null);
   const [mode, setMode] = useState("");
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
@@ -122,7 +121,12 @@ export default function Leave() {
     emergencyReason: "",
   });
 
-  const load = () => fetchMyLeave().then(setLeaves).catch(console.error);
+  const load = () => {
+    fetchMyLeave().then(setLeaves).catch(console.error);
+    fetchWeekOffState()
+      .then(setWeekOffState)
+      .catch(console.error);
+  };
 
   useEffect(() => {
     load();
@@ -226,6 +230,9 @@ export default function Leave() {
     }
   };
 
+  const weekOff = weekOffDisplay(weekOffState);
+  const weekOffDisabled = weekOff.used;
+
   const rows = useMemo(() => (Array.isArray(leaves) ? leaves : []), [leaves]);
 
   return (
@@ -235,11 +242,33 @@ export default function Leave() {
         <p style={pageSubtitle}>
           Choose Week Off for a scheduled day off, or Apply for Leave when approval is required.
         </p>
+        {weekOffState ? (
+          <p style={{ color: colors.textMuted, marginTop: 0 }} data-testid="week-off-state">
+            {weekOff.weekLabel}
+            <br />
+            {weekOff.statusLabel}
+            <br />
+            {weekOff.detail}
+          </p>
+        ) : null}
 
         <div className="dgv-leave-choice">
-          <button type="button" className="dgv-leave-choice__btn" style={choiceCard(mode === "planned")} onClick={() => { setMode("planned"); setError(""); setMsg(""); }}>
+          <button
+            type="button"
+            className="dgv-leave-choice__btn"
+            style={choiceCard(mode === "planned")}
+            disabled={weekOffDisabled}
+            onClick={() => {
+              if (weekOffDisabled) return;
+              setMode("planned");
+              setError("");
+              setMsg("");
+            }}
+          >
             <div style={{ fontWeight: 800, fontSize: 16 }}>WEEK OFF</div>
-            <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>No approval needed</div>
+            <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
+              {weekOffDisabled ? weekOff.exhaustedMessage : "No approval needed"}
+            </div>
           </button>
           <button type="button" className="dgv-leave-choice__btn" style={choiceCard(mode === "leave")} onClick={() => { setMode("leave"); setError(""); setMsg(""); }}>
             <div style={{ fontWeight: 800, fontSize: 16 }}>APPLY FOR LEAVE</div>
@@ -288,7 +317,12 @@ export default function Leave() {
                 />
               </>
             ) : null}
-            <Button type="button" loading={saving} disabled={saving} onClick={submitPlanned}>
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving || weekOffDisabled}
+              onClick={submitPlanned}
+            >
               Submit Week Off
             </Button>
           </section>

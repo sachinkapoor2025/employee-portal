@@ -20,6 +20,8 @@ const {
   setNowMsForTests,
 } = require("./handler");
 
+const { applyTransactWrite, queryStore, isTransactWrite } = require("../common/memoryTransact");
+
 const WORKER = "worker@mydgv.com";
 const PRIYA = "priya@mydgv.com";
 const SACHIN = "sachin@mydgv.com";
@@ -27,30 +29,36 @@ const BOSS = "boss@mydgv.com";
 const FROM = "2026-10-05";
 const TO = "2026-10-06";
 
-function createFakeDdb({ access = {}, profiles = {}, work = {} } = {}) {
+function createFakeDdb({ access = {}, profiles = {}, work = {}, attendance = {} } = {}) {
   const puts = [];
   const workStore = { ...work };
+  const attendanceStore = { ...attendance };
   return {
     puts,
     workStore,
+    attendanceStore,
     send: async (cmd) => {
       const input = cmd.input || {};
       const table = input.TableName;
+      if (isTransactWrite(cmd, input)) {
+        const written = applyTransactWrite(input, {
+          [process.env.ATTENDANCE_TABLE]: attendanceStore,
+          [process.env.WORK_TABLE]: workStore,
+        });
+        puts.push(...written);
+        return {};
+      }
       if (input.Item) {
         puts.push({ table, item: input.Item });
-        workStore[`${input.Item.PK}|${input.Item.SK}`] = { ...input.Item };
+        const key = `${input.Item.PK}|${input.Item.SK}`;
+        if (table === process.env.ATTENDANCE_TABLE) attendanceStore[key] = { ...input.Item };
+        else workStore[key] = { ...input.Item };
         return {};
       }
       if (input.KeyConditionExpression) {
-        const pk = input.ExpressionAttributeValues?.[":pk"];
-        const skPrefix = input.ExpressionAttributeValues?.[":sk"];
-        return {
-          Items: Object.values(workStore).filter((row) => {
-            if (row.PK !== pk) return false;
-            if (skPrefix) return String(row.SK || "").startsWith(skPrefix);
-            return true;
-          }),
-        };
+        const store =
+          table === process.env.ATTENDANCE_TABLE ? attendanceStore : workStore;
+        return { Items: queryStore(store, input) };
       }
       if (input.Key) {
         const key = `${input.Key.PK}|${input.Key.SK}`;
@@ -65,6 +73,9 @@ function createFakeDdb({ access = {}, profiles = {}, work = {} } = {}) {
                 empId: "E1",
               },
           };
+        }
+        if (table === process.env.ATTENDANCE_TABLE) {
+          return { Item: attendanceStore[key] || null };
         }
         return { Item: workStore[key] || null };
       }
@@ -315,7 +326,7 @@ async function test(name, fn) {
         reason: "Family function",
         status: "PENDING_APPROVAL",
         submittedAt: "2026-09-26T04:30:00.000Z",
-        approvalDeadline: "2026-09-26T15:00:00.000Z",
+        approvalDeadline: "2099-09-26T15:00:00.000Z",
       });
       setDocumentClientForTests(db);
       const res = parse(
@@ -359,7 +370,7 @@ async function test(name, fn) {
         fromDate: FROM,
         toDate: FROM,
         status: "PENDING_APPROVAL",
-        approvalDeadline: "2026-09-26T15:00:00.000Z",
+        approvalDeadline: "2099-09-26T15:00:00.000Z",
       });
       setDocumentClientForTests(db);
       const res = parse(
@@ -400,7 +411,7 @@ async function test(name, fn) {
         endDate: FROM,
         days: 1,
         status: "PENDING_APPROVAL",
-        approvalDeadline: "2026-09-26T15:00:00.000Z",
+        approvalDeadline: "2099-09-26T15:00:00.000Z",
       });
       setDocumentClientForTests(db);
       const res = parse(
@@ -445,7 +456,7 @@ async function test(name, fn) {
         fromDate: FROM,
         toDate: FROM,
         status: "PENDING_APPROVAL",
-        approvalDeadline: "2026-09-26T15:00:00.000Z",
+        approvalDeadline: "2099-09-26T15:00:00.000Z",
       });
       setDocumentClientForTests(db);
       const res = parse(

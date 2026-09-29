@@ -386,6 +386,12 @@ export const fetchTimeEntries = (email) =>
 /* ================= LEAVE ================= */
 
 export const fetchMyLeave = () => api("/leave", "GET");
+export const fetchWeekOffState = ({ weekStart, email } = {}) => {
+  const qs = new URLSearchParams({ weekOff: "true" });
+  if (weekStart) qs.set("weekStart", weekStart);
+  if (email) qs.set("email", email);
+  return api(`/leave?${qs.toString()}`, "GET");
+};
 export const fetchAllLeave = () => api("/leave?all=true", "GET");
 export const fetchLeaveNotifications = () =>
   api("/leave?notifications=true", "GET");

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
 import { StatCard } from "../components/ui/Card";
-import { fetchAttendance, fetchTaskList } from "../services/api";
+import { fetchAttendance, fetchTaskList, fetchWeekOffState } from "../services/api";
+import { weekOffDisplay } from "../utils/weekOffState";
 import { getLoggedInDisplayName } from "../services/auth";
 import { colors, pageCard, pageSubtitle, pageTitle } from "../theme";
 import {
@@ -34,6 +35,7 @@ export default function MyActivity() {
     EMPTY_ATTENDANCE_METRICS
   );
   const [taskMetrics, setTaskMetrics] = useState(EMPTY_TASK_METRICS);
+  const [weekOffState, setWeekOffState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const employeeName = getLoggedInDisplayName();
@@ -44,9 +46,10 @@ export default function MyActivity() {
     const start = startOfWeekKey(mondayKey);
     const end = weekEndKey(start);
     try {
-      const [attendanceRows, taskList] = await Promise.all([
+      const [attendanceRows, taskList, weekOff] = await Promise.all([
         fetchAttendance(start, end),
         fetchTaskList({ mine: "true" }),
+        fetchWeekOffState({ weekStart: start }),
       ]);
       setAttendanceMetrics(
         summarizeAttendanceWeek({
@@ -60,12 +63,14 @@ export default function MyActivity() {
           tasks: taskList?.tasks,
         })
       );
+      setWeekOffState(weekOff && typeof weekOff === "object" ? weekOff : null);
     } catch (err) {
       if (err?.status === 401 || /session expired/i.test(err?.message || "")) {
         return;
       }
       setAttendanceMetrics(EMPTY_ATTENDANCE_METRICS);
       setTaskMetrics(EMPTY_TASK_METRICS);
+      setWeekOffState(null);
       setError(err.message || "Unable to load activity.");
     } finally {
       setLoading(false);
@@ -77,6 +82,7 @@ export default function MyActivity() {
   }, [weekStart, load]);
 
   const weekRange = formatWeekRange(weekStart);
+  const timeOff = weekOffDisplay(weekOffState);
 
   return (
     <Layout>
@@ -145,6 +151,18 @@ export default function MyActivity() {
             label="Not Marked"
             value={metricValue(attendanceMetrics, "notMarked")}
           />
+        </div>
+      </section>
+
+      <section style={sectionCard} aria-labelledby="my-activity-time-off">
+        <h3 id="my-activity-time-off" style={{ marginTop: 0, marginBottom: 8 }}>
+          TIME OFF
+        </h3>
+        <div className="dgv-kpi-grid dgv-kpi-grid--3">
+          <StatCard label="Week Off Entitlement" value={timeOff.entitlement} />
+          <StatCard label="Week Off Used" value={timeOff.weekOffUsedLabel} />
+          <StatCard label="Leave Used" value={timeOff.leaveUsed} />
+          <StatCard label="Balance" value={timeOff.balance} />
         </div>
       </section>
 

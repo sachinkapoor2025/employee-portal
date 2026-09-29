@@ -19,6 +19,7 @@ jest.mock("../services/api", () => ({
   fetchEmployeeShift: jest.fn(),
   saveAttendance: jest.fn(),
   attendanceCheckOut: jest.fn(),
+  fetchWeekOffState: jest.fn(),
 }));
 
 import { render, screen, waitFor, act } from "@testing-library/react";
@@ -29,6 +30,7 @@ import {
   fetchEmployeeShift,
   saveAttendance,
   attendanceCheckOut,
+  fetchWeekOffState,
 } from "../services/api";
 import { getLoggedInEmail } from "../services/auth";
 
@@ -57,6 +59,15 @@ beforeEach(() => {
   getLoggedInEmail.mockReturnValue("doer@mydgv.com");
   fetchAttendance.mockResolvedValue([]);
   fetchEmployeeShift.mockResolvedValue(ASSIGNED);
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: "2026-09-28",
+    weekEnd: "2026-10-04",
+    weekOffEntitlement: 1,
+    weekOffUsed: 0,
+    weekOffAvailable: 1,
+    leaveUsed: 0,
+    balance: 1,
+  });
   saveAttendance.mockReset();
   attendanceCheckOut.mockReset();
   attendanceCheckOut.mockResolvedValue({
@@ -294,4 +305,21 @@ test("Check Out appears after Working attendance and not for Leave WeeklyOff or 
   render(<Attendance />);
   await screen.findByText("Morning Shift");
   expect(screen.queryByRole("button", { name: "Check Out" })).not.toBeInTheDocument();
+});
+
+test("Attendance Weekly Off is disabled when the weekly entitlement is used", async () => {
+  fetchWeekOffState.mockResolvedValue({
+    weekStart: "2026-09-28",
+    weekEnd: "2026-10-04",
+    weekOffEntitlement: 1,
+    weekOffUsed: 1,
+    weekOffAvailable: 0,
+    leaveUsed: 0,
+    balance: 0,
+  });
+  render(<Attendance />);
+  expect(await screen.findByTestId("week-off-state")).toHaveTextContent(
+    "Week Off exhausted for this week. Please apply for Leave instead."
+  );
+  expect(screen.getByRole("button", { name: "Weekly Off" })).toBeDisabled();
 });

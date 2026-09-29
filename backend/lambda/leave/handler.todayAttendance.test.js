@@ -16,6 +16,8 @@ const {
   setNowMsForTests,
 } = require("./handler");
 
+const { applyTransactWrite, queryStore, isTransactWrite } = require("../common/memoryTransact");
+
 const EMAIL = "worker@mydgv.com";
 const TODAY = "2026-09-25";
 const TOMORROW = "2026-09-26";
@@ -44,6 +46,14 @@ function createFakeDdb({ access = {}, attendance = {}, work = {} } = {}) {
       const name = cmd.constructor?.name || "";
       const input = cmd.input || {};
       const table = input.TableName;
+      if (isTransactWrite(cmd, input)) {
+        const written = applyTransactWrite(input, {
+          [process.env.ATTENDANCE_TABLE]: attendanceStore,
+          [process.env.WORK_TABLE]: workStore,
+        });
+        puts.push(...written);
+        return {};
+      }
       if (name === "DeleteCommand" && input.Key) {
         const key = `${input.Key.PK}|${input.Key.SK}`;
         if (table === process.env.ATTENDANCE_TABLE) delete attendanceStore[key];
@@ -59,10 +69,9 @@ function createFakeDdb({ access = {}, attendance = {}, work = {} } = {}) {
         return {};
       }
       if (input.KeyConditionExpression) {
-        const pk = input.ExpressionAttributeValues?.[":pk"];
-        return {
-          Items: Object.values(workStore).filter((row) => row.PK === pk),
-        };
+        const store =
+          table === process.env.ATTENDANCE_TABLE ? attendanceStore : workStore;
+        return { Items: queryStore(store, input) };
       }
       if (input.Key) {
         const key = `${input.Key.PK}|${input.Key.SK}`;
@@ -222,8 +231,10 @@ assert.deepStrictEqual(
   );
   assert.strictEqual(res.statusCode, 201, res.body.error);
   assert.strictEqual(res.body.status, "PLANNED_OFF");
-  assert.strictEqual(attendancePuts(db).length, 0);
   assert.strictEqual(db.attendanceStore[`${EMAIL}|${TOMORROW}`], undefined);
+  assert.ok(
+    attendancePuts(db).every((row) => String(row.item?.SK || "").startsWith("WEEKOFF#"))
+  );
 }
 
 {
