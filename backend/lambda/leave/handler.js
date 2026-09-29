@@ -7,6 +7,7 @@ const {
   QueryCommand,
   GetCommand,
   DeleteCommand,
+  UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
   WEEK_OFF_EXHAUSTED_MESSAGE,
@@ -157,6 +158,44 @@ async function listEntityLeaves() {
     })
   );
   return res.Items || [];
+}
+
+async function markAllInAppNotificationsRead(email) {
+  const pk = `USER#${email}`;
+  const readAt = currentNow().toISOString();
+  let updated = 0;
+  let lastKey;
+  do {
+    const query = {
+      TableName: process.env.WORK_TABLE,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+      ExpressionAttributeValues: {
+        ":pk": pk,
+        ":sk": "NOTIFY#",
+      },
+    };
+    if (lastKey) query.ExclusiveStartKey = lastKey;
+    const res = await ddb.send(new QueryCommand(query));
+    for (const item of res.Items || []) {
+      if (!String(item?.SK || "").startsWith("NOTIFY#")) continue;
+      if (item.read === true) continue;
+      await ddb.send(
+        new UpdateCommand({
+          TableName: process.env.WORK_TABLE,
+          Key: { PK: item.PK, SK: item.SK },
+          UpdateExpression: "SET #read = :read, readAt = :readAt",
+          ExpressionAttributeNames: { "#read": "read" },
+          ExpressionAttributeValues: {
+            ":read": true,
+            ":readAt": readAt,
+          },
+        })
+      );
+      updated += 1;
+    }
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return updated;
 }
 
 async function writeNotification(email, payload) {
@@ -898,6 +937,13 @@ exports.handler = async (event) => {
     }
 
     if (event.httpMethod === "PUT") {
+      if (body.action === "readAllNotifications") {
+        if (!user.email) return json(401, { error: "Unauthorized" });
+        const email = String(user.email).toLowerCase();
+        const updated = await markAllInAppNotificationsRead(email);
+        return json(200, { ok: true, updated });
+      }
+
       if (body.action === "readNotification") {
         if (!user.email) return json(401, { error: "Unauthorized" });
         const sk = String(body.sk || body.SK || "").trim();

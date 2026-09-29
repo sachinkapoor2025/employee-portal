@@ -397,6 +397,8 @@ export const fetchLeaveNotifications = () =>
   api("/leave?notifications=true", "GET");
 export const markNotificationRead = (sk) =>
   api("/leave", "PUT", { action: "readNotification", sk });
+export const markAllNotificationsRead = () =>
+  api("/leave", "PUT", { action: "readAllNotifications" });
 export const applyLeave = (data) => api("/leave", "POST", data);
 export const reviewLeave = (leaveId, status, rejectionReason) =>
   api("/leave", "PUT", { leaveId, status, rejectionReason });

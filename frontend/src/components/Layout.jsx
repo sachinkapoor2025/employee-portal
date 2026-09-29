@@ -38,7 +38,7 @@ import {
   getViewRole,
   getLoggedInEmail,
 } from "../services/auth";
-import { fetchLeaveNotifications, markNotificationRead, fetchDocumentNotificationFeed, markDocumentNotificationsSeen } from "../services/api";
+import { fetchLeaveNotifications, markNotificationRead, markAllNotificationsRead, fetchDocumentNotificationFeed, markDocumentNotificationsSeen } from "../services/api";
 import {
   isZoneNotification,
   isRedZoneNotification,
@@ -154,6 +154,7 @@ export default function Layout({ children }) {
   const [search, setSearch] = useState("");
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [markingAllRead, setMarkingAllRead] = useState(false);
   const [docEvents, setDocEvents] = useState([]);
   const [docUnread, setDocUnread] = useState(0);
   const [docLastSeenAt, setDocLastSeenAt] = useState(null);
@@ -250,6 +251,23 @@ export default function Layout({ children }) {
     }
   };
 
+  const markAllInAppRead = async () => {
+    if (markingAllRead || unreadCount(notifications) === 0) return;
+    setMarkingAllRead(true);
+    try {
+      await markAllNotificationsRead();
+      setNotifications((prev) =>
+        prev.map((n) =>
+          n.read === true ? n : { ...n, read: true, readAt: new Date().toISOString() }
+        )
+      );
+    } catch {
+      /* keep existing unread state if mark-all fails */
+    } finally {
+      setMarkingAllRead(false);
+    }
+  };
+
   const openNotification = async (item) => {
     if (item?.kind === "document") {
       setNotifyOpen(false);
@@ -300,6 +318,7 @@ export default function Layout({ children }) {
   }, [docEvents, docLastSeenAt, notifications]);
 
   const unread = unreadCount(notifications) + docUnread;
+  const inAppUnread = unreadCount(notifications);
 
   useEffect(() => {
     const onResize = () => {
@@ -526,6 +545,32 @@ export default function Layout({ children }) {
               </button>
               {notifyOpen ? (
                 <div className="dgv-notify-panel" role="menu" aria-label="Notifications">
+                  {inAppUnread > 0 ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        padding: "4px 4px 8px",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={markAllInAppRead}
+                        disabled={markingAllRead}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          color: "var(--dgv-text-secondary)",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: markingAllRead ? "default" : "pointer",
+                          padding: "4px 8px",
+                        }}
+                      >
+                        Mark all as read
+                      </button>
+                    </div>
+                  ) : null}
                   {notifyItems.length === 0 ? (
                     <p style={{ margin: 12, fontSize: 13, color: "var(--dgv-text-muted)" }}>
                       No notifications.
