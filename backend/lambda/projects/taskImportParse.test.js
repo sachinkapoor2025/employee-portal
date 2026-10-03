@@ -3,6 +3,7 @@ const XLSX = require("xlsx");
 const { DESCRIPTION_MAX, TITLE_MAX } = require("./escalation");
 const {
   TASK_IMPORT_COLUMNS,
+  TASK_IMPORT_REQUIRED_COLUMNS,
   parseTaskImportWorkbook,
   combineIstIso,
 } = require("./taskImportParse");
@@ -416,6 +417,59 @@ test("optional task type may be blank", () => {
   const result = parseRows([row]);
   assert.strictEqual(result.rows[0].status, "VALID");
   assert.strictEqual(result.rows[0].values.taskType, "");
+});
+
+test("legacy 11-column workbooks remain valid", () => {
+  const result = parseTaskImportWorkbook(
+    workbookBuffer({ rows: [TASK_IMPORT_REQUIRED_COLUMNS, VALID_ROW] }),
+    { nowMs: NOW_MS, projects: PROJECTS }
+  );
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.rows[0].status, "VALID");
+  assert.strictEqual(result.rows[0].values.estimatedHours, null);
+});
+
+test("new template blank estimated hours is valid", () => {
+  const result = parseRows([[...VALID_ROW, ""]]);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.rows[0].values.estimatedHours, null);
+});
+
+test("positive decimal estimated hours parse", () => {
+  const result = parseRows([[...VALID_ROW, 2.25]]);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.rows[0].values.estimatedHours, 2.25);
+});
+
+test("invalid estimated hours are row errors on column L", () => {
+  for (const value of [0, -1, "abc", "1.5h", "NaN", "Infinity"]) {
+    const result = parseRows([[...VALID_ROW, value]]);
+    assert.strictEqual(result.rows[0].status, "INVALID");
+    assert.ok(fieldErrors(result.rows[0], "estimatedHours").length);
+  }
+});
+
+test("unexpected 13th column is a workbook error", () => {
+  const result = parseTaskImportWorkbook(
+    workbookBuffer({
+      rows: [[...TASK_IMPORT_COLUMNS, "Extra"], [...VALID_ROW, "1.5", "nope"]],
+    }),
+    { nowMs: NOW_MS, projects: PROJECTS }
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.errors.some((item) => /extra columns/i.test(item.message)));
+  assert.strictEqual(result.rows.length, 0);
+});
+
+test("wrong 12th header is a workbook error", () => {
+  const result = parseTaskImportWorkbook(
+    workbookBuffer({
+      rows: [[...TASK_IMPORT_REQUIRED_COLUMNS, "Effort"], [...VALID_ROW, "1.5"]],
+    }),
+    { nowMs: NOW_MS, projects: PROJECTS }
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.errors.some((item) => /columns/i.test(item.message)));
 });
 
 console.log(`taskImportParse.test.js: ${passed} tests passed`);

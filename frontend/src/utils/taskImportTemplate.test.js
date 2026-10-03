@@ -23,6 +23,7 @@ test("workbook has Tasks then Instructions sheets", () => {
 test("Tasks sheet has the required columns in order", () => {
   const rows = sheetMatrix(buildTaskImportWorkbook(), "Tasks");
   expect(rows[0]).toEqual(TASK_IMPORT_COLUMNS);
+  expect(rows[0][11]).toBe("Estimated Hours");
 });
 
 test("Tasks sheet includes 3 example rows with required formats", () => {
@@ -58,6 +59,9 @@ test("Instructions sheet covers admin rules", () => {
   expect(text).toMatch(/5 MB/);
   expect(text).toMatch(/Do not change the column names/);
   expect(text).toMatch(/\+05:30/);
+  expect(text).toMatch(/Estimated Hours/);
+  expect(text).toMatch(/excluding lunch and breaks/);
+  expect(text).toMatch(/positive numbers/);
 });
 
 test("generated file is a real xlsx zip", () => {

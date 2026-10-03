@@ -248,6 +248,30 @@ async function run() {
     assert.strictEqual(assignments.length, 1);
     assert.strictEqual(assignments[0].email, PRIYA);
     assert.strictEqual(assignments[0].status, "TODO");
+    assert.strictEqual(task.estimatedHours, null);
+    assert.strictEqual(task.durationHours, null);
+  });
+
+  await test("estimatedHours 2.25 persists on canonical and project copy", async () => {
+    const { ddb } = setup();
+    const res = parse(await handler(adminPost(createBody({ estimatedHours: "2.25" }))));
+    assert.strictEqual(res.statusCode, 201);
+    const task = entityTasks(ddb)[0];
+    assert.strictEqual(task.estimatedHours, 2.25);
+    assert.strictEqual(task.durationType, null);
+    const copy = ddb.of(WORK).find(
+      (item) => item.PK === `PROJECT#${PROJECT_ID}` && item.SK === `TASK#${task.taskId}`
+    );
+    assert.ok(copy);
+    assert.strictEqual(copy.estimatedHours, 2.25);
+  });
+
+  await test("invalid estimatedHours is rejected and does not persist", async () => {
+    const { ddb } = setup();
+    const res = parse(await handler(adminPost(createBody({ estimatedHours: 0 }))));
+    assert.strictEqual(res.statusCode, 400);
+    assert.ok(res.body.errors.estimatedHours);
+    assertNothingPersisted(ddb);
   });
 
   await test("afternoon 16:00 to next-day 18:00 succeeds", async () => {

@@ -10,6 +10,10 @@ import { fetchProjects, fetchTaskList, createProject, createTask, fetchUsers } f
 import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
 import { displayNameFromEmail } from "../../utils/meetings";
 import {
+  ESTIMATED_HOURS_HELPER,
+  parseEstimatedHours,
+} from "../../utils/estimatedHours";
+import {
   colors,
   pageCard,
   pageTitle,
@@ -322,6 +326,7 @@ export default function ManageTasks() {
     dueDate: "",
     dueTime: "",
     projectId: "",
+    estimatedHours: "",
   });
   const [projectModalSource, setProjectModalSource] = useState("page");
   const [creatingProject, setCreatingProject] = useState(false);
@@ -448,6 +453,7 @@ export default function ManageTasks() {
     dueDate: "",
     dueTime: "",
     projectId: "",
+    estimatedHours: "",
   };
 
   const saveTask = async () => {
@@ -487,6 +493,10 @@ export default function ManageTasks() {
     if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
       errors.dueDate = "Deadline must be after the start date and time.";
     }
+    const estimated = parseEstimatedHours(taskForm.estimatedHours);
+    if (!estimated.ok) {
+      errors.estimatedHours = estimated.error;
+    }
     if (Object.keys(errors).length) {
       setFormErrors(errors);
       return;
@@ -507,6 +517,7 @@ export default function ManageTasks() {
         projectId: taskForm.projectId,
         startDate: startIso,
         dueDate: dueIso,
+        estimatedHours: estimated.value,
       });
       setShowTask(false);
       setTaskForm(emptyTaskForm);
@@ -1238,6 +1249,34 @@ export default function ManageTasks() {
               error={formErrors.dueTime}
               onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
             />
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={formLabel} htmlFor="task-estimated-hours">
+                Estimated Hours
+              </label>
+              <input
+                id="task-estimated-hours"
+                style={{
+                  ...formInput,
+                  border: formErrors.estimatedHours
+                    ? "1px solid var(--dgv-danger)"
+                    : formInput.border,
+                }}
+                type="text"
+                inputMode="decimal"
+                value={taskForm.estimatedHours}
+                onChange={(e) =>
+                  setTaskForm({ ...taskForm, estimatedHours: e.target.value })
+                }
+              />
+              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: -8, marginBottom: 12 }}>
+                {ESTIMATED_HOURS_HELPER}
+              </div>
+              {formErrors.estimatedHours ? (
+                <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -8, marginBottom: 12 }}>
+                  {formErrors.estimatedHours}
+                </div>
+              ) : null}
+            </div>
             <div style={{ gridColumn: "1 / -1" }}>
               <label style={formLabel}>Description</label>
               <textarea

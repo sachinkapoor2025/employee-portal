@@ -10,6 +10,7 @@ export const TASK_IMPORT_COLUMN_MAP = [
   { key: "deadlineDate", letter: "I", header: "Deadline Date" },
   { key: "deadlineTime", letter: "J", header: "Deadline Time" },
   { key: "description", letter: "K", header: "Description" },
+  { key: "estimatedHours", letter: "L", header: "Estimated Hours" },
 ];
 
 function columnMeta(field) {

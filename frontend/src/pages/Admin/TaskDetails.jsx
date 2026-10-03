@@ -17,6 +17,7 @@ import {
   reportTaskBlocker,
 } from "../../services/api";
 import { getLoggedInEmail } from "../../services/auth";
+import { formatEstimatedHours } from "../../utils/estimatedHours";
 import {
   colors,
   pageCard,
@@ -2218,6 +2219,7 @@ function EmployeeTaskBody({
             zoneDisplay(employeeZone, employeeStatus).label
           }`.trim()}
         />
+        <InfoRow label="Estimated hours" value={formatEstimatedHours(task.estimatedHours)} />
         <InfoRow label="Duration" value={formatTaskDuration(task) || "—"} />
       </section>
 

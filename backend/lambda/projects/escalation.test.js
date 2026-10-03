@@ -312,6 +312,29 @@ assert.strictEqual(validCreate.ok, true);
 assert.strictEqual(validCreate.title, "Prepare Monthly Report");
 assert.strictEqual(validCreate.emails.length, 2);
 assert.strictEqual(validCreate.category, "HR");
+assert.strictEqual(validCreate.estimatedHours, null);
+
+const withEstimate = validateCreatePayload({
+  title: "Estimated task",
+  assignees: ["rahul@mydgv.com"],
+  priority: "MEDIUM",
+  startDate: "2026-08-25T04:30:00.000Z",
+  dueDate: "2026-08-25T11:30:00.000Z",
+  estimatedHours: "2.25",
+});
+assert.strictEqual(withEstimate.ok, true);
+assert.strictEqual(withEstimate.estimatedHours, 2.25);
+
+const badEstimate = validateCreatePayload({
+  title: "Bad estimate",
+  assignees: ["rahul@mydgv.com"],
+  priority: "MEDIUM",
+  startDate: "2026-08-25T04:30:00.000Z",
+  dueDate: "2026-08-25T11:30:00.000Z",
+  estimatedHours: 0,
+});
+assert.strictEqual(badEstimate.ok, false);
+assert.ok(badEstimate.errors.estimatedHours);
 
 const missing = validateCreatePayload({ title: "  " });
 assert.strictEqual(missing.ok, false);

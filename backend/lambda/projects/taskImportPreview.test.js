@@ -61,7 +61,9 @@ function workbookBuffer({
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   const lastRow = Math.max(1, rows.length);
-  sheet["!ref"] = `A1:K${lastRow}`;
+  const width = Math.max(11, ...rows.map((row) => (Array.isArray(row) ? row.length : 0)));
+  const lastCol = String.fromCharCode(64 + width);
+  sheet["!ref"] = `A1:${lastCol}${lastRow}`;
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
@@ -544,6 +546,25 @@ async function run() {
     assert.ok(byRow[20].cellErrors.some((item) => item.cell === "G20"));
     assert.strictEqual(byRow[14].cellErrors.find((item) => item.cell === "F14").column, "Priority");
     assert.strictEqual(byRow[20].cellErrors.find((item) => item.cell === "G20").column, "Start Date");
+  });
+
+  await test("invalid estimated hours report cell L", async () => {
+    const ddb = createMemoryDdb();
+    seedProjects(ddb);
+    seedAccess(ddb);
+    const meta = seedMeta(ddb);
+    const s3 = createMemoryS3({
+      [meta.s3Key]: workbookBuffer({
+        rows: [TASK_IMPORT_COLUMNS, [...VALID_ROW, 0]],
+      }),
+    });
+    const result = await preview({ ddb, s3 });
+    const row = result.body.rows[0];
+    assert.strictEqual(row.status, "INVALID");
+    const err = row.cellErrors.find((item) => item.cell === "L2");
+    assert.ok(err);
+    assert.strictEqual(err.column, "Estimated Hours");
+    assert.ok(/positive number/i.test(err.message));
   });
 
   await test("repeated preview overwrites the same ROW keys", async () => {

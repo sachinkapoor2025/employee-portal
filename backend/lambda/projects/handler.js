@@ -1157,6 +1157,7 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       ),
     },
   ];
+  const copiedEstimate = escalation.parseEstimatedHours(sourceTask.estimatedHours);
   const item = snapshotTask(
     {
       PK: "ENTITY#TASK",
@@ -1176,6 +1177,7 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       durationDays: null,
       durationStart: null,
       durationEnd: null,
+      estimatedHours: copiedEstimate.ok ? copiedEstimate.value : null,
       completedDate: null,
       labels: Array.isArray(sourceTask.labels) ? sourceTask.labels : [],
       archived: false,
@@ -2013,6 +2015,7 @@ exports.handler = async (event) => {
           durationDays: null,
           durationStart: null,
           durationEnd: null,
+          estimatedHours: parsed.estimatedHours,
           completedDate: null,
           labels: body.labels || [],
           archived: false,
@@ -2136,6 +2139,7 @@ exports.handler = async (event) => {
       delete allowed.projectId;
       delete allowed.redAdminNotifyStatus;
       delete allowed.redAdminNotifiedAt;
+      delete allowed.estimatedHours;
 
       const nowIso = new Date().toISOString();
       const nowMs = Date.now();

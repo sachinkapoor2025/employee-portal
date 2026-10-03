@@ -686,6 +686,16 @@ test("employee Schedule remains a separate section", async () => {
   expect(screen.getByText("Due in:")).toBeInTheDocument();
   expect(screen.getByText("Current Zone:")).toBeInTheDocument();
   expect(screen.getByText("Duration:")).toBeInTheDocument();
+  expect(screen.getByText("Estimated hours:")).toBeInTheDocument();
+  expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+});
+
+test("employee Schedule shows estimated hours when present", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ extra: { estimatedHours: 1.5 } }));
+  render(<TaskDetails />);
+  expect(await screen.findByText("Estimated hours:")).toBeInTheDocument();
+  expect(screen.getByText("1.5 hours")).toBeInTheDocument();
+  expect(screen.getByText("Duration:")).toBeInTheDocument();
 });
 
 test("Task Activity remains visible", async () => {

@@ -5,6 +5,8 @@
  * detection time. Completed and REVIEW assignments freeze their zone.
  */
 
+const { parseEstimatedHours } = require("./estimatedHours");
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const parsedOrange = Number(process.env.TASK_ORANGE_MS);
 const ORANGE_MS =
@@ -155,6 +157,11 @@ function validateCreatePayload(body = {}) {
     errors.dueDate = quarterHourMessage("Deadline time");
   }
 
+  const estimated = parseEstimatedHours(body.estimatedHours);
+  if (!estimated.ok) {
+    errors.estimatedHours = estimated.error;
+  }
+
   return {
     ok: Object.keys(errors).length === 0,
     errors,
@@ -165,6 +172,7 @@ function validateCreatePayload(body = {}) {
     category,
     startDate: body.startDate || null,
     dueDate: body.dueDate || null,
+    estimatedHours: estimated.ok ? estimated.value : null,
   };
 }
 
@@ -889,6 +897,7 @@ module.exports = {
   normalizePriority,
   normalizeCategory,
   validateCreatePayload,
+  parseEstimatedHours,
   allowsQuarterHourOrExisting,
   validateAttachment,
   priorityLabel,

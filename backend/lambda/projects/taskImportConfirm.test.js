@@ -164,7 +164,9 @@ function workbookBuffer({
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   const lastRow = Math.max(1, rows.length);
-  sheet["!ref"] = `A1:K${lastRow}`;
+  const width = Math.max(11, ...rows.map((row) => (Array.isArray(row) ? row.length : 0)));
+  const lastCol = String.fromCharCode(64 + width);
+  sheet["!ref"] = `A1:${lastCol}${lastRow}`;
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
@@ -916,6 +918,9 @@ async function run() {
     assert.strictEqual(createdImmediate.title, "Homepage banner update");
     assert.strictEqual(createdImmediate.category, "Development");
     assert.strictEqual(createdImmediate.priority, "HIGH");
+    assert.strictEqual(createdImmediate.estimatedHours, null);
+    assert.strictEqual(createdImmediate.durationHours, null);
+    assert.strictEqual(createdImmediate.durationType, null);
     assert.strictEqual(createdImmediate.archived, false);
     assert.ok(createdImmediate.createdAt);
     assert.ok(createdImmediate.updatedAt);
@@ -3284,6 +3289,24 @@ async function run() {
     assert.ok(mail.some((call) => /NO_SHIFT/.test(call.text)));
     assert.strictEqual(postponeEmails().length, 0);
     assert.strictEqual(assignmentEmails().length, 0);
+  });
+
+  await test("excel import persists estimatedHours on canonical and project copy", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({
+      rows: [TASK_IMPORT_COLUMNS, [...VALID_ROW, 2.25]],
+    });
+    const result = await confirm(env);
+    assert.strictEqual(result.statusCode, 200);
+    const task = entityTasks(env.ddb)[0];
+    assert.strictEqual(task.estimatedHours, 2.25);
+    assert.strictEqual(task.durationHours, null);
+    assert.strictEqual(task.durationType, null);
+    const copy = env.ddb.of(WORK_TABLE).find(
+      (item) => item.PK === `PROJECT#${task.projectId}` && item.SK === `TASK#${task.taskId}`
+    );
+    assert.ok(copy);
+    assert.strictEqual(copy.estimatedHours, 2.25);
   });
 }
 

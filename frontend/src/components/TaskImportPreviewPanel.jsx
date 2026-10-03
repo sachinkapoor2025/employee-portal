@@ -188,6 +188,9 @@ export default function TaskImportPreviewPanel({
                 <span>
                   Excel Row {row.rowNumber}
                   {row.values?.taskTitle ? ` — ${row.values.taskTitle}` : ""}
+                  {row.values?.estimatedHours != null
+                    ? ` · ${row.values.estimatedHours} h`
+                    : ""}
                 </span>
                 <span className="dgv-badge dgv-badge--success">Valid</span>
               </div>

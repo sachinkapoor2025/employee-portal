@@ -7,6 +7,7 @@ const {
   normalizeEmail,
   normalizeCategory,
 } = require("./escalation");
+const { parseEstimatedHours } = require("./estimatedHours");
 const TASK_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
 
 const TASKS_SHEET_NAME = "Tasks";
@@ -16,7 +17,7 @@ const ROW_STATUS = Object.freeze({
 });
 const ASSIGNMENT_MODES = Object.freeze(["IMMEDIATE", "SCHEDULED"]);
 const IMPORT_PRIORITIES = Object.freeze(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
-const TASK_IMPORT_COLUMNS = Object.freeze([
+const TASK_IMPORT_REQUIRED_COLUMNS = Object.freeze([
   "Task Title",
   "Project",
   "Assignee Email",
@@ -28,6 +29,11 @@ const TASK_IMPORT_COLUMNS = Object.freeze([
   "Deadline Date",
   "Deadline Time",
   "Description",
+]);
+const ESTIMATED_HOURS_HEADER = "Estimated Hours";
+const TASK_IMPORT_COLUMNS = Object.freeze([
+  ...TASK_IMPORT_REQUIRED_COLUMNS,
+  ESTIMATED_HOURS_HEADER,
 ]);
 const COLUMN_KEYS = Object.freeze([
   "taskTitle",
@@ -41,6 +47,7 @@ const COLUMN_KEYS = Object.freeze([
   "deadlineDate",
   "deadlineTime",
   "description",
+  "estimatedHours",
 ]);
 const TASK_IMPORT_COLUMN_MAP = Object.freeze(
   TASK_IMPORT_COLUMNS.map((header, index) => ({
@@ -98,6 +105,7 @@ function emptyValues() {
     startDateTime: null,
     deadlineDateTime: null,
     projectId: null,
+    estimatedHours: null,
   };
 }
 
@@ -149,18 +157,32 @@ function isBlankRow(cells) {
 
 function extraHeaderNames(headerRow) {
   const extras = [];
-  for (let i = TASK_IMPORT_COLUMNS.length; i < headerRow.length; i += 1) {
+  const start = hasEstimatedHoursColumn(headerRow)
+    ? TASK_IMPORT_COLUMNS.length
+    : TASK_IMPORT_REQUIRED_COLUMNS.length;
+  for (let i = start; i < headerRow.length; i += 1) {
     const name = headerCell(headerRow[i]);
     if (name) extras.push(name);
   }
   return extras;
 }
 
+function hasEstimatedHoursColumn(headerRow) {
+  return headerCell(headerRow?.[TASK_IMPORT_REQUIRED_COLUMNS.length]) === ESTIMATED_HOURS_HEADER;
+}
+
 function headersMatch(headerRow) {
-  if (!Array.isArray(headerRow) || headerRow.length < TASK_IMPORT_COLUMNS.length) {
+  if (!Array.isArray(headerRow) || headerRow.length < TASK_IMPORT_REQUIRED_COLUMNS.length) {
     return false;
   }
-  return TASK_IMPORT_COLUMNS.every((name, i) => headerCell(headerRow[i]) === name);
+  if (!TASK_IMPORT_REQUIRED_COLUMNS.every((name, i) => headerCell(headerRow[i]) === name)) {
+    return false;
+  }
+  const twelfth = headerCell(headerRow[TASK_IMPORT_REQUIRED_COLUMNS.length]);
+  if (twelfth && twelfth !== ESTIMATED_HOURS_HEADER) {
+    return false;
+  }
+  return true;
 }
 
 function excelSerialToUtcDate(serial) {
@@ -409,7 +431,7 @@ function rawFromCells(cells) {
   return raw;
 }
 
-function validateDataRow(cells, { nowMs, catalog } = {}) {
+function validateDataRow(cells, { nowMs, catalog, includeEstimatedHours = true } = {}) {
   const errors = [];
   const warnings = [];
   const raw = rawFromCells(cells);
@@ -494,6 +516,20 @@ function validateDataRow(cells, { nowMs, catalog } = {}) {
       "description",
       `Description must be ${DESCRIPTION_MAX} characters or fewer.`
     );
+  }
+
+  if (includeEstimatedHours) {
+    const estimatedRaw = cells?.[11];
+    raw.estimatedHours = cellRaw(estimatedRaw);
+    const estimated = parseEstimatedHours(estimatedRaw);
+    if (!estimated.ok) {
+      addError(errors, "estimatedHours", estimated.error, raw.estimatedHours);
+    } else {
+      values.estimatedHours = estimated.value;
+    }
+  } else {
+    raw.estimatedHours = "";
+    values.estimatedHours = null;
   }
 
   if (values.startDate && values.startTime) {
@@ -600,7 +636,11 @@ function parseTaskImportWorkbook(input, options = {}) {
   for (let i = 1; i < matrix.length; i += 1) {
     const cells = Array.isArray(matrix[i]) ? matrix[i] : [];
     if (isBlankRow(cells)) continue;
-    const parsed = validateDataRow(cells, { nowMs, catalog });
+    const parsed = validateDataRow(cells, {
+      nowMs,
+      catalog,
+      includeEstimatedHours: hasEstimatedHoursColumn(headerRow),
+    });
     rows.push({
       rowNumber: i + 1,
       ...parsed,
@@ -630,6 +670,8 @@ function parseTaskImportWorkbook(input, options = {}) {
 
 module.exports = {
   TASKS_SHEET_NAME,
+  TASK_IMPORT_REQUIRED_COLUMNS,
+  ESTIMATED_HOURS_HEADER,
   TASK_IMPORT_COLUMNS,
   TASK_IMPORT_COLUMN_MAP,
   ASSIGNMENT_MODES,
