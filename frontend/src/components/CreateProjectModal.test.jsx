@@ -83,12 +83,14 @@ test("restricted toggle is off by default and open create omits accessMode", asy
   expect(toggle).not.toBeChecked();
   expect(screen.queryByLabelText("Search employees")).not.toBeInTheDocument();
   userEvent.type(screen.getAllByRole("textbox")[0], "Portal");
+  userEvent.selectOptions(screen.getByLabelText("Project type"), "INTERNAL");
   userEvent.click(screen.getByRole("button", { name: "Create" }));
   await waitFor(() => {
     expect(onSubmit).toHaveBeenCalledWith({
       name: "Portal",
       client: "",
       description: "",
+      projectType: "INTERNAL",
     });
   });
   expect(onSubmit.mock.calls[0][0].accessMode).toBeUndefined();
@@ -110,12 +112,14 @@ test("restricted create loads employees, blocks duplicates, and sends members", 
   userEvent.click(screen.getByRole("checkbox", { name: /Ria/ }));
   expect(screen.getAllByRole("checkbox", { name: /Rahul/ })[0]).toBeChecked();
   userEvent.type(screen.getAllByRole("textbox")[0], "Secret");
+  userEvent.selectOptions(screen.getByLabelText("Project type"), "INTERNAL");
   userEvent.click(screen.getByRole("button", { name: "Create" }));
   await waitFor(() => {
     expect(onSubmit).toHaveBeenCalledWith({
       name: "Secret",
       client: "",
       description: "",
+      projectType: "INTERNAL",
       accessMode: "RESTRICTED",
       members: [{ email: "rahul@mydgv.com" }, { email: "ria@mydgv.com" }],
     });
@@ -128,6 +132,7 @@ test("restricted create without employees shows a validation error", async () =>
     <CreateProjectModal open mode="create" onClose={jest.fn()} onSubmit={onSubmit} />
   );
   userEvent.type(screen.getAllByRole("textbox")[0], "Secret");
+  userEvent.selectOptions(screen.getByLabelText("Project type"), "INTERNAL");
   userEvent.click(screen.getByRole("checkbox", { name: "Restricted Project" }));
   await screen.findByLabelText("Search employees");
   userEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -137,12 +142,27 @@ test("restricted create without employees shows a validation error", async () =>
   expect(onSubmit).not.toHaveBeenCalled();
 });
 
+test("create requires a project type and previews the generated code", async () => {
+  const onSubmit = jest.fn();
+  render(
+    <CreateProjectModal open mode="create" onClose={jest.fn()} onSubmit={onSubmit} />
+  );
+  userEvent.type(screen.getAllByRole("textbox")[0], "DGV Portal");
+  userEvent.click(screen.getByRole("button", { name: "Create" }));
+  expect(await screen.findByText("Project type is required.")).toBeInTheDocument();
+  expect(onSubmit).not.toHaveBeenCalled();
+  userEvent.selectOptions(screen.getByLabelText("Project type"), "INTERNAL");
+  expect(screen.getByLabelText("Project code preview")).toHaveValue("DGV-INT-DGV_PORTAL");
+  expect(screen.getByLabelText("Project code preview")).toHaveAttribute("readOnly");
+});
+
 test("restricted create surfaces API errors instead of success", async () => {
   const onSubmit = jest.fn().mockRejectedValue(new Error("Restricted project creation is not enabled"));
   render(
     <CreateProjectModal open mode="create" onClose={jest.fn()} onSubmit={onSubmit} />
   );
   userEvent.type(screen.getAllByRole("textbox")[0], "Secret");
+  userEvent.selectOptions(screen.getByLabelText("Project type"), "INTERNAL");
   userEvent.click(screen.getByRole("checkbox", { name: "Restricted Project" }));
   userEvent.click(await screen.findByRole("checkbox", { name: /Rahul/ }));
   userEvent.click(screen.getByRole("button", { name: "Create" }));

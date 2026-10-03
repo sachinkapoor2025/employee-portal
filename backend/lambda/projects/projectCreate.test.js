@@ -60,6 +60,7 @@ const MEMBER_ACCESS = {
 function restrictedBody(extra = {}) {
   return {
     name: "Secret",
+    projectType: "INTERNAL",
     accessMode: "RESTRICTED",
     members: [{ email: `  ${MEMBER_EMAIL.toUpperCase()}  ` }, { email: MEMBER_EMAIL }, ""],
     ...extra,
@@ -69,7 +70,7 @@ function restrictedBody(extra = {}) {
 function createOpts(overrides = {}) {
   return {
     user: { email: "  Admin@MyDGV.com ", isAdmin: true },
-    body: { name: "Portal", client: "DGV", description: "Work" },
+    body: { name: "Portal", client: "DGV", description: "Work", projectType: "INTERNAL" },
     ddb: mockDdb({ access: accessRow("ADMIN", "ACTIVE") }),
     tableName: WORK,
     accessTable: ACCESS,
@@ -122,14 +123,20 @@ async function run() {
     assert.strictEqual(res.body.client, "DGV");
     assert.strictEqual(res.body.description, "Work");
     assert.strictEqual(res.body.status, "ACTIVE");
+    assert.strictEqual(res.body.projectType, "INTERNAL");
+    assert.strictEqual(res.body.projectCode, "DGV-INT-PORTAL");
+    assert.strictEqual(res.body.classified, true);
     assert.ok(Array.isArray(res.body.members));
-    const put = ddb.calls.find((c) => c instanceof PutCommand);
-    assert.ok(put);
-    assert.strictEqual(put.input.ConditionExpression, "attribute_not_exists(PK)");
-    assert.strictEqual(put.input.Item.accessMode, ACCESS_OPEN);
-    assert.ok(!ddb.calls.some((c) => c instanceof TransactWriteCommand));
-    assert.ok(!String(put.input.Item.SK).startsWith("PROJECT_ADMIN"));
-    assert.ok(!String(put.input.Item.SK).includes("MEMBER"));
+    const tx = ddb.calls.find((c) => c instanceof TransactWriteCommand);
+    assert.ok(tx);
+    assert.strictEqual(tx.input.TransactItems.length, 2);
+    assert.strictEqual(tx.input.TransactItems[0].Put.Item.accessMode, ACCESS_OPEN);
+    assert.strictEqual(tx.input.TransactItems[0].Put.ConditionExpression, "attribute_not_exists(PK)");
+    assert.strictEqual(tx.input.TransactItems[1].Put.Item.PK, "ENTITY#PROJECT_CODE");
+    assert.strictEqual(tx.input.TransactItems[1].Put.Item.SK, "CODE#DGV-INT-PORTAL");
+    assert.ok(!ddb.calls.some((c) => c instanceof PutCommand));
+    assert.ok(!String(tx.input.TransactItems[0].Put.Item.SK).startsWith("PROJECT_ADMIN"));
+    assert.ok(!String(tx.input.TransactItems[0].Put.Item.SK).includes("MEMBER"));
   }
 
   {
@@ -138,7 +145,7 @@ async function run() {
       createOpts({
         ddb,
         user: { email: "super@mydgv.com", isAdmin: true },
-        body: { name: "X", lead: "  Lead@MyDGV.com " },
+        body: { name: "X", lead: "  Lead@MyDGV.com ", projectType: "INTERNAL" },
       })
     );
     assert.strictEqual(res.statusCode, 201);
@@ -190,6 +197,7 @@ async function run() {
         ddb,
         body: {
           name: "Portal",
+          projectType: "INTERNAL",
           projectId: "client-id",
           PK: "FORGED",
           SK: "FORGED",
@@ -238,11 +246,12 @@ async function run() {
     assert.ok(!res.body.PK.startsWith("PROJECT#admin"));
     const tx = ddb.calls.find((c) => c instanceof TransactWriteCommand);
     assert.ok(tx);
-    assert.strictEqual(tx.input.TransactItems.length, 5);
+    assert.strictEqual(tx.input.TransactItems.length, 6);
     const items = tx.input.TransactItems.map((t) => t.Put.Item);
     assert.strictEqual(items[0].PK, "ENTITY#PROJECT");
     assert.strictEqual(items[0].SK, `PROJECT#${ID}`);
     assert.strictEqual(items[0].accessMode, ACCESS_RESTRICTED);
+    assert.strictEqual(items[0].projectCode, "DGV-INT-SECRET");
     assert.strictEqual(items[0].activeAdminCount, 1);
     assert.strictEqual(items[1].PK, `PROJECT#${ID}`);
     assert.strictEqual(items[1].SK, "PROJECT_ADMIN#admin@mydgv.com");
@@ -255,9 +264,11 @@ async function run() {
     assert.strictEqual(items[4].PK, `USER#${MEMBER_EMAIL}`);
     assert.strictEqual(items[4].SK, `PROJECT_MEMBER#${ID}`);
     assert.strictEqual(items[4].status, "ACTIVE");
+    assert.strictEqual(items[5].PK, "ENTITY#PROJECT_CODE");
+    assert.strictEqual(items[5].SK, "CODE#DGV-INT-SECRET");
     assert.ok(items.slice(1, 3).every((it) => it.type === "PROJECT_ADMIN"));
     assert.ok(items.slice(1, 3).every((it) => it.taskVisibility === VISIBILITY_ASSIGNED_ONLY));
-    assert.ok(items.slice(1).every((it) => it.status === "ACTIVE"));
+    assert.ok(items.slice(1, 5).every((it) => it.status === "ACTIVE"));
     assert.ok(!items.some((it) => String(it.SK).startsWith("PROJECT_MEMBER#") && it.PK.startsWith("PROJECT#")));
     assert.ok(!items.some((it) => String(it.SK).startsWith("PROJECT_MEMBER#") && it.type === "PROJECT_ADMIN"));
     assert.ok(!ddb.calls.some((c) => c instanceof PutCommand));
@@ -357,7 +368,7 @@ async function run() {
     const res = await handleCreateProject(
       createOpts({
         ddb,
-        body: { name: "Secret", accessMode: "RESTRICTED" },
+        body: { name: "Secret", projectType: "INTERNAL", accessMode: "RESTRICTED" },
         restrictedCreateEnabled: true,
       })
     );
@@ -407,6 +418,35 @@ async function run() {
     assert.ok(sks.includes(`MEMBER#${MEMBER_EMAIL}`));
     assert.ok(sks.includes(`PROJECT_MEMBER#${ID}`));
     assert.ok(sks.includes("PROJECT_ADMIN#admin@mydgv.com"));
+  }
+
+  {
+    const ddb = mockDdb({ access: accessRow("ADMIN", "ACTIVE") });
+    const res = await handleCreateProject(
+      createOpts({
+        ddb,
+        body: { name: "Portal", client: "DGV" },
+      })
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.deepStrictEqual(res.body, { error: "projectType is required" });
+    assert.ok(!ddb.calls.some((c) => c instanceof TransactWriteCommand));
+  }
+
+  {
+    const ddb = mockDdb({ access: accessRow("ADMIN", "ACTIVE") });
+    const res = await handleCreateProject(
+      createOpts({
+        ddb,
+        body: {
+          name: "Portal",
+          projectType: "INTERNAL",
+          projectCode: "DGV-EXT-FORGED",
+        },
+      })
+    );
+    assert.strictEqual(res.statusCode, 201);
+    assert.strictEqual(res.body.projectCode, "DGV-INT-PORTAL");
   }
 
   console.log("project create authorization tests passed");

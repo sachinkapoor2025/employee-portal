@@ -5,11 +5,14 @@ import {
   deleteProjectErrorCopy,
   deleteProjectResultCopy,
   emptyProjectsCopy,
+  generateProjectCode,
   isDeletedProjectAction,
+  isProjectClassified,
   canShowManageAccess,
   projectAccessModeLabel,
   projectNamesMatch,
   projectStatusLabel,
+  projectTypeLabel,
   restoreProjectConfirmCopy,
   uniqueMemberEmails,
   unexpectedDeleteActionCopy,
@@ -99,7 +102,12 @@ test("create payload omits restricted fields unless enabled", () => {
       restricted: false,
       memberEmails: ["rahul@mydgv.com"],
     })
-  ).toEqual({ name: "Portal", client: "DGV", description: "Work" });
+  ).toEqual({
+    name: "Portal",
+    client: "DGV",
+    description: "Work",
+    projectType: "",
+  });
   expect(
     uniqueMemberEmails([
       { email: "  Rahul@MyDGV.com " },
@@ -112,12 +120,14 @@ test("create payload omits restricted fields unless enabled", () => {
     buildCreateProjectPayload({
       name: "Secret",
       restricted: true,
+      projectType: "internal",
       memberEmails: ["  Rahul@MyDGV.com ", "rahul@mydgv.com", ""],
     })
   ).toEqual({
     name: "Secret",
     client: "",
     description: "",
+    projectType: "INTERNAL",
     accessMode: "RESTRICTED",
     members: [{ email: "rahul@mydgv.com" }],
   });
@@ -131,4 +141,25 @@ test("Manage Access is only for Restricted Project Admins", () => {
   expect(canShowManageAccess({ accessMode: "RESTRICTED" })).toBe(false);
   expect(canShowManageAccess({ accessMode: "RESTRICTED", canManageAccess: false })).toBe(false);
   expect(canShowManageAccess({ accessMode: "RESTRICTED", canManageAccess: true })).toBe(true);
+});
+
+test("project code generation matches the documented format", () => {
+  expect(generateProjectCode("INTERNAL", "DGV Portal")).toBe("DGV-INT-DGV_PORTAL");
+  expect(generateProjectCode("EXTERNAL", "BlossomPot")).toBe("DGV-EXT-BLOSSOMPOT");
+  expect(generateProjectCode("EXTERNAL", "HalloweenReady")).toBe(
+    "DGV-EXT-HALLOWEENREADY"
+  );
+  expect(generateProjectCode("EXTERNAL", "Maharaja Chef")).toBe(
+    "DGV-EXT-MAHARAJA_CHEF"
+  );
+  expect(generateProjectCode("INTERNAL", "  __dgv   portal__  ")).toBe(
+    "DGV-INT-DGV_PORTAL"
+  );
+  expect(generateProjectCode("INTERNAL", "!!!")).toBe("");
+  expect(projectTypeLabel("INTERNAL")).toBe("Internal");
+  expect(projectTypeLabel("")).toBe("Unclassified");
+  expect(isProjectClassified({ projectType: "INTERNAL", projectCode: "DGV-INT-X" })).toBe(
+    true
+  );
+  expect(isProjectClassified({ name: "Legacy" })).toBe(false);
 });

@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import Modal, { confirmDiscardIfDirty } from "./ui/Modal";
 import ProjectMemberPicker from "./ProjectMemberPicker";
 import { fetchUsers } from "../services/api";
-import { formInput, formLabel } from "../theme";
-import { buildCreateProjectPayload } from "../utils/workProjectManage";
+import { formInput, formLabel, formSelect } from "../theme";
+import { buildCreateProjectPayload, generateProjectCode, isProjectClassified, projectTypeLabel } from "../utils/workProjectManage";
 
-const EMPTY_FORM = { name: "", client: "", description: "" };
+const EMPTY_FORM = { name: "", client: "", description: "", projectType: "" };
 
 function namesMatch(a, b) {
   return (
@@ -72,12 +72,13 @@ export default function CreateProjectModal({
       name: initial?.name || "",
       client: initial?.client || "",
       description: initial?.description || "",
+      projectType: initial?.projectType || "",
     });
     setRestricted(false);
     setMemberEmails([]);
     setUsersError("");
     setError("");
-  }, [open, initial?.name, initial?.client, initial?.description]);
+  }, [open, initial?.name, initial?.client, initial?.description, initial?.projectType]);
 
   useEffect(() => {
     if (!open || isEdit || !restricted) return undefined;
@@ -106,6 +107,7 @@ export default function CreateProjectModal({
     String(form.name || "").trim() !== String(initial?.name || "").trim() ||
       String(form.client || "") !== String(initial?.client || "") ||
       String(form.description || "") !== String(initial?.description || "") ||
+      String(form.projectType || "") !== String(initial?.projectType || "") ||
       (!isEdit && (restricted || memberEmails.length > 0))
   );
 
@@ -119,6 +121,10 @@ export default function CreateProjectModal({
     const name = String(form.name || "").trim();
     if (!name) {
       setError("Name is required.");
+      return;
+    }
+    if (!isEdit && !form.projectType) {
+      setError("Project type is required.");
       return;
     }
     const duplicate = (existingProjects || []).find(
@@ -151,6 +157,7 @@ export default function CreateProjectModal({
             name,
             client: form.client,
             description: form.description,
+            projectType: form.projectType,
             restricted,
             memberEmails,
           });
@@ -159,6 +166,11 @@ export default function CreateProjectModal({
       setError(err?.message || "Unable to save project.");
     }
   };
+
+  const codePreview = !isEdit
+    ? generateProjectCode(form.projectType, form.name)
+    : "";
+  const classified = isEdit && isProjectClassified(initial);
 
   return (
     <Modal
@@ -208,6 +220,59 @@ export default function CreateProjectModal({
         value={form.name}
         onChange={(v) => setForm({ ...form, name: v })}
       />
+      {!isEdit ? (
+        <>
+          <div>
+            <label style={formLabel} htmlFor="project-type">
+              Project type
+            </label>
+            <select
+              id="project-type"
+              style={formSelect}
+              value={form.projectType}
+              disabled={saving}
+              onChange={(e) =>
+                setForm({ ...form, projectType: e.target.value })
+              }
+            >
+              <option value="">Select type</option>
+              <option value="INTERNAL">Internal</option>
+              <option value="EXTERNAL">External</option>
+            </select>
+          </div>
+          <div>
+            <label style={formLabel}>Project code</label>
+            <input
+              style={formInput}
+              type="text"
+              readOnly
+              value={codePreview || "Select a type and enter a name"}
+              aria-label="Project code preview"
+            />
+          </div>
+        </>
+      ) : classified ? (
+        <>
+          <div>
+            <label style={formLabel}>Project type</label>
+            <input
+              style={formInput}
+              type="text"
+              readOnly
+              value={projectTypeLabel(initial?.projectType)}
+            />
+          </div>
+          <div>
+            <label style={formLabel}>Project code</label>
+            <input
+              style={formInput}
+              type="text"
+              readOnly
+              value={initial?.projectCode || ""}
+            />
+          </div>
+        </>
+      ) : null}
       <Field
         label="Client"
         value={form.client}

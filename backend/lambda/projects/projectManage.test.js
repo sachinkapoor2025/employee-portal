@@ -6,6 +6,7 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
@@ -25,6 +26,7 @@ const {
   getProjectName,
   handleDeleteProject,
   handleListProjects,
+  handleCreateProject,
   handlePatchProject,
   isActiveProject,
   isSafeTaskAttachmentKey,
@@ -90,6 +92,11 @@ function evalCatalogCondition(item, expr, values = {}) {
         !hasLock || String(item.deletionLockAt || "") < String(values[":stale"] || "");
       if (!staleOk) return false;
     } else if (hasLock) {
+      return false;
+    }
+  }
+  if (s.includes("attribute_not_exists(projectCode)")) {
+    if (item && Object.prototype.hasOwnProperty.call(item, "projectCode") && item.projectCode) {
       return false;
     }
   }
@@ -293,6 +300,56 @@ function createMemoryDdb(options = {}) {
           Count: sliced.length,
           LastEvaluatedKey: lastKey,
         };
+      }
+      if (command instanceof TransactWriteCommand) {
+        const ops = command.input.TransactItems || [];
+        const reasons = [];
+        let failed = false;
+        for (const op of ops) {
+          const put = op.Put;
+          const del = op.Delete;
+          if (put) {
+            const found = items.find(
+              (row) =>
+                row.TableName === put.TableName &&
+                row.Item.PK === put.Item.PK &&
+                row.Item.SK === put.Item.SK
+            );
+            if (
+              put.ConditionExpression &&
+              !evalCatalogCondition(
+                found ? found.Item : {},
+                put.ConditionExpression,
+                put.ExpressionAttributeValues || {}
+              )
+            ) {
+              reasons.push({ Code: "ConditionalCheckFailed" });
+              failed = true;
+            } else {
+              reasons.push({ Code: "None" });
+            }
+          } else if (del) {
+            reasons.push({ Code: "None" });
+          } else {
+            reasons.push({ Code: "None" });
+          }
+        }
+        if (failed) {
+          const err = new Error("Transaction cancelled");
+          err.name = "TransactionCanceledException";
+          err.CancellationReasons = reasons;
+          throw err;
+        }
+        for (const op of ops) {
+          if (op.Put) {
+            this.putItems.push({ ...op.Put.Item });
+            this.seed(op.Put.TableName, op.Put.Item);
+          }
+          if (op.Delete?.Key) {
+            this.remove(op.Delete.TableName, op.Delete.Key);
+          }
+        }
+        return {};
       }
       throw new Error(`unexpected command ${command.constructor.name}`);
     },
@@ -1807,6 +1864,143 @@ async function run() {
     const stored = await getProject(ddb, TABLE, EMPTY_ID);
     assert.strictEqual(stored.deletionLockId, "lock-owner");
     assert.notStrictEqual(String(stored.deletionStatus || "").toUpperCase(), "DELETING");
+  });
+
+  await test("GET /projects marks unclassified legacy projects", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const listed = await listProjects(ddb, { status: "ALL" });
+    assert.strictEqual(listed.statusCode, 200);
+    const empty = listed.body.find((p) => p.projectId === EMPTY_ID);
+    assert.strictEqual(empty.classified, false);
+    assert.strictEqual(empty.projectType, null);
+    assert.strictEqual(empty.projectCode, null);
+    assert.strictEqual(empty.client, "");
+  });
+
+  await test("PATCH classifies a legacy project and reserves the code", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { projectType: "INTERNAL" },
+      ddb,
+      tableName: TABLE,
+      now: NOW,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.classified, true);
+    assert.strictEqual(result.body.projectType, "INTERNAL");
+    assert.strictEqual(result.body.projectCode, "DGV-INT-EMPTY_PROJECT");
+    assert.strictEqual(result.body.classifiedBy, ADMIN.email);
+    assert.strictEqual(result.body.client, "");
+    const pointer = ddb.of(TABLE).find((item) => item.SK === "CODE#DGV-INT-EMPTY_PROJECT");
+    assert.ok(pointer);
+    assert.strictEqual(pointer.projectId, EMPTY_ID);
+  });
+
+  await test("PATCH classification accepts a valid manual code", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { projectType: "EXTERNAL", projectCode: "dgv-ext-blossompot" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.projectCode, "DGV-EXT-BLOSSOMPOT");
+    assert.strictEqual(result.body.projectType, "EXTERNAL");
+  });
+
+  await test("PATCH classification rejects invalid and duplicate codes", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    const prefix = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { projectType: "INTERNAL", projectCode: "DGV-EXT-WRONG" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(prefix.statusCode, 400);
+    const first = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { projectType: "INTERNAL" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(first.statusCode, 200);
+    const dup = await runPatch({
+      user: ADMIN,
+      projectId: OTHER_ID,
+      body: { projectType: "INTERNAL", projectCode: "DGV-INT-EMPTY_PROJECT" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(dup.statusCode, 409);
+    assert.match(String(dup.body.error), /already exists/i);
+    const again = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { projectType: "EXTERNAL" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(again.statusCode, 400);
+    assert.match(String(again.body.error), /cannot be changed/i);
+    const rename = await runPatch({
+      user: ADMIN,
+      projectId: EMPTY_ID,
+      body: { name: "Empty Renamed Again" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(rename.statusCode, 200);
+    assert.strictEqual(rename.body.projectCode, "DGV-INT-EMPTY_PROJECT");
+  });
+
+  await test("POST /projects requires type, generates a unique code, and keeps client", async () => {
+    const ddb = createMemoryDdb();
+    seedAdminAccess(ddb);
+    const missing = await handleCreateProject({
+      user: ADMIN,
+      body: { name: "Portal", client: "DGV" },
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS_TABLE,
+      now: NOW,
+      newId: () => "new-1",
+    });
+    assert.strictEqual(missing.statusCode, 400);
+    const created = await handleCreateProject({
+      user: ADMIN,
+      body: { name: "DGV Portal", client: "DGV", description: "Work", projectType: "INTERNAL" },
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS_TABLE,
+      now: NOW,
+      newId: () => "new-1",
+    });
+    assert.strictEqual(created.statusCode, 201);
+    assert.strictEqual(created.body.projectCode, "DGV-INT-DGV_PORTAL");
+    assert.strictEqual(created.body.client, "DGV");
+    assert.strictEqual(created.body.classified, true);
+    const dup = await handleCreateProject({
+      user: ADMIN,
+      body: { name: "DGV Portal", projectType: "INTERNAL" },
+      ddb,
+      tableName: TABLE,
+      accessTable: ACCESS_TABLE,
+      now: NOW,
+      newId: () => "new-2",
+    });
+    assert.strictEqual(dup.statusCode, 409);
+    assert.match(String(dup.body.error), /already exists/i);
+    assert.ok(!ddb.of(TABLE).some((item) => item.projectId === "new-2"));
   });
 
   console.log(`${passed} project management tests passed`);

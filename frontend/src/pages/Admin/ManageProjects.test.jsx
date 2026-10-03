@@ -69,6 +69,10 @@ test("lists projects with Take Action and no row Delete button", async () => {
   expect(screen.getByRole("button", { name: "Take Action" })).toBeInTheDocument();
   expect(screen.getByText("Active", { selector: ".dgv-badge" })).toBeInTheDocument();
   expect(screen.getByText("Open", { selector: ".dgv-badge" })).toBeInTheDocument();
+  expect(screen.getByText("Unclassified", { selector: ".dgv-badge" })).toBeInTheDocument();
+  expect(screen.getByText("Needs classification")).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Project Code" })).toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Client" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   expect(fetchProjects).toHaveBeenCalledWith({ status: "ALL" });
   const table = document.querySelector("table");
@@ -421,6 +425,7 @@ test("Open Project does not show Manage Access", async () => {
   render(<ManageProjects />);
   userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
   expect(screen.getByRole("menuitem", { name: "Edit Project" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Classify" })).toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: "Archive Project" })).toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: "Delete Project" })).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Manage Access" })).not.toBeInTheDocument();
@@ -500,4 +505,49 @@ test("Manage Access shows 409 from the access API", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Manage Access — Portal" });
   userEvent.click(await within(dialog).findByRole("button", { name: "Revoke" }));
   expect(await screen.findByText("Conflict")).toBeInTheDocument();
+});
+
+test("classified projects show code and hide Classify", async () => {
+  fetchProjects.mockResolvedValue([
+    {
+      ...PROJECT,
+      projectType: "INTERNAL",
+      projectCode: "DGV-INT-PORTAL",
+      classified: true,
+    },
+  ]);
+  render(<ManageProjects />);
+  expect(await screen.findByText("DGV-INT-PORTAL")).toBeInTheDocument();
+  expect(screen.getByText("Internal", { selector: ".dgv-badge" })).toBeInTheDocument();
+  expect(screen.queryByText("Needs classification")).not.toBeInTheDocument();
+  userEvent.click(screen.getByRole("button", { name: "Take Action" }));
+  expect(screen.queryByRole("menuitem", { name: "Classify" })).not.toBeInTheDocument();
+});
+
+test("Classify opens without an API error or PATCH", async () => {
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Classify" }));
+  const dialog = await screen.findByRole("dialog", { name: "Classify Project" });
+  expect(within(dialog).queryByText("No updates provided")).not.toBeInTheDocument();
+  expect(updateProject).not.toHaveBeenCalled();
+});
+
+test("Classify saves project type through PATCH", async () => {
+  updateProject.mockResolvedValue({
+    ...PROJECT,
+    projectType: "EXTERNAL",
+    projectCode: "DGV-EXT-PORTAL",
+    classified: true,
+  });
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  userEvent.click(screen.getByRole("menuitem", { name: "Classify" }));
+  const dialog = await screen.findByRole("dialog", { name: "Classify Project" });
+  userEvent.selectOptions(within(dialog).getByLabelText("Project type"), "EXTERNAL");
+  expect(within(dialog).getByLabelText("Project code")).toHaveValue("DGV-EXT-PORTAL");
+  userEvent.click(within(dialog).getByRole("button", { name: "Save classification" }));
+  await waitFor(() => {
+    expect(updateProject).toHaveBeenCalledWith("p1", { projectType: "EXTERNAL" });
+  });
 });

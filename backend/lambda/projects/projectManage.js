@@ -4,12 +4,25 @@ const {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 const { randomUUID } = require("crypto");
 const { isEligibleProjectAdmin, ACCESS_OPEN, ACCESS_RESTRICTED, normalizeEmail, isRestrictedProject, isActiveRegularMemberItem, isActiveProjectAdminItem, isProjectDeleting } = require("./projectAccess");
 const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
 const { createRestrictedProject, acquireDeletionLock, releaseDeletionLock, convertLockToDeleting, deleteAllProjectAclRecords, REASON_INVALID_TASK_VISIBILITY, REASON_CONDITION_FAILED, REASON_TX_CONFLICT, REASON_DDB_ERROR, REASON_INVALID_IDENTITY } = require("./projectAccessPersist");
+const {
+  parseProjectType,
+  resolveProjectCode,
+  isProjectClassified,
+  projectCodePointerItem,
+  projectCodePointerKey,
+  decorateProject,
+  cancellationFailedAt,
+  txErrorLooksLikeCondition,
+  duplicateCodeResponse,
+  TYPE_AND_CODE_LOCKED,
+} = require("./projectCode");
 
 const PROJECT_ENTITY_PK = "ENTITY#PROJECT";
 const TASK_ENTITY_PK = "ENTITY#TASK";
@@ -458,12 +471,12 @@ async function handleListProjects({
     })
     .map((project) => {
       const id = String(project.projectId || "").trim();
-      return {
+      return decorateProject({
         ...project,
         canManageAccess: Boolean(
           isRestrictedProject(project) && id && restrictedAcl.adminIds.has(id)
         ),
-      };
+      });
     });
   return { statusCode: 200, body: visible };
 }
@@ -777,12 +790,26 @@ async function handleDeleteProject({
   }
 
   try {
-    await ddb.send(
-      new DeleteCommand({
-        TableName: tableName,
-        Key: { PK: PROJECT_ENTITY_PK, SK: projectSk(id) },
-      })
-    );
+    if (String(project.projectCode || "").trim()) {
+      const removedCode = await deleteProjectCodePointer(ddb, tableName, project);
+      if (!removedCode.ok) {
+        console.error(
+          "PROJECT_DELETE_FAILED",
+          JSON.stringify({ projectId: id })
+        );
+        return {
+          statusCode: 500,
+          body: { error: "Unable to delete project" },
+        };
+      }
+    } else {
+      await ddb.send(
+        new DeleteCommand({
+          TableName: tableName,
+          Key: { PK: PROJECT_ENTITY_PK, SK: projectSk(id) },
+        })
+      );
+    }
   } catch (err) {
     console.error(
       "PROJECT_DELETE_FAILED",
@@ -797,6 +824,106 @@ async function handleDeleteProject({
     statusCode: 200,
     body: deleteResponse(ACTION_DELETED, project, taskIds.length),
   };
+}
+
+function codeReservationPut(tableName, catalog) {
+  return {
+    Put: {
+      TableName: tableName,
+      Item: projectCodePointerItem({
+        projectCode: catalog.projectCode,
+        projectId: catalog.projectId,
+        projectType: catalog.projectType,
+      }),
+      ConditionExpression: "attribute_not_exists(PK)",
+    },
+  };
+}
+
+function applyClassification(catalog, { projectType, projectCode, email, at }) {
+  catalog.projectType = projectType;
+  catalog.projectCode = projectCode;
+  catalog.classifiedAt = at;
+  catalog.classifiedBy = email;
+}
+
+function omitUndefined(obj) {
+  const next = {};
+  for (const [key, value] of Object.entries(obj || {})) {
+    if (value !== undefined) next[key] = value;
+  }
+  return next;
+}
+
+async function transactCatalogAndCodeReservation({
+  ddb,
+  tableName,
+  catalog,
+  catalogPut,
+  classify = false,
+}) {
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Put: omitUndefined({ TableName: tableName, Item: catalog, ...catalogPut }) },
+          codeReservationPut(tableName, catalog),
+        ],
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    if (!txErrorLooksLikeCondition(err)) {
+      return { statusCode: 500, body: { error: "Internal server error" } };
+    }
+    const failed = { cancellationReasons: err.CancellationReasons || [] };
+    if (cancellationFailedAt(failed, 1)) {
+      return duplicateCodeResponse({ classify });
+    }
+    if (classify) {
+      let latest = null;
+      try {
+        latest = await getProject(ddb, tableName, catalog.projectId);
+      } catch (readErr) {
+        return { statusCode: 500, body: { error: "Internal server error" } };
+      }
+      if (!latest || isProjectDeleting(latest)) {
+        return { statusCode: 404, body: { error: "Project not found" } };
+      }
+      if (isProjectClassified(latest)) {
+        return { statusCode: 409, body: { error: TYPE_AND_CODE_LOCKED } };
+      }
+    }
+    return { statusCode: 409, body: { error: "Conflict" } };
+  }
+}
+
+async function deleteProjectCodePointer(ddb, tableName, project) {
+  const code = String(project?.projectCode || "").trim();
+  if (!code) return { ok: true };
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Delete: {
+              TableName: tableName,
+              Key: { PK: PROJECT_ENTITY_PK, SK: projectSk(project.projectId) },
+            },
+          },
+          {
+            Delete: {
+              TableName: tableName,
+              Key: projectCodePointerKey(code),
+            },
+          },
+        ],
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false };
+  }
 }
 
 async function handlePatchProject({
@@ -839,6 +966,7 @@ async function handlePatchProject({
 
   const next = { ...project };
   let changed = false;
+  let classifying = false;
 
   if (Object.prototype.hasOwnProperty.call(body, "name")) {
     const name = normalizeProjectName(body.name);
@@ -875,6 +1003,34 @@ async function handlePatchProject({
     changed = true;
   }
 
+  const wantsType = Object.prototype.hasOwnProperty.call(body, "projectType");
+  const wantsCode = Object.prototype.hasOwnProperty.call(body, "projectCode");
+  if (isProjectClassified(project) && (wantsType || wantsCode)) {
+    return { statusCode: 400, body: { error: TYPE_AND_CODE_LOCKED } };
+  }
+  if (!isProjectClassified(project) && (wantsType || wantsCode)) {
+    const parsedType = parseProjectType(body.projectType, { required: true });
+    if (!parsedType.ok) {
+      return { statusCode: 400, body: { error: parsedType.error } };
+    }
+    const resolved = resolveProjectCode({
+      type: parsedType.value,
+      name: next.name,
+      manualCode: wantsCode ? body.projectCode : undefined,
+    });
+    if (!resolved.ok) {
+      return { statusCode: 400, body: { error: resolved.error } };
+    }
+    applyClassification(next, {
+      projectType: parsedType.value,
+      projectCode: resolved.value,
+      email: auth.email,
+      at: now || new Date().toISOString(),
+    });
+    classifying = true;
+    changed = true;
+  }
+
   if (!changed) {
     return { statusCode: 400, body: { error: "No updates provided" } };
   }
@@ -889,6 +1045,22 @@ async function handlePatchProject({
         body: { error: "A project with this name already exists." },
       };
     }
+  }
+
+  if (classifying) {
+    const written = await transactCatalogAndCodeReservation({
+      ddb,
+      tableName,
+      catalog: next,
+      classify: true,
+      catalogPut: {
+        ConditionExpression:
+          "attribute_exists(PK) AND attribute_not_exists(projectCode) AND (attribute_not_exists(deletionStatus) OR deletionStatus <> :deleting)",
+        ExpressionAttributeValues: { ":deleting": "DELETING" },
+      },
+    });
+    if (!written.ok) return written;
+    return { statusCode: 200, body: decorateProject(next) };
   }
 
   try {
@@ -918,7 +1090,7 @@ async function handlePatchProject({
     }
     return { statusCode: 409, body: { error: "Conflict" } };
   }
-  return { statusCode: 200, body: next };
+  return { statusCode: 200, body: decorateProject(next) };
 }
 
 function isRestrictedCreateEnabled(value, env = process.env) {
@@ -1007,6 +1179,23 @@ async function handleCreateProject({
     return { statusCode: 400, body: { error: "Invalid accessMode" } };
   }
 
+  const parsedType = parseProjectType(body.projectType, { required: true });
+  if (!parsedType.ok) {
+    return { statusCode: 400, body: { error: parsedType.error } };
+  }
+
+  const name = normalizeProjectName(body.name);
+  if (!name) {
+    return { statusCode: 400, body: { error: "name is required" } };
+  }
+  const resolvedCode = resolveProjectCode({
+    type: parsedType.value,
+    name,
+  });
+  if (!resolvedCode.ok) {
+    return { statusCode: 400, body: { error: resolvedCode.error } };
+  }
+
   const email = auth.email;
   const createdAt = now || new Date().toISOString();
   const projectId = typeof newId === "function" ? String(newId()) : randomUUID();
@@ -1015,7 +1204,7 @@ async function handleCreateProject({
     PK: PROJECT_ENTITY_PK,
     SK: projectSk(projectId),
     projectId,
-    name: body.name,
+    name,
     client: body.client || "",
     lead,
     members: body.members || [],
@@ -1024,6 +1213,10 @@ async function handleCreateProject({
     createdAt,
     createdBy: email,
     accessMode: mode.value,
+    projectType: parsedType.value,
+    projectCode: resolvedCode.value,
+    classifiedAt: createdAt,
+    classifiedBy: email,
   };
 
   if (mode.value === ACCESS_RESTRICTED) {
@@ -1057,27 +1250,47 @@ async function handleCreateProject({
       taskVisibility: body.taskVisibility,
       catalog,
       members,
+      extraPuts: [
+        {
+          Item: projectCodePointerItem({
+            projectCode: catalog.projectCode,
+            projectId,
+            projectType: catalog.projectType,
+          }),
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      ],
     });
     const fail = mapPersistWriteError(written);
-    if (fail) return fail;
-    return { statusCode: 201, body: written.catalog };
+    if (fail) {
+      if (written.reason === REASON_CONDITION_FAILED) {
+        try {
+          const reserved = await ddb.send(
+            new GetCommand({
+              TableName: tableName,
+              Key: projectCodePointerKey(catalog.projectCode),
+            })
+          );
+          if (reserved.Item) return duplicateCodeResponse();
+        } catch (readErr) {
+          return { statusCode: 500, body: { error: "Internal server error" } };
+        }
+      }
+      return fail;
+    }
+    return { statusCode: 201, body: decorateProject(written.catalog) };
   }
 
-  try {
-    await ddb.send(
-      new PutCommand({
-        TableName: tableName,
-        Item: catalog,
-        ConditionExpression: "attribute_not_exists(PK)",
-      })
-    );
-  } catch (err) {
-    if (String(err?.name || "") === "ConditionalCheckFailedException") {
-      return { statusCode: 409, body: { error: "Conflict" } };
-    }
-    return { statusCode: 500, body: { error: "Internal server error" } };
-  }
-  return { statusCode: 201, body: catalog };
+  const created = await transactCatalogAndCodeReservation({
+    ddb,
+    tableName,
+    catalog,
+    catalogPut: {
+      ConditionExpression: "attribute_not_exists(PK)",
+    },
+  });
+  if (!created.ok) return created;
+  return { statusCode: 201, body: decorateProject(catalog) };
 }
 
 module.exports = {
@@ -1113,6 +1326,7 @@ module.exports = {
   handlePatchProject,
   isRestrictedCreateEnabled,
   parseCreateMembers,
+  decorateProject,
   RESTRICTED_CREATE_DISABLED,
   RESTRICTED_MEMBERS_REQUIRED,
   RESTRICTED_MEMBER_INACTIVE,

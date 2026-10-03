@@ -117,6 +117,65 @@ export function uniqueMemberEmails(values) {
   return emails;
 }
 
+export const PROJECT_TYPES = ["INTERNAL", "EXTERNAL"];
+
+export function normalizeProjectType(value) {
+  const type = String(value || "").trim().toUpperCase();
+  return PROJECT_TYPES.includes(type) ? type : "";
+}
+
+export function slugifyProjectName(name) {
+  return String(name || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+export function generateProjectCode(type, name) {
+  const normalizedType = normalizeProjectType(type);
+  const slug = slugifyProjectName(name);
+  if (!normalizedType || !slug) return "";
+  const segment = normalizedType === "EXTERNAL" ? "EXT" : "INT";
+  return `DGV-${segment}-${slug}`;
+}
+
+export function isProjectClassified(project) {
+  return Boolean(
+    normalizeProjectType(project?.projectType) &&
+      String(project?.projectCode || "").trim()
+  );
+}
+
+export function projectTypeLabel(type) {
+  const normalized = normalizeProjectType(type);
+  if (normalized === "INTERNAL") return "Internal";
+  if (normalized === "EXTERNAL") return "External";
+  return "Unclassified";
+}
+
+export function buildCreateProjectPayload({
+  name,
+  client,
+  description,
+  projectType,
+  restricted,
+  memberEmails,
+} = {}) {
+  const payload = {
+    name: String(name || "").trim(),
+    client: String(client || ""),
+    description: String(description || ""),
+    projectType: normalizeProjectType(projectType),
+  };
+  if (!restricted) return payload;
+  return {
+    ...payload,
+    accessMode: "RESTRICTED",
+    members: uniqueMemberEmails(memberEmails).map((email) => ({ email })),
+  };
+}
+
 export function projectAccessModeLabel(accessMode) {
   return String(accessMode || "").trim().toUpperCase() === "RESTRICTED"
     ? "Restricted"
@@ -132,24 +191,4 @@ export function canShowManageAccess(project) {
     isRestrictedAccessMode(project?.accessMode) &&
     project?.canManageAccess === true
   );
-}
-
-export function buildCreateProjectPayload({
-  name,
-  client,
-  description,
-  restricted,
-  memberEmails,
-} = {}) {
-  const payload = {
-    name: String(name || "").trim(),
-    client: String(client || ""),
-    description: String(description || ""),
-  };
-  if (!restricted) return payload;
-  return {
-    ...payload,
-    accessMode: "RESTRICTED",
-    members: uniqueMemberEmails(memberEmails).map((email) => ({ email })),
-  };
 }

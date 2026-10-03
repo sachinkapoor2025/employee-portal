@@ -524,7 +524,8 @@ async function createRestrictedProject(ddb, tableName, params = {}) {
     seenMembers.add(memberEmail);
     memberEmails.push(memberEmail);
   }
-  if (transactItems.length + memberEmails.length * 2 > 100) {
+  const extraPuts = Array.isArray(params.extraPuts) ? params.extraPuts : [];
+  if (transactItems.length + memberEmails.length * 2 + extraPuts.length > 100) {
     return { ok: false, reason: REASON_INVALID_IDENTITY };
   }
   const memberRecords = [];
@@ -550,6 +551,19 @@ async function createRestrictedProject(ddb, tableName, params = {}) {
       }
     );
     memberRecords.push(pair);
+  }
+  for (const extra of extraPuts) {
+    const item = extra && extra.Item ? extra.Item : null;
+    if (!item || !item.PK || !item.SK) {
+      return { ok: false, reason: REASON_INVALID_IDENTITY };
+    }
+    transactItems.push({
+      Put: {
+        TableName: ctx.tableName,
+        Item: item,
+        ConditionExpression: extra.ConditionExpression || CREATE_CONDITION,
+      },
+    });
   }
   const written = await sendTransact(ddb, ctx.tableName, transactItems);
   if (!written.ok) return written;

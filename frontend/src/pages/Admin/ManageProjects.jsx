@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Modal from "../../components/ui/Modal";
 import CreateProjectModal from "../../components/CreateProjectModal";
+import ClassifyProjectModal from "../../components/ClassifyProjectModal";
 import ProjectAccessModal from "../../components/ProjectAccessModal";
 import {
   createProject,
@@ -29,10 +30,13 @@ import {
   projectNamesMatch,
   isRestrictedAccessMode,
   canShowManageAccess,
+  isProjectClassified,
   projectAccessModeLabel,
   projectStatusLabel,
+  projectTypeLabel,
   restoreProjectConfirmCopy,
   unexpectedDeleteActionCopy,
+  normalizeProjectType,
 } from "../../utils/workProjectManage";
 
 function formatCreated(value) {
@@ -67,6 +71,7 @@ export default function ManageProjects() {
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [accessProject, setAccessProject] = useState(null);
+  const [classifyProject, setClassifyProject] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,6 +134,14 @@ export default function ManageProjects() {
     setAccessProject(project);
   };
 
+  const openClassify = (project) => {
+    if (isProjectClassified(project)) return;
+    setMessage("");
+    setError("");
+    setActionMenuId("");
+    setClassifyProject(project);
+  };
+
   const openConfirm = (type, project) => {
     setMessage("");
     setError("");
@@ -155,6 +168,30 @@ export default function ManageProjects() {
         created?.name
           ? `${created.name} created.`
           : "Project created."
+      );
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClassifySubmit = async (data) => {
+    const projectType = normalizeProjectType(data?.projectType);
+    if (!classifyProject?.projectId || !projectType) {
+      throw new Error("Project type is required.");
+    }
+    const payload = { projectType };
+    if (Object.prototype.hasOwnProperty.call(data || {}, "projectCode")) {
+      payload.projectCode = String(data.projectCode || "").trim();
+    }
+    setSaving(true);
+    try {
+      await updateProject(classifyProject.projectId, payload);
+      setClassifyProject(null);
+      setMessage(
+        classifyProject.name
+          ? `${classifyProject.name} classified.`
+          : "Project classified."
       );
       await load();
     } finally {
@@ -321,10 +358,13 @@ export default function ManageProjects() {
               <thead>
                 <tr>
                   <th className="dgv-projects-table__name" style={thStyle}>
-                    Name
+                    Project Name
                   </th>
-                  <th className="dgv-projects-table__client" style={thStyle}>
-                    Client
+                  <th className="dgv-projects-table__code" style={thStyle}>
+                    Project Code
+                  </th>
+                  <th className="dgv-projects-table__type" style={thStyle}>
+                    Project Type
                   </th>
                   <th className="dgv-projects-table__created" style={thStyle}>
                     Created
@@ -345,7 +385,10 @@ export default function ManageProjects() {
                   const archived = isArchivedProject(project);
                   const menuOpen = actionMenuId === project.projectId;
                   const name = project.name || "—";
-                  const client = project.client || "—";
+                  const classified = isProjectClassified(project);
+                  const projectCode = classified
+                    ? project.projectCode || "—"
+                    : "—";
                   return (
                     <tr key={project.projectId}>
                       <td
@@ -356,11 +399,26 @@ export default function ManageProjects() {
                         {name}
                       </td>
                       <td
-                        className="dgv-projects-table__client"
+                        className="dgv-projects-table__code"
                         style={tdStyle}
-                        title={client}
+                        title={classified ? projectCode : "Needs classification"}
                       >
-                        {client}
+                        {classified ? (
+                          projectCode
+                        ) : (
+                          <span className="dgv-badge dgv-badge--warning">
+                            Needs classification
+                          </span>
+                        )}
+                      </td>
+                      <td className="dgv-projects-table__type" style={tdStyle}>
+                        <span
+                          className={`dgv-badge ${
+                            classified ? "dgv-badge--info" : "dgv-badge--warning"
+                          }`}
+                        >
+                          {projectTypeLabel(project.projectType)}
+                        </span>
                       </td>
                       <td className="dgv-projects-table__created" style={tdStyle}>
                         {formatCreated(project.createdAt)}
@@ -416,6 +474,15 @@ export default function ManageProjects() {
                                 >
                                   Edit Project
                                 </button>
+                                {!classified ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => openClassify(project)}
+                                  >
+                                    Classify
+                                  </button>
+                                ) : null}
                                 {canShowManageAccess(project) ? (
                                 <button
                                   type="button"
@@ -477,6 +544,8 @@ export default function ManageProjects() {
                 name: editing?.name || "",
                 client: editing?.client || "",
                 description: editing?.description || "",
+                projectType: editing?.projectType || "",
+                projectCode: editing?.projectCode || "",
               }
             : undefined
         }
@@ -489,6 +558,17 @@ export default function ManageProjects() {
           setEditing(null);
         }}
         onSubmit={handleFormSubmit}
+      />
+
+      <ClassifyProjectModal
+        open={Boolean(classifyProject)}
+        project={classifyProject}
+        saving={saving}
+        onClose={() => {
+          if (saving) return;
+          setClassifyProject(null);
+        }}
+        onSubmit={handleClassifySubmit}
       />
 
       <ProjectAccessModal

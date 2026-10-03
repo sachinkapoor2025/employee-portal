@@ -1516,9 +1516,14 @@ a {
 }
 
 .dgv-projects-table__name,
-.dgv-projects-table__client {
+.dgv-projects-table__code {
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.dgv-projects-table__type {
+  width: 8.5rem;
+  white-space: nowrap;
 }
 
 .dgv-projects-table__created {
