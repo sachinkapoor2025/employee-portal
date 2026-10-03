@@ -378,6 +378,7 @@ test("empty proof and remark show both validation errors", async () => {
     await screen.findByLabelText("Update your assignment status"),
     "DONE"
   );
+  await waitForProofRefresh();
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
     await screen.findByText("Please upload at least one proof file.")
@@ -440,7 +441,7 @@ test("proof without remark does not call updateTask", async () => {
   expect(updateTask).not.toHaveBeenCalled();
 });
 
-test("old attachment without a new completion proof does not call updateTask", async () => {
+test("existing employee proof allows submit without selecting a new file", async () => {
   fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT]);
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
@@ -452,8 +453,71 @@ test("old attachment without a new completion proof does not call updateTask", a
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
-    "Completed using an older file."
+    "Completed using an existing file."
   );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed using an existing file.",
+      actualHours: 2,
+    })
+  );
+  expect(updateTask.mock.calls[0][0].attachment).toBeUndefined();
+  expect(updateTask.mock.calls[0][0].attachments).toBeUndefined();
+});
+
+test("existing multiple employee proofs allow submit without selecting a new file", async () => {
+  fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  expect(within(dialog).getByText("sheet.pdf")).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed with existing files."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "4");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed with existing files.",
+      actualHours: 4,
+    })
+  );
+  expect(updateTask.mock.calls[0][0].attachments).toBeUndefined();
+});
+
+test("another user's existing attachment does not count as proof", async () => {
+  fetchTaskAttachments.mockResolvedValue([
+    { ...SAMPLE_ATTACHMENT, uploadedBy: "admin@mydgv.com" },
+  ]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed using the existing brief."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
     await screen.findByText("Please upload at least one proof file.")
@@ -1357,6 +1421,15 @@ function chooseProofFile(file) {
   fireEvent.change(input, { target: { files: [file] } });
 }
 
+async function waitForProofRefresh({ minCalls = 2 } = {}) {
+  await waitFor(() =>
+    expect(fetchTaskAttachments.mock.calls.length).toBeGreaterThanOrEqual(minCalls)
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("Refreshing proof files…")).not.toBeInTheDocument()
+  );
+}
+
 async function uploadCompletionProof() {
   global.fetch = jest.fn().mockResolvedValue({ ok: true });
   fetchTaskAttachments.mockResolvedValue([COMPLETION_PROOF]);
@@ -1526,6 +1599,7 @@ test("submit for review requires at least one registered proof file", async () =
 test("successful proof upload in the completion modal allows submit", async () => {
   fetchTaskAttachments
     .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([])
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   global.fetch = jest.fn().mockResolvedValue({ ok: true });
@@ -1560,6 +1634,198 @@ test("successful proof upload in the completion modal allows submit", async () =
   );
 });
 
+test("existing proof plus a newly selected file still submits", async () => {
+  fetchTaskAttachments
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
+    .mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  chooseProofFile(new File(["pdf-bytes"], "sheet.pdf", { type: "application/pdf" }));
+  expect(await within(dialog).findByText("sheet.pdf")).toBeInTheDocument();
+  await waitFor(() => expect(registerTaskAttachment).toHaveBeenCalled());
+  expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed with existing and new proof."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "3");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed with existing and new proof.",
+      actualHours: 3,
+    })
+  );
+  expect(updateTask.mock.calls[0][0].attachments).toBeUndefined();
+});
+
+test("proof uploaded in another tab is detected when the modal opens", async () => {
+  fetchTaskAttachments
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  expect(await screen.findByText("No attachments yet.")).toBeInTheDocument();
+  await userEvent.selectOptions(
+    screen.getByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(await within(dialog).findByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed with proof from another tab."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed with proof from another tab.",
+      actualHours: 2,
+    })
+  );
+  expect(updateTask.mock.calls[0][0].attachments).toBeUndefined();
+});
+
+test("stale page proof is not accepted after backend no longer has it", async () => {
+  fetchTaskAttachments
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
+    .mockResolvedValueOnce([]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.selectOptions(
+    screen.getByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(await within(dialog).findByText("No proof uploaded yet.")).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed using a file that was removed."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  expect(
+    await screen.findByText("Please upload at least one proof file.")
+  ).toBeInTheDocument();
+  expect(updateTask).not.toHaveBeenCalled();
+});
+
+test("failed proof refresh blocks submission and can be retried", async () => {
+  fetchTaskAttachments
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
+    .mockRejectedValueOnce(new Error("network"))
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.selectOptions(
+    screen.getByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(
+    await within(dialog).findByText(
+      "Unable to refresh proof files. Please retry before submitting."
+    )
+  ).toBeInTheDocument();
+  expect(
+    within(dialog).getByRole("button", { name: "Retry proof refresh" })
+  ).toBeInTheDocument();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed after a refresh retry."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  expect(updateTask).not.toHaveBeenCalled();
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Retry proof refresh" })
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByText(
+        "Unable to refresh proof files. Please retry before submitting."
+      )
+    ).not.toBeInTheDocument()
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed after a refresh retry.",
+      actualHours: 2,
+    })
+  );
+});
+
+test("newly selected modal files are kept if an older refresh returns later", async () => {
+  let resolveOpenRefresh;
+  fetchTaskAttachments
+    .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOpenRefresh = resolve;
+        })
+    )
+    .mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  render(<TaskDetails />);
+  expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+  await userEvent.selectOptions(
+    screen.getByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+  chooseProofFile(new File(["pdf-bytes"], "sheet.pdf", { type: "application/pdf" }));
+  expect(await within(dialog).findByText("sheet.pdf")).toBeInTheDocument();
+  await waitFor(() => expect(registerTaskAttachment).toHaveBeenCalled());
+  resolveOpenRefresh([SAMPLE_ATTACHMENT]);
+  await waitFor(() => {
+    expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
+    expect(within(dialog).getByText("sheet.pdf")).toBeInTheDocument();
+  });
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed with a file selected during refresh."
+  );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Completed with a file selected during refresh.",
+      actualHours: 2,
+    })
+  );
+});
+
 test("failed proof upload does not submit for review", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   getTaskAttachmentUploadUrl.mockResolvedValue({
@@ -1585,7 +1851,11 @@ test("failed proof upload does not submit for review", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed the product upload."
   );
+  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  expect(
+    await screen.findByText("Please upload at least one proof file.")
+  ).toBeInTheDocument();
   expect(updateTask).not.toHaveBeenCalled();
   expect(dialog).toBeInTheDocument();
 });

@@ -996,6 +996,42 @@ async function run() {
     assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
   });
 
+  await test("employee DONE with multiple existing proofs submits for review", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    seedProof(ddb, TASK_ID, PRIYA);
+    seedProof(ddb, TASK_ID, PRIYA, {
+      attachmentId: "att-proof-2",
+      fileName: "sheet.pdf",
+      s3Key: `tasks/${TASK_ID}/sheet.pdf`,
+    });
+    const remark = "Completed with two existing files.";
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: remark,
+          actualHours: 3,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.completionRemark, remark);
+    assert.strictEqual(mine.actualHours, 3);
+    const proofs = ddb
+      .of(WORK)
+      .filter((item) => String(item.SK || "").startsWith("ATTACHMENT#"));
+    assert.strictEqual(proofs.length, 2);
+  });
+
   await test("employee DONE without proof and without remark is 400", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,

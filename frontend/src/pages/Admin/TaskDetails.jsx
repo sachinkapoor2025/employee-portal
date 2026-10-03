@@ -77,9 +77,26 @@ const COMPLETION_PROOF_REQUIRED = "Please upload at least one proof file.";
 const COMPLETION_REMARK_REQUIRED = "Please enter a completion remark.";
 const PLANNED_MODAL_TITLE = "Enter Planned Hours";
 const COMPLETION_PROOF_UPLOAD_FAILED = "Proof upload failed. Please try again.";
+const PROOF_REFRESH_FAILED =
+  "Unable to refresh proof files. Please retry before submitting.";
+const PROOF_REFRESHING = "Refreshing proof files…";
 
-function attachmentKey(item) {
-  return String(item?.attachmentId || item?.s3Key || item?.fileName || "").trim();
+function isRegisteredProof(item) {
+  return Boolean(
+    String(item?.s3Key || "").trim() || String(item?.attachmentId || "").trim()
+  );
+}
+
+function isEmployeeCompletionProof(item, { employeeEmail, assignedAt } = {}) {
+  if (!isRegisteredProof(item)) return false;
+  const employee = String(employeeEmail || "").trim().toLowerCase();
+  const uploader = String(item?.uploadedBy || "").trim().toLowerCase();
+  if (!employee || uploader !== employee) return false;
+  const assignedMs = Date.parse(String(assignedAt || "").trim());
+  if (!Number.isFinite(assignedMs)) return true;
+  const uploadedMs = Date.parse(String(item?.uploadedAt || "").trim());
+  if (!Number.isFinite(uploadedMs)) return false;
+  return uploadedMs >= assignedMs;
 }
 const REVIEW_WAIT_HEADER =
   "Your task has been submitted for Admin review.";
@@ -147,7 +164,13 @@ export default function TaskDetails() {
   const [completeError, setCompleteError] = useState("");
   const [completeProofError, setCompleteProofError] = useState("");
   const [completeRemarkError, setCompleteRemarkError] = useState("");
-  const [completeProofBaselineIds, setCompleteProofBaselineIds] = useState([]);
+  const [refreshingProofAttachments, setRefreshingProofAttachments] =
+    useState(false);
+  const [proofRefreshError, setProofRefreshError] = useState("");
+  const proofFetchGenRef = useRef(0);
+  const proofRefreshInFlightRef = useRef(null);
+  const attachmentsRef = useRef([]);
+  const proofAttachmentsFreshRef = useRef(false);
   const [actualHoursInput, setActualHoursInput] = useState("");
   const [actualHoursError, setActualHoursError] = useState("");
   const [plannedHoursInput, setPlannedHoursInput] = useState("");
@@ -285,7 +308,9 @@ export default function TaskDetails() {
         fetchTaskAttachments(taskId).catch(() => []),
       ]);
       setActivity(Array.isArray(a) ? a : []);
-      setAttachments(Array.isArray(atts) ? atts : []);
+      const nextAtts = Array.isArray(atts) ? atts : [];
+      attachmentsRef.current = nextAtts;
+      setAttachments(nextAtts);
       setAttachmentError("");
     } catch (err) {
       console.error(err);
@@ -344,7 +369,9 @@ export default function TaskDetails() {
       fetchTaskAttachments(taskId).catch(() => []),
     ]);
     setActivity(Array.isArray(a) ? a : []);
-    setAttachments(Array.isArray(atts) ? atts : []);
+    const nextAtts = Array.isArray(atts) ? atts : [];
+    attachmentsRef.current = nextAtts;
+    setAttachments(nextAtts);
     return enriched;
   };
 
@@ -354,7 +381,51 @@ export default function TaskDetails() {
       fetchTaskAttachments(taskId).catch(() => []),
     ]);
     setActivity(Array.isArray(a) ? a : []);
-    setAttachments(Array.isArray(atts) ? atts : []);
+    const nextAtts = Array.isArray(atts) ? atts : [];
+    attachmentsRef.current = nextAtts;
+    setAttachments(nextAtts);
+  };
+
+  const applyFetchedAttachments = (gen, atts) => {
+    if (gen !== proofFetchGenRef.current) return false;
+    if (!Array.isArray(atts)) {
+      throw new Error(PROOF_REFRESH_FAILED);
+    }
+    attachmentsRef.current = atts;
+    setAttachments(atts);
+    proofAttachmentsFreshRef.current = true;
+    setProofRefreshError("");
+    setCompleteProofError("");
+    return true;
+  };
+
+  const refreshProofAttachments = () => {
+    const gen = ++proofFetchGenRef.current;
+    setRefreshingProofAttachments(true);
+    setProofRefreshError("");
+    const run = (async () => {
+      try {
+        const atts = await fetchTaskAttachments(taskId);
+        applyFetchedAttachments(gen, atts);
+        return gen === proofFetchGenRef.current
+          ? proofAttachmentsFreshRef.current
+          : true;
+      } catch {
+        if (gen !== proofFetchGenRef.current) return true;
+        proofAttachmentsFreshRef.current = false;
+        setProofRefreshError(PROOF_REFRESH_FAILED);
+        return false;
+      } finally {
+        if (gen === proofFetchGenRef.current) {
+          setRefreshingProofAttachments(false);
+        }
+        if (proofRefreshInFlightRef.current === run) {
+          proofRefreshInFlightRef.current = null;
+        }
+      }
+    })();
+    proofRefreshInFlightRef.current = run;
+    return run;
   };
 
   const handleAttachmentFile = async (file) => {
@@ -394,7 +465,11 @@ export default function TaskDetails() {
         s3Key: signed.s3Key,
       });
       setCompleteProofError("");
-      await refreshAttachmentsAndActivity();
+      if (modal === "complete") {
+        await refreshProofAttachments();
+      } else {
+        await refreshAttachmentsAndActivity();
+      }
     } catch (err) {
       setAttachmentError(
         modal === "complete"
@@ -706,12 +781,12 @@ export default function TaskDetails() {
       setCompleteProofError("");
       setCompleteRemarkError("");
       setAttachmentError("");
-      setCompleteProofBaselineIds(
-        (attachments || []).map(attachmentKey).filter(Boolean)
-      );
       setActualHoursInput("");
       setActualHoursError("");
+      proofAttachmentsFreshRef.current = false;
+      setProofRefreshError("");
       setModal("complete");
+      void refreshProofAttachments();
       return;
     }
     setSaving(true);
@@ -737,9 +812,12 @@ export default function TaskDetails() {
     setCompleteError("");
     setCompleteProofError("");
     setCompleteRemarkError("");
-    setCompleteProofBaselineIds([]);
     setActualHoursInput("");
     setActualHoursError("");
+    setProofRefreshError("");
+    proofAttachmentsFreshRef.current = false;
+    setRefreshingProofAttachments(false);
+    proofRefreshInFlightRef.current = null;
   };
 
   const handleEmployeeComplete = async () => {
@@ -755,14 +833,28 @@ export default function TaskDetails() {
       return;
     }
     if (uploadingAttachment) return;
+    while (proofRefreshInFlightRef.current) {
+      const refreshed = await proofRefreshInFlightRef.current;
+      if (!refreshed && !proofAttachmentsFreshRef.current) {
+        setProofRefreshError(PROOF_REFRESH_FAILED);
+        return;
+      }
+    }
+    if (!proofAttachmentsFreshRef.current) {
+      setProofRefreshError(PROOF_REFRESH_FAILED);
+      return;
+    }
     const remark = String(completeRemark || "").trim();
-    const hasProof = (attachments || []).some((item) => {
-      const key = attachmentKey(item);
-      return key && !completeProofBaselineIds.includes(key);
-    });
+    const hasProof = (attachmentsRef.current || []).some((item) =>
+      isEmployeeCompletionProof(item, {
+        employeeEmail: mine?.email || getLoggedInEmail(),
+        assignedAt: mine?.assignedAt,
+      })
+    );
     const proofErr = hasProof ? "" : COMPLETION_PROOF_REQUIRED;
     const remarkErr = remark ? "" : COMPLETION_REMARK_REQUIRED;
     setCompleteProofError(proofErr);
+    if (proofErr) setAttachmentError("");
     setCompleteRemarkError(remarkErr);
     const actual = parseRequiredHours(actualHoursInput);
     const actualErr = actual.ok
@@ -1499,16 +1591,35 @@ export default function TaskDetails() {
 
       {modal === "complete" ? (
         <Modal title={COMPLETION_MODAL_TITLE} onClose={closeCompletionModal}>
+          {refreshingProofAttachments ? (
+            <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+              {PROOF_REFRESHING}
+            </p>
+          ) : null}
           <TaskAttachmentsSection
             variant="completion"
             attachments={attachments}
             users={users}
-            error={attachmentError || completeProofError}
+            error={completeProofError || proofRefreshError || attachmentError}
             uploading={uploadingAttachment}
             downloadingId={downloadingAttachmentId}
             onSelectFile={handleAttachmentFile}
             onDownload={handleAttachmentDownload}
           />
+          {proofRefreshError ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                void refreshProofAttachments();
+              }}
+              disabled={refreshingProofAttachments}
+              aria-label="Retry proof refresh"
+              style={{ marginTop: 10 }}
+            >
+              Retry
+            </Button>
+          ) : null}
           <label
             style={{ ...formLabel, marginTop: 18 }}
             htmlFor="completion-remark"
