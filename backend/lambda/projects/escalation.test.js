@@ -177,6 +177,8 @@ assert.strictEqual(byEmail["dev@mydgv.com"].zone, ZONES.RED);
 assert.strictEqual(deriveParentStatus(task.assignments), "TODO");
 assert.strictEqual(decorated.myAssignment.email, "amit@mydgv.com");
 assert.strictEqual(decorated.myAssignment.blockerStatus, null);
+assert.strictEqual(decorated.myAssignment.plannedHours, null);
+assert.strictEqual(decorated.myAssignment.actualHours, null);
 assert.strictEqual(byEmail["rahul@mydgv.com"].blockerStatus, null);
 
 const blockedDecorated = decorateTask(

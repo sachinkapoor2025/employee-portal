@@ -488,6 +488,10 @@ async function run() {
     highestZone: "RED",
     assignedBy: "lead@mydgv.com",
     redAdminNotifyAttempts: 2,
+    plannedHours: 2.25,
+    actualHours: 3.5,
+    blockerStatus: "ACTIVE",
+    blockerRemark: "Need legal",
   });
   const staleSnap = assignmentItem("FAILED");
   staleSnap.status = "TODO";
@@ -504,6 +508,10 @@ async function run() {
   assert.strictEqual(kept.status, "IN_PROGRESS");
   assert.strictEqual(kept.highestZone, "RED");
   assert.strictEqual(kept.assignedBy, "lead@mydgv.com");
+  assert.strictEqual(kept.plannedHours, 2.25);
+  assert.strictEqual(kept.actualHours, 3.5);
+  assert.strictEqual(kept.blockerStatus, "ACTIVE");
+  assert.strictEqual(kept.blockerRemark, "Need legal");
   assert.strictEqual(kept.redAdminNotifyRecipients["admin@mydgv.com"].messageId, "keep-ses");
   assert.strictEqual(kept.redAdminNotifyAttempts, 3);
   assert.strictEqual(
@@ -562,6 +570,7 @@ async function run() {
   const handlerSrc = require("fs").readFileSync(require.resolve("./handler.js"), "utf8");
   assert.ok(handlerSrc.includes("notifyAdminsTaskEnteredRed"));
   assert.ok(handlerSrc.includes("claimRedAdminNotify"));
+  assert.ok(handlerSrc.includes("assignmentRecord(task.taskId, a)"));
   assert.ok(handlerSrc.includes("listAccessRows"));
   assert.ok(handlerSrc.includes("putTaskCopiesSafe"));
   assert.ok(handlerSrc.includes("activeCompletionAdminEmailsFromAccess"));

@@ -407,6 +407,7 @@ async function run() {
           eventFor({
             taskId: TASK_ID,
             status: "DONE",
+            actualHours: 2,
             completionRemark: remark,
           })
         )
@@ -438,6 +439,7 @@ async function run() {
           eventFor({
             taskId: TASK_ID,
             status: "DONE",
+            actualHours: 2,
             completionRemark: "Completed the product upload.",
           })
         )
@@ -471,6 +473,7 @@ async function run() {
           eventFor({
             taskId: TASK_ID,
             status: "DONE",
+            actualHours: 2,
             completionRemark: "Completed the product upload.",
           })
         )
@@ -503,6 +506,7 @@ async function run() {
           eventFor({
             taskId: TASK_ID,
             status: "DONE",
+            actualHours: 2,
             completionRemark: "Again",
           })
         )
@@ -535,6 +539,7 @@ async function run() {
           eventFor({
             taskId: TASK_ID,
             status: "DONE",
+            actualHours: 2,
             completionRemark: "Uploaded.",
           })
         )
@@ -559,6 +564,7 @@ async function run() {
             {
               taskId: TASK_ID,
               status: "DONE",
+              actualHours: 2,
               completionRemark: "Ankit finished research.",
             },
             ANKIT
@@ -673,6 +679,7 @@ async function run() {
           eventFor({
             taskId: "task-rest-mail",
             status: "DONE",
+            actualHours: 2,
             completionRemark: "Restricted upload done.",
           })
         )

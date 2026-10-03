@@ -762,6 +762,7 @@ async function run() {
             status: "DONE",
             assignmentEmail: PRIYA,
             completionRemark: "Ready for admin review.",
+            actualHours: 2,
           },
         })
       )

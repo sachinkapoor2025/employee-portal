@@ -36,6 +36,7 @@ const { notifyTaskSubmittedForReview } = require("./taskReviewNotify");
 const taskReadAccess = require("./taskReadAccess");
 const taskMutateAccess = require("./taskMutateAccess");
 const workflowAccess = require("./workflowAccess");
+const taskTime = require("./taskTime");
 const shiftCatalog = require("./shiftCatalog");
 const myActivity = require("./myActivity");
 const { notifyBlockerReported, notifyBlockerResolved } = require("./taskBlockerNotify");
@@ -251,6 +252,12 @@ function assignmentRecord(taskId, assignment) {
     redAdminNotifyRecipients: assignment.redAdminNotifyRecipients || {},
     redAdminNotifyAttempts: Number(assignment.redAdminNotifyAttempts || 0) || null,
     removed: !!assignment.removed,
+    ...(assignment.plannedHours == null
+      ? {}
+      : { plannedHours: assignment.plannedHours }),
+    ...(assignment.actualHours == null
+      ? {}
+      : { actualHours: assignment.actualHours }),
     ...escalation.assignmentBlockerFields(assignment, { omitIfAbsent: true }),
   };
 }
@@ -302,6 +309,8 @@ function snapshotTask(task, assignments) {
       redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
       redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
       removed: !!a.removed,
+      plannedHours: a.plannedHours == null ? null : a.plannedHours,
+      actualHours: a.actualHours == null ? null : a.actualHours,
       ...escalation.assignmentBlockerFields(a),
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
@@ -684,28 +693,9 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   const nowIso = new Date(nowMs).toISOString();
   for (const a of pendingAdmin) {
     const email = escalation.normalizeEmail(a.email);
-    const assignmentItem = {
+    const assignmentItem = assignmentRecord(task.taskId, a) || {
       PK: `TASK#${task.taskId}`,
       SK: `ASSIGNMENT#${email}`,
-      type: "ASSIGNMENT",
-      taskId: task.taskId,
-      email,
-      status: a.status || "TODO",
-      assignedAt: a.assignedAt || nowIso,
-      assignedBy: a.assignedBy || "",
-      completedAt: a.completedAt || null,
-      completedDate: a.completedDate || null,
-      completedZone: a.completedZone || null,
-      completionRemark: a.completionRemark || null,
-      highestZone: a.highestZone || null,
-      recordedZone: a.recordedZone || null,
-      zoneReachedAt: a.zoneReachedAt || null,
-      redAdminNotifyStatus: a.redAdminNotifyStatus || null,
-      redAdminNotifyClaimedAt: a.redAdminNotifyClaimedAt || null,
-      redAdminNotifiedAt: a.redAdminNotifiedAt || null,
-      redAdminNotifyRecipients: a.redAdminNotifyRecipients || {},
-      redAdminNotifyAttempts: Number(a.redAdminNotifyAttempts || 0) || null,
-      removed: !!a.removed,
     };
     let claimed;
     try {
@@ -1577,6 +1567,27 @@ exports.handler = async (event) => {
 
       if (!task) return json(404, { error: "Task not found" });
 
+      if (sub === "planned-hours" && method === "PUT") {
+        const actorEmail = escalation.normalizeEmail(user.email);
+        if (!actorEmail) return json(401, { error: "Unauthorized" });
+        const assignments = await resolveAssignments(task);
+        const snap = snapshotTask(task, assignments);
+        const denied = await denyUnlessTaskReadable(user, snap, taskReadCache);
+        if (denied) return denied;
+        const mine = findAssignmentByEmail(assignments, actorEmail);
+        if (!mine) return json(403, { error: "Forbidden" });
+        if (taskTime.assignmentPlanLocked(mine)) {
+          return json(400, { error: taskTime.PLANNED_LOCKED });
+        }
+        const parsed = taskTime.parseRequiredHours(body.hours ?? body.plannedHours);
+        if (!parsed.ok) {
+          return json(400, { error: parsed.error, errors: { plannedHours: parsed.error } });
+        }
+        mine.plannedHours = parsed.value;
+        const saved = await persistAssignmentsAndTask(task, assignments);
+        return json(200, decoratedTaskResponse(saved, assignments, actorEmail));
+      }
+
       if (sub === "blocker" && method === "POST") {
         if (action === "resolve") {
           return handleResolveBlocker({
@@ -2117,6 +2128,8 @@ exports.handler = async (event) => {
             status: updates.status,
             assignmentEmail: updates.assignmentEmail,
             completionRemark: updates.completionRemark,
+            plannedHours: updates.plannedHours,
+            actualHours: updates.actualHours,
           };
 
       if (allowed.status && !STATUSES.includes(allowed.status)) {
@@ -2140,6 +2153,11 @@ exports.handler = async (event) => {
       delete allowed.redAdminNotifyStatus;
       delete allowed.redAdminNotifiedAt;
       delete allowed.estimatedHours;
+      const plannedHoursInput = allowed.plannedHours ?? updates.plannedHours;
+      const actualHoursInput = allowed.actualHours ?? updates.actualHours;
+      delete allowed.plannedHours;
+      delete allowed.actualHours;
+      delete allowed.timeFinalizedAt;
 
       const nowIso = new Date().toISOString();
       const nowMs = Date.now();
@@ -2169,6 +2187,8 @@ exports.handler = async (event) => {
       delete merged.assigneeProfiles;
       delete merged.displayStatus;
       delete merged.priorityLabel;
+      delete merged.plannedHours;
+      delete merged.actualHours;
 
       const currentEmails = assignments
         .filter((a) => a && !a.removed)
@@ -2392,6 +2412,22 @@ exports.handler = async (event) => {
               escalation.isComplete(mine.status)
             ) {
               // Employees cannot reopen a completed assignment.
+            } else if (
+              !mayAdminMutate &&
+              nextStatus === "IN_PROGRESS" &&
+              (currentStatus === "TODO" || currentStatus === "BACKLOG")
+            ) {
+              if (!taskTime.parseRequiredHours(mine.plannedHours).ok) {
+                const parsed = taskTime.parseRequiredHours(plannedHoursInput);
+                if (!parsed.ok) {
+                  return json(400, {
+                    error: taskTime.PLANNED_REQUIRED_TO_START,
+                    errors: { plannedHours: parsed.error },
+                  });
+                }
+                mine.plannedHours = parsed.value;
+              }
+              await applyStatusToAssignment(mine, "IN_PROGRESS");
             } else if (!mayAdminMutate && nextStatus === "REVIEW") {
               return json(400, {
                 error: "REVIEW cannot be set directly",
@@ -2420,6 +2456,16 @@ exports.handler = async (event) => {
                 return json(400, {
                   error: "Please upload at least one proof file.",
                 });
+              }
+              if (!mayAdminMutate) {
+                const parsedActual = taskTime.parseRequiredHours(actualHoursInput);
+                if (!parsedActual.ok) {
+                  return json(400, {
+                    error: taskTime.ACTUALS_REQUIRED_TO_REVIEW,
+                    errors: { actualHours: parsedActual.error },
+                  });
+                }
+                mine.actualHours = parsedActual.value;
               }
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(

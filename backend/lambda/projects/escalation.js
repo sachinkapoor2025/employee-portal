@@ -598,6 +598,10 @@ function decorateAssignment(assignment, dueDate, nowMs) {
     completedDate: assignment.completedDate || null,
     completedZone: isComplete(view.status) ? view.zone : null,
     completionRemark: assignment.completionRemark || null,
+    plannedHours:
+      assignment.plannedHours == null ? null : assignment.plannedHours,
+    actualHours:
+      assignment.actualHours == null ? null : assignment.actualHours,
     ...assignmentBlockerFields(assignment),
     highestZone: maxZone(assignment.highestZone, view.zone),
     recordedZone: assignment.recordedZone || (isReview(view.status) ? view.zone : null),

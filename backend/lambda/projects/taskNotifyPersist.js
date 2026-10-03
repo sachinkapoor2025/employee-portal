@@ -25,6 +25,8 @@ const ASSIGNMENT_BLOCKER_ATTRS = [
   "blockerResolvedBy",
 ];
 
+const ASSIGNMENT_HOUR_ATTRS = ["plannedHours", "actualHours"];
+
 const TASK_NOTIFY_ATTRS = [
   ...TASK_COMPLETION_EMAIL_ATTRS,
   ...ASSIGNMENT_RED_NOTIFY_ATTRS,
@@ -75,6 +77,19 @@ function overlayMissingAttrs(outgoing, stored, attrNames) {
       value && typeof value === "object" && !Array.isArray(value)
         ? { ...value }
         : value;
+  }
+  return next;
+}
+
+function overlayPreservedHours(outgoing, stored) {
+  const next = { ...(outgoing || {}) };
+  for (const name of ASSIGNMENT_HOUR_ATTRS) {
+    if (next[name] != null) continue;
+    if (stored && stored[name] != null) {
+      next[name] = stored[name];
+    } else {
+      delete next[name];
+    }
   }
   return next;
 }
@@ -165,6 +180,7 @@ async function putProtectedItem(
     }
     let item = overlayStoredAttrs(outgoing, stored, attrNames);
     item = overlayMissingAttrs(item, stored, preserveAttrs);
+    item = overlayPreservedHours(item, stored);
     const cond = statusCondition(stored, statusKey, claimedKey);
     try {
       await ddb.send(
@@ -359,9 +375,11 @@ module.exports = {
   TASK_COMPLETION_EMAIL_ATTRS,
   ASSIGNMENT_RED_NOTIFY_ATTRS,
   ASSIGNMENT_BLOCKER_ATTRS,
+  ASSIGNMENT_HOUR_ATTRS,
   TASK_NOTIFY_ATTRS,
   overlayStoredAttrs,
   overlayMissingAttrs,
+  overlayPreservedHours,
   putCreatedTaskRecords,
   putTaskCopiesSafe,
   putAssignmentSafe,

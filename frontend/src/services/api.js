@@ -382,6 +382,8 @@ export const getTaskAttachmentDownloadUrl = (taskId, payload) =>
 export const logTimeEntry = (data) => api("/time-entries", "POST", data);
 export const fetchTimeEntries = (email) =>
   api(`/time-entries${email ? `?email=${encodeURIComponent(email)}` : ""}`, "GET");
+export const saveTaskPlannedHours = (taskId, hours) =>
+  api(`/tasks/${encodeURIComponent(taskId)}/planned-hours`, "PUT", { hours });
 
 /* ================= LEAVE ================= */
 

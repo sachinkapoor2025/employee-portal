@@ -19,6 +19,13 @@ import {
 import { getLoggedInEmail } from "../../services/auth";
 import { formatEstimatedHours } from "../../utils/estimatedHours";
 import {
+  ACTUAL_HELPER,
+  ACTUAL_REQUIRED,
+  PLANNED_HELPER,
+  formatHours,
+  parseRequiredHours,
+} from "../../utils/taskTime";
+import {
   colors,
   pageCard,
   pageTitle,
@@ -68,6 +75,7 @@ const COMPLETION_PROOF_HELPER =
   "Upload sheet of work. If there is no sheet, upload the screenshot.";
 const COMPLETION_PROOF_REQUIRED = "Please upload at least one proof file.";
 const COMPLETION_REMARK_REQUIRED = "Please enter a completion remark.";
+const PLANNED_MODAL_TITLE = "Enter Planned Hours";
 const COMPLETION_PROOF_UPLOAD_FAILED = "Proof upload failed. Please try again.";
 
 function attachmentKey(item) {
@@ -140,6 +148,10 @@ export default function TaskDetails() {
   const [completeProofError, setCompleteProofError] = useState("");
   const [completeRemarkError, setCompleteRemarkError] = useState("");
   const [completeProofBaselineIds, setCompleteProofBaselineIds] = useState([]);
+  const [actualHoursInput, setActualHoursInput] = useState("");
+  const [actualHoursError, setActualHoursError] = useState("");
+  const [plannedHoursInput, setPlannedHoursInput] = useState("");
+  const [plannedHoursError, setPlannedHoursError] = useState("");
   const [blockerRemark, setBlockerRemark] = useState("");
   const [blockerError, setBlockerError] = useState("");
   const [reviewDecision, setReviewDecision] = useState("");
@@ -679,6 +691,15 @@ export default function TaskDetails() {
       setError(RED_ZONE_MESSAGE);
       return;
     }
+    if (wanted === "IN_PROGRESS") {
+      const planned = parseRequiredHours(mine?.plannedHours);
+      if (!planned.ok) {
+        setPlannedHoursInput("");
+        setPlannedHoursError("");
+        setModal("planned");
+        return;
+      }
+    }
     if (wanted === "DONE") {
       setCompleteRemark("");
       setCompleteError("");
@@ -688,6 +709,8 @@ export default function TaskDetails() {
       setCompleteProofBaselineIds(
         (attachments || []).map(attachmentKey).filter(Boolean)
       );
+      setActualHoursInput("");
+      setActualHoursError("");
       setModal("complete");
       return;
     }
@@ -715,6 +738,8 @@ export default function TaskDetails() {
     setCompleteProofError("");
     setCompleteRemarkError("");
     setCompleteProofBaselineIds([]);
+    setActualHoursInput("");
+    setActualHoursError("");
   };
 
   const handleEmployeeComplete = async () => {
@@ -739,7 +764,14 @@ export default function TaskDetails() {
     const remarkErr = remark ? "" : COMPLETION_REMARK_REQUIRED;
     setCompleteProofError(proofErr);
     setCompleteRemarkError(remarkErr);
-    if (proofErr || remarkErr) return;
+    const actual = parseRequiredHours(actualHoursInput);
+    const actualErr = actual.ok
+      ? ""
+      : String(actualHoursInput || "").trim()
+        ? actual.error
+        : ACTUAL_REQUIRED;
+    setActualHoursError(actualErr);
+    if (proofErr || remarkErr || actualErr) return;
     setSaving(true);
     setCompleteError("");
     setError("");
@@ -750,11 +782,51 @@ export default function TaskDetails() {
         status: "DONE",
         assignmentEmail: mine?.email || getLoggedInEmail(),
         completionRemark: remark,
+        actualHours: actual.value,
       });
       closeCompletionModal();
       await load();
     } catch (err) {
       setCompleteError(err.message || "Failed to update task status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const closePlannedModal = () => {
+    setModal(null);
+    setPlannedHoursInput("");
+    setPlannedHoursError("");
+  };
+
+  const handleSavePlannedAndStart = async () => {
+    const parsed = parseRequiredHours(plannedHoursInput);
+    if (!parsed.ok) {
+      setPlannedHoursError(parsed.error);
+      return;
+    }
+    const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
+    const mine =
+      task?.myAssignment ||
+      getTaskAssignees(task).find(
+        (a) => String(a.email || "").toLowerCase() === viewer
+      ) ||
+      null;
+    setSaving(true);
+    setPlannedHoursError("");
+    setError("");
+    try {
+      await updateTask({
+        taskId: task.taskId || taskId,
+        projectId: task.projectId,
+        status: "IN_PROGRESS",
+        assignmentEmail: mine?.email || getLoggedInEmail(),
+        plannedHours: parsed.value,
+      });
+      closePlannedModal();
+      await load();
+    } catch (err) {
+      setPlannedHoursError(err.message || "Unable to save planned hours.");
     } finally {
       setSaving(false);
     }
@@ -1011,8 +1083,9 @@ export default function TaskDetails() {
             onSelectAttachment={handleAttachmentFile}
             onDownloadAttachment={handleAttachmentDownload}
           />
-        ) : reviewedAssignment ? (
+        ) : (
         <>
+          {reviewedAssignment ? (
           <AdminReviewPanel
             assignment={reviewedAssignment}
             users={users}
@@ -1047,8 +1120,9 @@ export default function TaskDetails() {
             onCancel={resetReviewForm}
             onApprove={handleApproveReview}
             onReassign={handleReviewReassign}
+            estimatedHours={task.estimatedHours}
           />
-        ) : null}
+          ) : null}
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>TASK INFORMATION</h3>
           <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
@@ -1164,50 +1238,6 @@ export default function TaskDetails() {
           )}
         </section>
         </>
-        ) : (
-          <EmployeeTaskBody
-            task={task}
-            mine={null}
-            employeeStatus={String(task.status || "").toUpperCase()}
-            employeeZone={zone}
-            employeeTiming={timing}
-            showActiveBlocker={false}
-            timeline={timeline}
-            users={users}
-            attachments={attachments}
-            attachmentError={attachmentError}
-            uploadingAttachment={uploadingAttachment}
-            downloadingAttachmentId={downloadingAttachmentId}
-            onSelectAttachment={handleAttachmentFile}
-            onDownloadAttachment={handleAttachmentDownload}
-            extraInfo={
-              task.sourceTaskId ? (
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
-                    Source task:
-                  </div>
-                  <button
-                    type="button"
-                    className="dgv-btn dgv-btn--outline"
-                    onClick={() =>
-                      navigate(
-                        `/admin/tasks/${encodeURIComponent(task.sourceTaskId)}`
-                      )
-                    }
-                  >
-                    {displayTaskId(task.sourceTaskId)}
-                  </button>
-                </div>
-              ) : null
-            }
-            afterSchedule={
-              <AdminAssigneeProgress
-                assignees={assignees}
-                users={users}
-                profiles={task.assigneeProfiles}
-              />
-            }
-          />
         )}
       </div>
 
@@ -1507,6 +1537,39 @@ export default function TaskDetails() {
               {completeRemarkError}
             </p>
           ) : null}
+          <label
+            style={{ ...formLabel, marginTop: 18 }}
+            htmlFor="actual-hours"
+          >
+            3. Total Actual Hours *
+          </label>
+          <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
+            Admin estimate: {formatEstimatedHours(task?.estimatedHours)} · My planned hours:{" "}
+            {formatHours(mine?.plannedHours)}
+          </p>
+          <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
+            {ACTUAL_HELPER}
+          </p>
+          <input
+            id="actual-hours"
+            aria-label="Total Actual Hours"
+            style={formInput}
+            inputMode="decimal"
+            value={actualHoursInput}
+            onChange={(e) => {
+              setActualHoursInput(e.target.value);
+              if (actualHoursError) setActualHoursError("");
+              if (completeError) setCompleteError("");
+            }}
+          />
+          {actualHoursError ? (
+            <p
+              role="alert"
+              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
+            >
+              {actualHoursError}
+            </p>
+          ) : null}
           {completeError ? (
             <p
               role="alert"
@@ -1530,6 +1593,52 @@ export default function TaskDetails() {
               onClick={handleEmployeeComplete}
             >
               {COMPLETION_SUBMIT_LABEL}
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {modal === "planned" ? (
+        <Modal title={PLANNED_MODAL_TITLE} onClose={closePlannedModal}>
+          <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
+            Admin estimated hours: {formatEstimatedHours(task?.estimatedHours)}
+          </p>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
+            {PLANNED_HELPER}
+          </p>
+          <label style={formLabel} htmlFor="planned-hours">
+            Planned Hours *
+          </label>
+          <input
+            id="planned-hours"
+            aria-label="Planned Hours"
+            style={formInput}
+            inputMode="decimal"
+            value={plannedHoursInput}
+            onChange={(e) => {
+              setPlannedHoursInput(e.target.value);
+              if (plannedHoursError) setPlannedHoursError("");
+            }}
+          />
+          {plannedHoursError ? (
+            <p
+              role="alert"
+              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
+            >
+              {plannedHoursError}
+            </p>
+          ) : null}
+          <div style={modalActions}>
+            <Button type="button" variant="outline" onClick={closePlannedModal}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              loading={saving}
+              disabled={saving}
+              onClick={handleSavePlannedAndStart}
+            >
+              Save and start
             </Button>
           </div>
         </Modal>
@@ -1626,6 +1735,7 @@ function AdminReviewPanel({
   onCancel,
   onApprove,
   onReassign,
+  estimatedHours,
 }) {
   const employee = personLabel(users, assignment.email);
   const employeeName = employee.name || assignment.email;
@@ -1657,6 +1767,33 @@ function AdminReviewPanel({
           <Label>Project</Label>
           <div style={{ fontWeight: 700, fontSize: 14, wordBreak: "break-word" }}>
             {projectName || "—"}
+          </div>
+        </div>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div>
+          <Label>Admin estimated hours</Label>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>
+            {formatEstimatedHours(estimatedHours)}
+          </div>
+        </div>
+        <div>
+          <Label>Employee planned hours</Label>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>
+            {formatHours(assignment.plannedHours)}
+          </div>
+        </div>
+        <div>
+          <Label>Total actual hours</Label>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>
+            {formatHours(assignment.actualHours)}
           </div>
         </div>
       </div>
@@ -2111,6 +2248,10 @@ function AdminAssigneeProgress({ assignees, users, profiles }) {
                 <div style={{ fontSize: 12, color: colors.textMuted }}>
                   {a.email}
                 </div>
+                <div style={{ fontSize: 12, color: colors.textMuted }}>
+                  Planned {formatHours(a.plannedHours)} · Actual{" "}
+                  {formatHours(a.actualHours)}
+                </div>
                 {a.completedAt ? (
                   <div style={{ fontSize: 12, color: colors.textMuted }}>
                     Completed {formatTaskDateTime(a.completedAt)}
@@ -2219,7 +2360,9 @@ function EmployeeTaskBody({
             zoneDisplay(employeeZone, employeeStatus).label
           }`.trim()}
         />
-        <InfoRow label="Estimated hours" value={formatEstimatedHours(task.estimatedHours)} />
+        <InfoRow label="Admin estimated hours" value={formatEstimatedHours(task.estimatedHours)} />
+        <InfoRow label="My planned hours" value={formatHours(mine?.plannedHours)} />
+        <InfoRow label="Total actual hours" value={formatHours(mine?.actualHours)} />
         <InfoRow label="Duration" value={formatTaskDuration(task) || "—"} />
       </section>
 

@@ -331,6 +331,51 @@ async function run() {
   assert.strictEqual(keptBlocker.blockerRemark, "Need asset");
   assert.strictEqual(keptBlocker.blockerReportedAt, "2026-09-25T10:00:00.000Z");
 
+  keptBlocker.plannedHours = 2.25;
+  keptBlocker.actualHours = 3.5;
+  assignDdb.items.set("TASK#t1|ASSIGNMENT#a@mydgv.com", keptBlocker);
+  const keepHours = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    status: "IN_PROGRESS",
+    redAdminNotifyStatus: null,
+    redAdminNotifyRecipients: {},
+  });
+  assert.strictEqual(keepHours.ok, true);
+  const keptHours = assignDdb.items.get("TASK#t1|ASSIGNMENT#a@mydgv.com");
+  assert.strictEqual(keptHours.status, "IN_PROGRESS");
+  assert.strictEqual(keptHours.plannedHours, 2.25);
+  assert.strictEqual(keptHours.actualHours, 3.5);
+  assert.strictEqual(keptHours.blockerStatus, "ACTIVE");
+  assert.strictEqual(keptHours.blockerRemark, "Need asset");
+  assert.strictEqual(keptHours.redAdminNotifyStatus, "SENT");
+
+  const keepHoursFromNull = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    status: "IN_PROGRESS",
+    plannedHours: null,
+    actualHours: null,
+  });
+  assert.strictEqual(keepHoursFromNull.ok, true);
+  const stillHours = assignDdb.items.get("TASK#t1|ASSIGNMENT#a@mydgv.com");
+  assert.strictEqual(stillHours.plannedHours, 2.25);
+  assert.strictEqual(stillHours.actualHours, 3.5);
+
+  const legacyNoHours = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#legacy@mydgv.com",
+    email: "legacy@mydgv.com",
+    status: "TODO",
+  });
+  assert.strictEqual(legacyNoHours.ok, true);
+  const legacyStored = assignDdb.items.get("TASK#t1|ASSIGNMENT#legacy@mydgv.com");
+  assert.strictEqual(legacyStored.status, "TODO");
+  assert.ok(!Object.prototype.hasOwnProperty.call(legacyStored, "plannedHours"));
+  assert.ok(!Object.prototype.hasOwnProperty.call(legacyStored, "actualHours"));
+
   const cycleB = await putAssignmentSafe(assignDdb, tableName, {
     PK: "TASK#t1",
     SK: "ASSIGNMENT#a@mydgv.com",

@@ -871,6 +871,7 @@ async function run() {
           status: "DONE",
           assignmentEmail: PRIYA,
           completionRemark: remark,
+          actualHours: 2.5,
         })
       )
     );
@@ -899,6 +900,7 @@ async function run() {
           status: "DONE",
           assignmentEmail: PRIYA,
           completionRemark: `  ${remark}  `,
+          actualHours: 3,
         })
       )
     );
@@ -1041,6 +1043,7 @@ async function run() {
 
   await test("employee TODO IN_PROGRESS remain unchanged without remark", async () => {
     const { ddb } = setup({ startDate: FUTURE_START, dueDate: FUTURE_DUE });
+    liveAssignment(ddb, PRIYA).plannedHours = 2;
     const toProgress = parse(
       await handler(
         employeeEvent({
@@ -1055,6 +1058,50 @@ async function run() {
     assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
     assert.ok(!assignmentItem(ddb, PRIYA).completionRemark);
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("employee cannot start without planned hours", async () => {
+    const { ddb } = setup({ startDate: FUTURE_START, dueDate: FUTURE_DUE });
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(res.body.error || "", /planned hours/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "TODO");
+  });
+
+  await test("employee starts with planned hours and does not change admin estimate", async () => {
+    const { ddb } = setup({ startDate: FUTURE_START, dueDate: FUTURE_DUE });
+    const taskRow = ddb.items.find(
+      (row) =>
+        row.TableName === WORK &&
+        row.Item.PK === "ENTITY#TASK" &&
+        row.Item.taskId === TASK_ID
+    );
+    taskRow.Item.estimatedHours = 8;
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+          plannedHours: "2.25",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).plannedHours, 2.25);
+    assert.strictEqual(entityTask(ddb).estimatedHours, 8);
+    assert.ok(entityTask(ddb).plannedHours == null);
   });
 
   await test("employee cannot set REVIEW directly", async () => {
@@ -1201,6 +1248,7 @@ async function run() {
             status: "DONE",
             assignmentEmail: ANKIT,
             completionRemark: "Completed product research.",
+            actualHours: 4,
           },
           ANKIT
         )
@@ -1386,6 +1434,84 @@ async function run() {
     assert.notStrictEqual(mine.completedZone, "RED");
     assert.notStrictEqual(mine.completedZone, "ORANGE");
     assert.ok(activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("legacy IN_PROGRESS review submit still requires proof remark and actual hours", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const missing = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Legacy completion.",
+        })
+      )
+    );
+    assert.strictEqual(missing.statusCode, 400);
+    assert.match(missing.body.error || "", /actual hours/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+
+    const ok = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Legacy completion.",
+          actualHours: 1.5,
+        })
+      )
+    );
+    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 1.5);
+  });
+
+  await test("employee actual hours are saved for admin visibility and invalid values are rejected", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    for (const actualHours of [0, -1, "abc", ""]) {
+      const bad = parse(
+        await handler(
+          employeeEvent({
+            taskId: TASK_ID,
+            projectId: PROJECT_ID,
+            status: "DONE",
+            assignmentEmail: PRIYA,
+            completionRemark: "Done.",
+            actualHours,
+          })
+        )
+      );
+      assert.strictEqual(bad.statusCode, 400);
+    }
+    const ok = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Done.",
+          actualHours: 6,
+        })
+      )
+    );
+    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 6);
+    assert.strictEqual(ok.body.assignments[0].actualHours, 6);
   });
 }
 
