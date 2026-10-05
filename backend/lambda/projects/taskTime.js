@@ -29,6 +29,17 @@ function parseRequiredHours(raw) {
   return { ok: true, value: roundHours(n) };
 }
 
+function isBlankHours(raw) {
+  if (raw == null) return true;
+  if (typeof raw === "string" && !raw.trim()) return true;
+  return false;
+}
+
+function parseOptionalHours(raw) {
+  if (isBlankHours(raw)) return { ok: true, value: null };
+  return parseRequiredHours(raw);
+}
+
 function assignmentPlanLocked(assignment) {
   const status = String(assignment?.status || "").toUpperCase();
   return status !== "TODO" && status !== "BACKLOG";
@@ -40,5 +51,6 @@ module.exports = {
   PLANNED_LOCKED,
   ACTUALS_REQUIRED_TO_REVIEW,
   parseRequiredHours,
+  parseOptionalHours,
   assignmentPlanLocked,
 };

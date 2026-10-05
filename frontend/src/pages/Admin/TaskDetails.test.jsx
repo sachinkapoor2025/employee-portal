@@ -293,7 +293,7 @@ test("employee cannot start a task without planned hours", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
   expect(
-    await within(dialog).findByText("Hours must be a positive number.")
+    await within(dialog).findByText("Enter time as HH:MM (for example 02:30).")
   ).toBeInTheDocument();
   expect(updateTask).not.toHaveBeenCalled();
 });
@@ -310,7 +310,11 @@ test("employee can start a task with valid planned hours", async () => {
   );
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   expect(within(dialog).getByText(/Admin estimated hours/i)).toBeInTheDocument();
-  await userEvent.type(within(dialog).getByLabelText("Planned Hours"), "2.25");
+  expect(within(dialog).getByText("HH:MM")).toBeInTheDocument();
+  expect(
+    within(dialog).getByText(/Enter time as HH:MM\. Examples: 00:30/)
+  ).toBeInTheDocument();
+  setDurationHours("Planned Hours", "02:15", within(dialog));
   await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -360,8 +364,12 @@ test("selecting DONE opens completion UI with proof before remark", async () => 
       "Add a final remark describing the work you completed. The task will be sent to Admin for review."
     )
   ).toBeInTheDocument();
+  expect(within(dialog).getByRole("group", { name: "Total Actual Hours" })).toBeInTheDocument();
+  expect(within(dialog).getByLabelText("Total Actual Hours hours")).toBeInTheDocument();
+  expect(within(dialog).getByLabelText("Total Actual Hours minutes")).toBeInTheDocument();
+  expect(within(dialog).getByText("HH:MM")).toBeInTheDocument();
   expect(
-    within(dialog).getByRole("button", { name: "Submit for Review" })
+    within(dialog).getByText(/Enter time as HH:MM\. Examples: 00:30/)
   ).toBeInTheDocument();
   const proof = within(dialog).getByLabelText("Upload Proof");
   const remark = within(dialog).getByLabelText("Completion Remark");
@@ -455,7 +463,7 @@ test("existing employee proof allows submit without selecting a new file", async
     screen.getByLabelText("Completion Remark"),
     "Completed using an existing file."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -486,7 +494,7 @@ test("existing multiple employee proofs allow submit without selecting a new fil
     screen.getByLabelText("Completion Remark"),
     "Completed with existing files."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "4");
+  setDurationHours("Total Actual Hours", "04:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -517,7 +525,7 @@ test("another user's existing attachment does not count as proof", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed using the existing brief."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
     await screen.findByText("Please upload at least one proof file.")
@@ -553,7 +561,7 @@ test("valid proof and remark call updateTask with completionRemark", async () =>
     screen.getByLabelText("Completion Remark"),
     "  Completed the product upload and verified all 50 items.  "
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "3.5");
+  setDurationHours("Total Actual Hours", "03:30");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -607,7 +615,7 @@ test("successful submission refreshes into REVIEW", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed the product upload."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() => expect(fetchTaskById.mock.calls.length).toBeGreaterThan(1));
   expect(
@@ -643,7 +651,7 @@ test("failed review API keeps the completion modal and does not show REVIEW", as
     screen.getByLabelText("Completion Remark"),
     "Completed the product upload."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(await screen.findByText("Failed to update task status.")).toBeInTheDocument();
   expect(
@@ -812,7 +820,7 @@ test("employee Schedule shows estimated hours when present", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ extra: { estimatedHours: 1.5 } }));
   render(<TaskDetails />);
   expect(await screen.findByText("Admin estimated hours:")).toBeInTheDocument();
-  expect(screen.getAllByText("1.5 hours").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("01:30").length).toBeGreaterThan(0);
   expect(screen.getByText("Duration:")).toBeInTheDocument();
 });
 
@@ -1421,6 +1429,16 @@ function chooseProofFile(file) {
   fireEvent.change(input, { target: { files: [file] } });
 }
 
+function setDurationHours(label, value, scope = screen) {
+  const [hours, minutes = ""] = String(value).split(":");
+  fireEvent.change(scope.getByLabelText(`${label} hours`), {
+    target: { value: hours },
+  });
+  fireEvent.change(scope.getByLabelText(`${label} minutes`), {
+    target: { value: minutes },
+  });
+}
+
 async function waitForProofRefresh({ minCalls = 2 } = {}) {
   await waitFor(() =>
     expect(fetchTaskAttachments.mock.calls.length).toBeGreaterThanOrEqual(minCalls)
@@ -1620,7 +1638,7 @@ test("successful proof upload in the completion modal allows submit", async () =
     screen.getByLabelText("Completion Remark"),
     "Completed with proof."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "1.25");
+  setDurationHours("Total Actual Hours", "01:15");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -1656,7 +1674,7 @@ test("existing proof plus a newly selected file still submits", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed with existing and new proof."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "3");
+  setDurationHours("Total Actual Hours", "03:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -1688,7 +1706,7 @@ test("proof uploaded in another tab is detected when the modal opens", async () 
     screen.getByLabelText("Completion Remark"),
     "Completed with proof from another tab."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -1720,7 +1738,7 @@ test("stale page proof is not accepted after backend no longer has it", async ()
     screen.getByLabelText("Completion Remark"),
     "Completed using a file that was removed."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
     await screen.findByText("Please upload at least one proof file.")
@@ -1753,7 +1771,7 @@ test("failed proof refresh blocks submission and can be retried", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed after a refresh retry."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(updateTask).not.toHaveBeenCalled();
   await userEvent.click(
@@ -1812,7 +1830,7 @@ test("newly selected modal files are kept if an older refresh returns later", as
     screen.getByLabelText("Completion Remark"),
     "Completed with a file selected during refresh."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
@@ -1851,7 +1869,7 @@ test("failed proof upload does not submit for review", async () => {
     screen.getByLabelText("Completion Remark"),
     "Completed the product upload."
   );
-  await userEvent.type(screen.getByLabelText("Total Actual Hours"), "2");
+  setDurationHours("Total Actual Hours", "02:00");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
     await screen.findByText("Please upload at least one proof file.")
@@ -1914,7 +1932,7 @@ test("admin review complete does not require an attachment", async () => {
   expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
 });
 
-test("employee cannot submit for review without actual hours", async () => {
+test("employee can submit for review without actual hours", async () => {
   fetchTaskById.mockResolvedValue(
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
@@ -1926,6 +1944,8 @@ test("employee cannot submit for review without actual hours", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText(/Admin estimate/i)).toBeInTheDocument();
   expect(within(dialog).getByLabelText("Total Actual Hours")).toBeInTheDocument();
+  expect(within(dialog).getByText("3. Total Actual Hours")).toBeInTheDocument();
+  expect(within(dialog).queryByText("3. Total Actual Hours *")).not.toBeInTheDocument();
   await uploadCompletionProof();
   await userEvent.type(
     within(dialog).getByLabelText("Completion Remark"),
@@ -1934,15 +1954,19 @@ test("employee cannot submit for review without actual hours", async () => {
   await userEvent.click(
     within(dialog).getByRole("button", { name: "Submit for Review" })
   );
-  expect(
-    await within(dialog).findByText(
-      "Enter the total actual hours you spent on this task."
-    )
-  ).toBeInTheDocument();
-  expect(updateTask).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "rahul@mydgv.com",
+      completionRemark: "Finished the outreach list.",
+    })
+  );
+  expect(updateTask.mock.calls[0][0].actualHours).toBeUndefined();
 });
 
-test("employee cannot submit zero or negative actual hours", async () => {
+test("employee cannot submit invalid non-empty actual hours", async () => {
   fetchTaskById.mockResolvedValue(
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
@@ -1957,12 +1981,37 @@ test("employee cannot submit zero or negative actual hours", async () => {
     within(dialog).getByLabelText("Completion Remark"),
     "Finished the outreach list."
   );
-  await userEvent.type(within(dialog).getByLabelText("Total Actual Hours"), "0");
+  setDurationHours("Total Actual Hours", "1:60", within(dialog));
   await userEvent.click(
     within(dialog).getByRole("button", { name: "Submit for Review" })
   );
   expect(
-    await within(dialog).findByText("Hours must be a positive number.")
+    await within(dialog).findByText("Enter time as HH:MM (for example 02:30).")
+  ).toBeInTheDocument();
+  expect(updateTask).not.toHaveBeenCalled();
+});
+
+test("employee cannot submit zero actual hours", async () => {
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
+  );
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  await uploadCompletionProof();
+  await userEvent.type(
+    within(dialog).getByLabelText("Completion Remark"),
+    "Finished the outreach list."
+  );
+  setDurationHours("Total Actual Hours", "00:00", within(dialog));
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Submit for Review" })
+  );
+  expect(
+    await within(dialog).findByText("Time must be greater than 00:00.")
   ).toBeInTheDocument();
   expect(updateTask).not.toHaveBeenCalled();
 });
@@ -1985,8 +2034,9 @@ test("admin task details show planned and actual hours", async () => {
   expect(await screen.findByText("Admin estimated hours")).toBeInTheDocument();
   expect(screen.getByText("Employee planned hours")).toBeInTheDocument();
   expect(screen.getAllByText("Total actual hours").length).toBeGreaterThan(0);
-  expect(screen.getAllByText("4 hours").length).toBeGreaterThan(0);
-  expect(screen.getAllByText("3 hours").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("06:00").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("04:00").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("03:00").length).toBeGreaterThan(0);
   expect(screen.getByRole("heading", { name: "Review Task" })).toBeInTheDocument();
   expect(screen.getByText("Employee Submission")).toBeInTheDocument();
   expect(screen.getByText("Created Date:")).toBeInTheDocument();
@@ -1994,4 +2044,134 @@ test("admin task details show planned and actual hours", async () => {
   expect(screen.getByRole("heading", { name: "TASK DESCRIPTION" })).toBeInTheDocument();
   expect(screen.queryByLabelText("Planned Hours")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Total Actual Hours")).not.toBeInTheDocument();
+});
+
+test("admin task details show an em dash when actual hours are missing", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  fetchTaskById.mockResolvedValue({
+    ...ASSIGNED_TASK,
+    estimatedHours: 8,
+    assignments: [
+      {
+        email: "rahul@mydgv.com",
+        status: "REVIEW",
+        plannedHours: 6.5,
+      },
+    ],
+  });
+  render(<TaskDetails />);
+  expect(await screen.findByText("Admin estimated hours")).toBeInTheDocument();
+  expect(screen.getAllByText("08:00").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("06:30").length).toBeGreaterThan(0);
+  const actualLabels = screen.getAllByText("Total actual hours");
+  expect(
+    actualLabels.some((node) => node.parentElement?.textContent?.includes("—"))
+  ).toBe(true);
+});
+
+test("stored 2.5 hours display as 02:30 not 02:50", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  fetchTaskById.mockResolvedValue({
+    ...ASSIGNED_TASK,
+    estimatedHours: 2.5,
+    assignments: [
+      {
+        email: "rahul@mydgv.com",
+        status: "REVIEW",
+        plannedHours: 24.5,
+        actualHours: 36.75,
+      },
+    ],
+  });
+  render(<TaskDetails />);
+  expect(await screen.findByText("02:30")).toBeInTheDocument();
+  expect(screen.getByText("24:30")).toBeInTheDocument();
+  expect(screen.getByText("36:45")).toBeInTheDocument();
+});
+
+test("employee can start a task with planned hours longer than 23:59", async () => {
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "TODO", extra: { estimatedHours: 8 } })
+  );
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "IN_PROGRESS"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
+  setDurationHours("Planned Hours", "24:30", within(dialog));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({ plannedHours: 24.5, status: "IN_PROGRESS" })
+    )
+  );
+});
+
+test("employee planned hours reject invalid minutes", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "IN_PROGRESS"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
+  setDurationHours("Planned Hours", "1:60", within(dialog));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
+  expect(
+    await within(dialog).findByText("Enter time as HH:MM (for example 02:30).")
+  ).toBeInTheDocument();
+  expect(updateTask).not.toHaveBeenCalled();
+});
+
+test("employee can submit 02:30 actual hours", async () => {
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
+  );
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  await uploadCompletionProof();
+  await userEvent.type(
+    within(dialog).getByLabelText("Completion Remark"),
+    "Finished the outreach list."
+  );
+  setDurationHours("Total Actual Hours", "02:30", within(dialog));
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Submit for Review" })
+  );
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({ actualHours: 2.5, status: "DONE" })
+    )
+  );
+});
+
+test("employee can submit 24:30 actual hours", async () => {
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
+  );
+  render(<TaskDetails />);
+  await userEvent.selectOptions(
+    await screen.findByLabelText("Update your assignment status"),
+    "DONE"
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  await uploadCompletionProof();
+  await userEvent.type(
+    within(dialog).getByLabelText("Completion Remark"),
+    "Finished the outreach list."
+  );
+  setDurationHours("Total Actual Hours", "24:30", within(dialog));
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Submit for Review" })
+  );
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({ actualHours: 24.5, status: "DONE" })
+    )
+  );
 });

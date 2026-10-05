@@ -1,4 +1,17 @@
-export const HOURS_INVALID = "Hours must be a positive number.";
+import {
+  formatStoredHoursAsHhMm,
+  parseHhMmInput,
+  parseStoredHours,
+} from "./durationHours";
+
+export {
+  HH_MM_HELPER,
+  HH_MM_PLACEHOLDER,
+  HH_MM_INVALID,
+} from "./durationHours";
+
+export const HOURS_INVALID =
+  "Enter time as HH:MM (for example 02:30).";
 export const PLANNED_REQUIRED_TO_START =
   "Enter planned hours before starting this task.";
 export const PLANNED_HELPER =
@@ -6,36 +19,30 @@ export const PLANNED_HELPER =
 export const ACTUAL_REQUIRED =
   "Enter the total actual hours you spent on this task.";
 export const ACTUAL_HELPER =
-  "Manually enter the total hours you actually spent on this task. Do not include lunch or breaks.";
-
-function roundHours(value) {
-  return Math.round(value * 100) / 100;
-}
+  "Optional. Manually enter the total hours you actually spent on this task. Do not include lunch or breaks.";
 
 export function parseRequiredHours(raw) {
-  if (raw == null) return { ok: false, error: HOURS_INVALID };
-  if (typeof raw === "number") {
-    if (!Number.isFinite(raw) || raw <= 0) {
-      return { ok: false, error: HOURS_INVALID };
-    }
-    return { ok: true, value: roundHours(raw) };
-  }
-  const text = String(raw).trim();
-  if (!text) return { ok: false, error: HOURS_INVALID };
-  if (!/^\d+(\.\d+)?$/.test(text)) {
-    return { ok: false, error: HOURS_INVALID };
-  }
-  const n = Number(text);
-  if (!Number.isFinite(n) || n <= 0) {
-    return { ok: false, error: HOURS_INVALID };
-  }
-  return { ok: true, value: roundHours(n) };
+  const parsed = parseStoredHours(raw);
+  if (!parsed.ok) return { ok: false, error: HOURS_INVALID };
+  return { ok: true, value: parsed.value };
+}
+
+export function parseHoursInput(raw) {
+  const parsed = parseHhMmInput(raw);
+  if (parsed.ok) return parsed;
+  return {
+    ok: false,
+    empty: Boolean(parsed.empty),
+    error: parsed.empty ? HOURS_INVALID : parsed.error,
+  };
+}
+
+export function parseOptionalHoursInput(raw) {
+  const parsed = parseHoursInput(raw);
+  if (parsed.empty) return { ok: true, value: null, empty: true };
+  return parsed;
 }
 
 export function formatHours(raw) {
-  if (raw == null || raw === "") return "—";
-  const parsed = parseRequiredHours(raw);
-  if (!parsed.ok) return "—";
-  const n = parsed.value;
-  return `${n} ${n === 1 ? "hour" : "hours"}`;
+  return formatStoredHoursAsHhMm(raw);
 }

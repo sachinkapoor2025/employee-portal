@@ -1472,14 +1472,14 @@ async function run() {
     assert.ok(activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 
-  await test("legacy IN_PROGRESS review submit still requires proof remark and actual hours", async () => {
+  await test("legacy IN_PROGRESS review submit requires proof and remark but not actual hours", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
       assignmentStatus: "IN_PROGRESS",
       proof: true,
     });
-    const missing = parse(
+    const okBlank = parse(
       await handler(
         employeeEvent({
           taskId: TASK_ID,
@@ -1490,35 +1490,23 @@ async function run() {
         })
       )
     );
-    assert.strictEqual(missing.statusCode, 400);
-    assert.match(missing.body.error || "", /actual hours/i);
-    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
-
-    const ok = parse(
-      await handler(
-        employeeEvent({
-          taskId: TASK_ID,
-          projectId: PROJECT_ID,
-          status: "DONE",
-          assignmentEmail: PRIYA,
-          completionRemark: "Legacy completion.",
-          actualHours: 1.5,
-        })
-      )
-    );
-    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(okBlank.statusCode, 200);
     assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
-    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 1.5);
+    assert.ok(
+      assignmentItem(ddb, PRIYA).actualHours == null ||
+        assignmentItem(ddb, PRIYA).actualHours === undefined
+    );
+    assert.notStrictEqual(assignmentItem(ddb, PRIYA).actualHours, 0);
   });
 
-  await test("employee actual hours are saved for admin visibility and invalid values are rejected", async () => {
+  await test("employee actual hours are saved when provided and invalid values are rejected", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
       assignmentStatus: "IN_PROGRESS",
       proof: true,
     });
-    for (const actualHours of [0, -1, "abc", ""]) {
+    for (const actualHours of [0, -1, "abc"]) {
       const bad = parse(
         await handler(
           employeeEvent({
@@ -1548,6 +1536,50 @@ async function run() {
     assert.strictEqual(ok.statusCode, 200);
     assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 6);
     assert.strictEqual(ok.body.assignments[0].actualHours, 6);
+  });
+
+  await test("employee can submit actual hours of 2.5 and 24.5", async () => {
+    const first = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const twoThirty = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Done.",
+          actualHours: 2.5,
+        })
+      )
+    );
+    assert.strictEqual(twoThirty.statusCode, 200);
+    assert.strictEqual(assignmentItem(first.ddb, PRIYA).actualHours, 2.5);
+
+    const second = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const twentyFour = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Done.",
+          actualHours: 24.5,
+        })
+      )
+    );
+    assert.strictEqual(twentyFour.statusCode, 200);
+    assert.strictEqual(assignmentItem(second.ddb, PRIYA).actualHours, 24.5);
   });
 }
 

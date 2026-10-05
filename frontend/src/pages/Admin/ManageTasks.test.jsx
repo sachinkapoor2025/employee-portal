@@ -70,11 +70,12 @@ jest.mock("../../components/TaskTimePicker", () => {
   };
 });
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ManageTasks from "./ManageTasks";
 import { createTask, fetchProjects, fetchTaskList, fetchUsers } from "../../services/api";
-import { ESTIMATED_HOURS_HELPER, ESTIMATED_HOURS_INVALID } from "../../utils/estimatedHours";
+import { ESTIMATED_HOURS_HELPER } from "../../utils/estimatedHours";
+import { HH_MM_HELPER, HH_MM_INVALID, HH_MM_POSITIVE } from "../../utils/durationHours";
 
 const PROJECT = { projectId: "p1", name: "Portal" };
 
@@ -214,6 +215,16 @@ test("New Task Create New Project opens the shared create form", async () => {
   ).toBeInTheDocument();
 });
 
+function setDurationHours(label, value, scope = screen) {
+  const [hours, minutes = ""] = String(value).split(":");
+  fireEvent.change(scope.getByLabelText(`${label} hours`), {
+    target: { value: hours },
+  });
+  fireEvent.change(scope.getByLabelText(`${label} minutes`), {
+    target: { value: minutes },
+  });
+}
+
 async function fillRequiredTaskFields(dialog) {
   userEvent.selectOptions(within(dialog).getAllByRole("combobox")[0], PROJECT.projectId);
   userEvent.type(within(dialog).getAllByRole("textbox")[0], "Banner update");
@@ -230,7 +241,9 @@ test("New Task shows estimated hours helper text", async () => {
   await screen.findByRole("option", { name: "Portal" });
   userEvent.click(screen.getByRole("button", { name: "+ Task" }));
   const dialog = await screen.findByRole("dialog", { name: "New Task" });
-  expect(within(dialog).getByText(ESTIMATED_HOURS_HELPER)).toBeInTheDocument();
+  expect(within(dialog).getByText(ESTIMATED_HOURS_HELPER, { exact: false })).toBeInTheDocument();
+  expect(within(dialog).getByText("HH:MM")).toBeInTheDocument();
+  expect(within(dialog).getByText(HH_MM_HELPER, { exact: false })).toBeInTheDocument();
 });
 
 test("blank estimated hours still creates a task", async () => {
@@ -251,7 +264,7 @@ test("blank estimated hours still creates a task", async () => {
   expect(createTask.mock.calls[0][0].title).toBe("Banner update");
 });
 
-test("decimal estimated hours are submitted", async () => {
+test("HH:MM estimated hours are submitted as stored decimals", async () => {
   fetchUsers.mockResolvedValue([
     { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
   ]);
@@ -261,7 +274,7 @@ test("decimal estimated hours are submitted", async () => {
   userEvent.click(screen.getByRole("button", { name: "+ Task" }));
   const dialog = await screen.findByRole("dialog", { name: "New Task" });
   await fillRequiredTaskFields(dialog);
-  userEvent.type(within(dialog).getByLabelText("Estimated Hours"), "1.5");
+  setDurationHours("Estimated Hours", "01:30", within(dialog));
   userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
   await waitFor(() => {
     expect(createTask).toHaveBeenCalled();
@@ -279,7 +292,7 @@ test("integer estimated hours are submitted", async () => {
   userEvent.click(screen.getByRole("button", { name: "+ Task" }));
   const dialog = await screen.findByRole("dialog", { name: "New Task" });
   await fillRequiredTaskFields(dialog);
-  userEvent.type(within(dialog).getByLabelText("Estimated Hours"), "2");
+  setDurationHours("Estimated Hours", "02:00", within(dialog));
   userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
   await waitFor(() => {
     expect(createTask).toHaveBeenCalled();
@@ -287,7 +300,7 @@ test("integer estimated hours are submitted", async () => {
   expect(createTask.mock.calls[0][0].estimatedHours).toBe(2);
 });
 
-test("zero and negative estimated hours are rejected", async () => {
+test("zero estimated hours are rejected", async () => {
   fetchUsers.mockResolvedValue([
     { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
   ]);
@@ -295,14 +308,60 @@ test("zero and negative estimated hours are rejected", async () => {
   await screen.findByRole("option", { name: "Portal" });
   userEvent.click(screen.getByRole("button", { name: "+ Task" }));
   const dialog = await screen.findByRole("dialog", { name: "New Task" });
-  userEvent.type(within(dialog).getByLabelText("Estimated Hours"), "0");
+  await fillRequiredTaskFields(dialog);
+  setDurationHours("Estimated Hours", "00:00", within(dialog));
   userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
-  expect(await within(dialog).findByText(ESTIMATED_HOURS_INVALID)).toBeInTheDocument();
+  expect(await within(dialog).findByText(HH_MM_POSITIVE)).toBeInTheDocument();
   expect(createTask).not.toHaveBeenCalled();
+});
 
-  userEvent.clear(within(dialog).getByLabelText("Estimated Hours"));
-  userEvent.type(within(dialog).getByLabelText("Estimated Hours"), "-2");
+test("estimated hours longer than 23:59 are submitted", async () => {
+  fetchUsers.mockResolvedValue([
+    { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
+  ]);
+  createTask.mockResolvedValue({ taskId: "t1" });
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  userEvent.click(screen.getByRole("button", { name: "+ Task" }));
+  const dialog = await screen.findByRole("dialog", { name: "New Task" });
+  await fillRequiredTaskFields(dialog);
+  setDurationHours("Estimated Hours", "24:30", within(dialog));
   userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
-  expect(await within(dialog).findByText(ESTIMATED_HOURS_INVALID)).toBeInTheDocument();
+  await waitFor(() => {
+    expect(createTask).toHaveBeenCalled();
+  });
+  expect(createTask.mock.calls[0][0].estimatedHours).toBe(24.5);
+});
+
+test("100:00 estimated hours are submitted", async () => {
+  fetchUsers.mockResolvedValue([
+    { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
+  ]);
+  createTask.mockResolvedValue({ taskId: "t1" });
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  userEvent.click(screen.getByRole("button", { name: "+ Task" }));
+  const dialog = await screen.findByRole("dialog", { name: "New Task" });
+  await fillRequiredTaskFields(dialog);
+  setDurationHours("Estimated Hours", "100:00", within(dialog));
+  userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
+  await waitFor(() => {
+    expect(createTask).toHaveBeenCalled();
+  });
+  expect(createTask.mock.calls[0][0].estimatedHours).toBe(100);
+});
+
+test("invalid estimated minutes are rejected", async () => {
+  fetchUsers.mockResolvedValue([
+    { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
+  ]);
+  renderPage();
+  await screen.findByRole("option", { name: "Portal" });
+  userEvent.click(screen.getByRole("button", { name: "+ Task" }));
+  const dialog = await screen.findByRole("dialog", { name: "New Task" });
+  await fillRequiredTaskFields(dialog);
+  setDurationHours("Estimated Hours", "1:60", within(dialog));
+  userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
+  expect(await within(dialog).findByText(HH_MM_INVALID)).toBeInTheDocument();
   expect(createTask).not.toHaveBeenCalled();
 });

@@ -11,8 +11,10 @@ import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
 import { displayNameFromEmail } from "../../utils/meetings";
 import {
   ESTIMATED_HOURS_HELPER,
-  parseEstimatedHours,
+  parseEstimatedHoursInput,
 } from "../../utils/estimatedHours";
+import DurationHoursInput from "../../components/DurationHoursInput";
+import { HH_MM_HELPER } from "../../utils/durationHours";
 import {
   colors,
   pageCard,
@@ -493,7 +495,7 @@ export default function ManageTasks() {
     if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
       errors.dueDate = "Deadline must be after the start date and time.";
     }
-    const estimated = parseEstimatedHours(taskForm.estimatedHours);
+    const estimated = parseEstimatedHoursInput(taskForm.estimatedHours);
     if (!estimated.ok) {
       errors.estimatedHours = estimated.error;
     }
@@ -1250,32 +1252,17 @@ export default function ManageTasks() {
               onChange={(v) => setTaskForm({ ...taskForm, dueTime: v })}
             />
             <div style={{ gridColumn: "1 / -1" }}>
-              <label style={formLabel} htmlFor="task-estimated-hours">
-                Estimated Hours
-              </label>
-              <input
+              <DurationHoursInput
                 id="task-estimated-hours"
-                style={{
-                  ...formInput,
-                  border: formErrors.estimatedHours
-                    ? "1px solid var(--dgv-danger)"
-                    : formInput.border,
-                }}
-                type="text"
-                inputMode="decimal"
+                label="Estimated Hours"
+                aria-label="Estimated Hours"
                 value={taskForm.estimatedHours}
-                onChange={(e) =>
-                  setTaskForm({ ...taskForm, estimatedHours: e.target.value })
+                error={formErrors.estimatedHours}
+                helper={`${ESTIMATED_HOURS_HELPER} ${HH_MM_HELPER}`}
+                onChange={(next) =>
+                  setTaskForm({ ...taskForm, estimatedHours: next })
                 }
               />
-              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: -8, marginBottom: 12 }}>
-                {ESTIMATED_HOURS_HELPER}
-              </div>
-              {formErrors.estimatedHours ? (
-                <div style={{ color: "var(--dgv-danger)", fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-                  {formErrors.estimatedHours}
-                </div>
-              ) : null}
             </div>
             <div style={{ gridColumn: "1 / -1" }}>
               <label style={formLabel}>Description</label>

@@ -20,11 +20,17 @@ import { getLoggedInEmail } from "../../services/auth";
 import { formatEstimatedHours } from "../../utils/estimatedHours";
 import {
   ACTUAL_HELPER,
-  ACTUAL_REQUIRED,
   PLANNED_HELPER,
   formatHours,
+  parseHoursInput,
+  parseOptionalHoursInput,
   parseRequiredHours,
 } from "../../utils/taskTime";
+import {
+  HH_MM_HELPER,
+  HH_MM_INVALID,
+} from "../../utils/durationHours";
+import DurationHoursInput from "../../components/DurationHoursInput";
 import {
   colors,
   pageCard,
@@ -856,12 +862,8 @@ export default function TaskDetails() {
     setCompleteProofError(proofErr);
     if (proofErr) setAttachmentError("");
     setCompleteRemarkError(remarkErr);
-    const actual = parseRequiredHours(actualHoursInput);
-    const actualErr = actual.ok
-      ? ""
-      : String(actualHoursInput || "").trim()
-        ? actual.error
-        : ACTUAL_REQUIRED;
+    const actual = parseOptionalHoursInput(actualHoursInput);
+    const actualErr = actual.ok ? "" : actual.error;
     setActualHoursError(actualErr);
     if (proofErr || remarkErr || actualErr) return;
     setSaving(true);
@@ -874,7 +876,7 @@ export default function TaskDetails() {
         status: "DONE",
         assignmentEmail: mine?.email || getLoggedInEmail(),
         completionRemark: remark,
-        actualHours: actual.value,
+        ...(actual.value != null ? { actualHours: actual.value } : {}),
       });
       closeCompletionModal();
       await load();
@@ -892,9 +894,9 @@ export default function TaskDetails() {
   };
 
   const handleSavePlannedAndStart = async () => {
-    const parsed = parseRequiredHours(plannedHoursInput);
+    const parsed = parseHoursInput(plannedHoursInput);
     if (!parsed.ok) {
-      setPlannedHoursError(parsed.error);
+      setPlannedHoursError(parsed.empty ? HH_MM_INVALID : parsed.error);
       return;
     }
     const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
@@ -1652,7 +1654,7 @@ export default function TaskDetails() {
             style={{ ...formLabel, marginTop: 18 }}
             htmlFor="actual-hours"
           >
-            3. Total Actual Hours *
+            3. Total Actual Hours
           </label>
           <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
             Admin estimate: {formatEstimatedHours(task?.estimatedHours)} · My planned hours:{" "}
@@ -1661,26 +1663,18 @@ export default function TaskDetails() {
           <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
             {ACTUAL_HELPER}
           </p>
-          <input
+          <DurationHoursInput
             id="actual-hours"
             aria-label="Total Actual Hours"
-            style={formInput}
-            inputMode="decimal"
             value={actualHoursInput}
-            onChange={(e) => {
-              setActualHoursInput(e.target.value);
+            error={actualHoursError}
+            helper={HH_MM_HELPER}
+            onChange={(next) => {
+              setActualHoursInput(next);
               if (actualHoursError) setActualHoursError("");
               if (completeError) setCompleteError("");
             }}
           />
-          {actualHoursError ? (
-            <p
-              role="alert"
-              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
-            >
-              {actualHoursError}
-            </p>
-          ) : null}
           {completeError ? (
             <p
               role="alert"
@@ -1717,28 +1711,19 @@ export default function TaskDetails() {
           <p style={{ margin: "0 0 12px", fontSize: 13, color: colors.textMuted }}>
             {PLANNED_HELPER}
           </p>
-          <label style={formLabel} htmlFor="planned-hours">
-            Planned Hours *
-          </label>
-          <input
+          <DurationHoursInput
             id="planned-hours"
+            label="Planned Hours"
             aria-label="Planned Hours"
-            style={formInput}
-            inputMode="decimal"
+            required
             value={plannedHoursInput}
-            onChange={(e) => {
-              setPlannedHoursInput(e.target.value);
+            error={plannedHoursError}
+            helper={HH_MM_HELPER}
+            onChange={(next) => {
+              setPlannedHoursInput(next);
               if (plannedHoursError) setPlannedHoursError("");
             }}
           />
-          {plannedHoursError ? (
-            <p
-              role="alert"
-              style={{ margin: "8px 0 0", color: colors.error, fontSize: 13 }}
-            >
-              {plannedHoursError}
-            </p>
-          ) : null}
           <div style={modalActions}>
             <Button type="button" variant="outline" onClick={closePlannedModal}>
               Cancel

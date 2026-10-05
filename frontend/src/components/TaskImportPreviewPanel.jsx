@@ -1,4 +1,5 @@
 import { colors } from "../theme";
+import { formatEstimatedHours } from "../utils/estimatedHours";
 import {
   collectPreviewWarnings,
   invalidPreviewRows,
@@ -189,7 +190,7 @@ export default function TaskImportPreviewPanel({
                   Excel Row {row.rowNumber}
                   {row.values?.taskTitle ? ` — ${row.values.taskTitle}` : ""}
                   {row.values?.estimatedHours != null
-                    ? ` · ${row.values.estimatedHours} h`
+                    ? ` · ${formatEstimatedHours(row.values.estimatedHours)}`
                     : ""}
                 </span>
                 <span className="dgv-badge dgv-badge--success">Valid</span>

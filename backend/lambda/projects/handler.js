@@ -2458,14 +2458,16 @@ exports.handler = async (event) => {
                 });
               }
               if (!mayAdminMutate) {
-                const parsedActual = taskTime.parseRequiredHours(actualHoursInput);
+                const parsedActual = taskTime.parseOptionalHours(actualHoursInput);
                 if (!parsedActual.ok) {
                   return json(400, {
-                    error: taskTime.ACTUALS_REQUIRED_TO_REVIEW,
+                    error: parsedActual.error,
                     errors: { actualHours: parsedActual.error },
                   });
                 }
-                mine.actualHours = parsedActual.value;
+                if (parsedActual.value != null) {
+                  mine.actualHours = parsedActual.value;
+                }
               }
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(
