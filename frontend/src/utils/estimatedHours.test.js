@@ -7,11 +7,12 @@ import {
 } from "./estimatedHours";
 import { HH_MM_INVALID, HH_MM_POSITIVE } from "./durationHours";
 
-test("blank values are null", () => {
-  expect(parseEstimatedHours("")).toEqual({ ok: true, value: null });
-  expect(parseEstimatedHours("  ")).toEqual({ ok: true, value: null });
-  expect(parseEstimatedHours(null)).toEqual({ ok: true, value: null });
-  expect(parseEstimatedHoursInput("")).toEqual({ ok: true, value: null });
+test("blank values are rejected", () => {
+  expect(parseEstimatedHours("").ok).toBe(false);
+  expect(parseEstimatedHours("  ").ok).toBe(false);
+  expect(parseEstimatedHours(null).ok).toBe(false);
+  expect(parseEstimatedHoursInput("").ok).toBe(false);
+  expect(parseEstimatedHoursInput("").empty).toBe(true);
 });
 
 test("stored positive decimals are kept to two places", () => {

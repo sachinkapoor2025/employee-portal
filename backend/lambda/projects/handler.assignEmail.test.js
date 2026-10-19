@@ -170,6 +170,7 @@ function seedExistingTask(ddb, { assignees = [PRIYA], status = "TODO" } = {}) {
     createdAt: "2026-09-20T10:00:00.000Z",
     updatedAt: "2026-09-20T10:00:00.000Z",
     archived: false,
+    estimatedHours: 4,
   };
   ddb.seed(WORK, item);
   ddb.seed(WORK, {
@@ -232,6 +233,7 @@ function createBody(extra = {}) {
     assignees: [PRIYA],
     startDate: FUTURE_START,
     dueDate: FUTURE_DUE,
+    estimatedHours: 2,
     ...extra,
   };
 }

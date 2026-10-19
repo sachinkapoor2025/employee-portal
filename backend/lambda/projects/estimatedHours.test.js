@@ -1,5 +1,6 @@
 const assert = require("assert");
 const {
+  ESTIMATED_HOURS_REQUIRED,
   ESTIMATED_HOURS_INVALID,
   parseEstimatedHours,
 } = require("./estimatedHours");
@@ -8,10 +9,12 @@ function ok(value) {
   return { ok: true, value };
 }
 
-assert.deepStrictEqual(parseEstimatedHours(null), ok(null));
-assert.deepStrictEqual(parseEstimatedHours(undefined), ok(null));
-assert.deepStrictEqual(parseEstimatedHours(""), ok(null));
-assert.deepStrictEqual(parseEstimatedHours("   "), ok(null));
+assert.strictEqual(parseEstimatedHours(null).ok, false);
+assert.strictEqual(parseEstimatedHours(undefined).ok, false);
+assert.strictEqual(parseEstimatedHours("").ok, false);
+assert.strictEqual(parseEstimatedHours("   ").ok, false);
+assert.strictEqual(parseEstimatedHours(null).error, ESTIMATED_HOURS_REQUIRED);
+assert.strictEqual(parseEstimatedHours("").error, ESTIMATED_HOURS_REQUIRED);
 assert.deepStrictEqual(parseEstimatedHours(1.5), ok(1.5));
 assert.deepStrictEqual(parseEstimatedHours("1.5"), ok(1.5));
 assert.deepStrictEqual(parseEstimatedHours("2.25"), ok(2.25));

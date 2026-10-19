@@ -28,6 +28,7 @@ const VALID_ROW = [
   "2026-10-03",
   "18:00",
   "Update the homepage banner.",
+  2.25,
 ];
 
 function workbookBuffer({
@@ -95,6 +96,7 @@ test("valid row is VALID with canonical IST values", () => {
   assert.strictEqual(row.values.deadlineTime, "18:00");
   assert.strictEqual(row.values.startDateTime, "2026-10-01T09:30:00+05:30");
   assert.strictEqual(row.values.deadlineDateTime, "2026-10-03T18:00:00+05:30");
+  assert.strictEqual(row.values.estimatedHours, 2.25);
 });
 
 test("missing required fields produce INVALID errors", () => {
@@ -112,6 +114,7 @@ test("missing required fields produce INVALID errors", () => {
   assert.ok(fieldErrors(row, "startTime").some((m) => /required/i.test(m)));
   assert.ok(fieldErrors(row, "deadlineDate").some((m) => /required/i.test(m)));
   assert.ok(fieldErrors(row, "deadlineTime").some((m) => /required/i.test(m)));
+  assert.ok(fieldErrors(row, "estimatedHours").some((m) => /required/i.test(m)));
   assert.ok(!row.errors.some((item) => item.field === "taskType"));
   assert.ok(!row.errors.some((item) => item.field === "description"));
 });
@@ -419,31 +422,37 @@ test("optional task type may be blank", () => {
   assert.strictEqual(result.rows[0].values.taskType, "");
 });
 
-test("legacy 11-column workbooks remain valid", () => {
+test("legacy 11-column workbooks are rejected for missing estimated hours column", () => {
+  const legacyHeaders = TASK_IMPORT_COLUMNS.slice(0, 11);
   const result = parseTaskImportWorkbook(
-    workbookBuffer({ rows: [TASK_IMPORT_REQUIRED_COLUMNS, VALID_ROW] }),
+    workbookBuffer({ rows: [legacyHeaders, VALID_ROW] }),
     { nowMs: NOW_MS, projects: PROJECTS }
   );
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.rows[0].status, "VALID");
-  assert.strictEqual(result.rows[0].values.estimatedHours, null);
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.errors.some((item) => /columns/i.test(item.message)));
+  assert.strictEqual(result.rows.length, 0);
 });
 
-test("new template blank estimated hours is valid", () => {
-  const result = parseRows([[...VALID_ROW, ""]]);
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.rows[0].values.estimatedHours, null);
+test("blank estimated hours is a row error", () => {
+  const row = [...VALID_ROW];
+  row[11] = "";
+  const result = parseRows([row]);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.rows[0].status, "INVALID");
+  assert.ok(fieldErrors(result.rows[0], "estimatedHours").length);
 });
 
 test("positive decimal estimated hours parse", () => {
-  const result = parseRows([[...VALID_ROW, 2.25]]);
+  const result = parseRows([VALID_ROW]);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.rows[0].values.estimatedHours, 2.25);
 });
 
 test("invalid estimated hours are row errors on column L", () => {
   for (const value of [0, -1, "abc", "1.5h", "NaN", "Infinity"]) {
-    const result = parseRows([[...VALID_ROW, value]]);
+    const row = [...VALID_ROW];
+    row[11] = value;
+    const result = parseRows([row]);
     assert.strictEqual(result.rows[0].status, "INVALID");
     assert.ok(fieldErrors(result.rows[0], "estimatedHours").length);
   }
@@ -452,7 +461,7 @@ test("invalid estimated hours are row errors on column L", () => {
 test("unexpected 13th column is a workbook error", () => {
   const result = parseTaskImportWorkbook(
     workbookBuffer({
-      rows: [[...TASK_IMPORT_COLUMNS, "Extra"], [...VALID_ROW, "1.5", "nope"]],
+      rows: [[...TASK_IMPORT_COLUMNS, "Extra"], [...VALID_ROW, "nope"]],
     }),
     { nowMs: NOW_MS, projects: PROJECTS }
   );
@@ -464,7 +473,10 @@ test("unexpected 13th column is a workbook error", () => {
 test("wrong 12th header is a workbook error", () => {
   const result = parseTaskImportWorkbook(
     workbookBuffer({
-      rows: [[...TASK_IMPORT_REQUIRED_COLUMNS, "Effort"], [...VALID_ROW, "1.5"]],
+      rows: [
+        [...TASK_IMPORT_COLUMNS.slice(0, 11), "Effort"],
+        [...VALID_ROW, "1.5"],
+      ],
     }),
     { nowMs: NOW_MS, projects: PROJECTS }
   );

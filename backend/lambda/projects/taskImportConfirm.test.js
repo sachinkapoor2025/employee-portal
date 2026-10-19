@@ -157,14 +157,24 @@ const MULTI_ASSIGNEE_ROW = [
   "Two assignees.",
 ];
 
+function withRequiredEstimate(row) {
+  if (!Array.isArray(row) || row.length !== 11) return row;
+  const blank = row.every((cell) => String(cell ?? "").trim() === "");
+  if (blank) return row;
+  return [...row, 2.25];
+}
+
 function workbookBuffer({
   rows = [TASK_IMPORT_COLUMNS, VALID_ROW],
   sheetName = "Tasks",
 } = {}) {
   const workbook = XLSX.utils.book_new();
-  const sheet = XLSX.utils.aoa_to_sheet(rows);
-  const lastRow = Math.max(1, rows.length);
-  const width = Math.max(11, ...rows.map((row) => (Array.isArray(row) ? row.length : 0)));
+  const normalized = rows.map((row, index) =>
+    index === 0 ? row : withRequiredEstimate(row)
+  );
+  const sheet = XLSX.utils.aoa_to_sheet(normalized);
+  const lastRow = Math.max(1, normalized.length);
+  const width = Math.max(12, ...normalized.map((row) => (Array.isArray(row) ? row.length : 0)));
   const lastCol = String.fromCharCode(64 + width);
   sheet["!ref"] = `A1:${lastCol}${lastRow}`;
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
@@ -918,7 +928,7 @@ async function run() {
     assert.strictEqual(createdImmediate.title, "Homepage banner update");
     assert.strictEqual(createdImmediate.category, "Development");
     assert.strictEqual(createdImmediate.priority, "HIGH");
-    assert.strictEqual(createdImmediate.estimatedHours, null);
+    assert.strictEqual(createdImmediate.estimatedHours, 2.25);
     assert.strictEqual(createdImmediate.durationHours, null);
     assert.strictEqual(createdImmediate.durationType, null);
     assert.strictEqual(createdImmediate.archived, false);
@@ -1312,7 +1322,11 @@ async function run() {
     assert.strictEqual(
       env.ddb
         .of(WORK_TABLE)
-        .filter((item) => String(item.SK || "").startsWith("ASSIGNMENT#")).length,
+        .filter(
+          (item) =>
+            String(item.PK || "").startsWith("TASK#") &&
+            String(item.SK || "").startsWith("ASSIGNMENT#")
+        ).length,
       0
     );
     assert.strictEqual(assignmentEmails().length, 0);
@@ -1872,7 +1886,7 @@ async function run() {
     env.ddb.send = async (command) => {
       if (
         command instanceof PutCommand &&
-        command.input.Item?.PK &&
+        String(command.input.Item?.PK || "").startsWith("TASK#") &&
         String(command.input.Item.SK || "").startsWith("ASSIGNMENT#") &&
         command.input.ConditionExpression
       ) {
@@ -1913,7 +1927,7 @@ async function run() {
     env.ddb.send = async (command) => {
       if (
         command instanceof PutCommand &&
-        command.input.Item?.PK &&
+        String(command.input.Item?.PK || "").startsWith("TASK#") &&
         String(command.input.Item.SK || "").startsWith("ASSIGNMENT#")
       ) {
         throw new Error("simulated assignment failure");
@@ -2139,7 +2153,7 @@ async function run() {
     env.ddb.send = async (command) => {
       if (
         command instanceof PutCommand &&
-        command.input.Item?.PK &&
+        String(command.input.Item?.PK || "").startsWith("TASK#") &&
         String(command.input.Item.SK || "").startsWith("ASSIGNMENT#")
       ) {
         throw new Error("simulated assignment failure");
@@ -3289,6 +3303,20 @@ async function run() {
     assert.ok(mail.some((call) => /NO_SHIFT/.test(call.text)));
     assert.strictEqual(postponeEmails().length, 0);
     assert.strictEqual(assignmentEmails().length, 0);
+  });
+
+  await test("confirm rejects a blank estimated hours cell and does not persist", async () => {
+    emailCalls.length = 0;
+    const env = readyEnv({
+      rows: [TASK_IMPORT_COLUMNS, [...VALID_ROW, ""]],
+    });
+    const result = await confirm(env);
+    assert.strictEqual(result.statusCode, 400);
+    assert.strictEqual(result.body.status, "NEEDS_FIX");
+    assert.ok(
+      result.body.rows[0].cellErrors.some((item) => item.cell === "L2")
+    );
+    assert.strictEqual(entityTasks(env.ddb).length, 0);
   });
 
   await test("excel import persists estimatedHours on canonical and project copy", async () => {

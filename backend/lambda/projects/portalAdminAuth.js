@@ -4,6 +4,7 @@
  * Cognito isAdmin is not sufficient.
  */
 const { GetCommand } = require("@aws-sdk/lib-dynamodb");
+const { isSuperAdminRole } = require("../common/roles");
 const { isEligibleProjectAdmin, normalizeEmail } = require("./projectAccess");
 
 async function loadUserAccessRow(ddb, accessTable, email) {
@@ -43,7 +44,28 @@ async function requireEligiblePortalAdmin({ user, ddb, accessTable } = {}) {
   return { ok: true, email, accessRow: loaded.item };
 }
 
+async function requireSuperAdmin({ user, ddb, accessTable } = {}) {
+  const email = normalizeEmail(user?.email);
+  if (!email) {
+    return { statusCode: 401, body: { error: "Unauthorized" } };
+  }
+  if (!ddb || typeof ddb.send !== "function" || !accessTable) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  const loaded = await loadUserAccessRow(ddb, accessTable, email);
+  if (!loaded.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  const row = loaded.item;
+  const active = String(row?.status || "").toUpperCase() === "ACTIVE";
+  if (!row || !active || !isSuperAdminRole(row.role)) {
+    return { statusCode: 403, body: { error: "Super Admin required" } };
+  }
+  return { ok: true, email, accessRow: row };
+}
+
 module.exports = {
   loadUserAccessRow,
   requireEligiblePortalAdmin,
+  requireSuperAdmin,
 };

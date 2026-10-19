@@ -10,6 +10,7 @@ jest.mock("../services/auth", () => ({
   switchPortalView: jest.fn(),
   getViewRole: () => "USER",
   getLoggedInEmail: () => "worker@mydgv.com",
+  PORTAL_ROLE_KEY: "portalRole",
 }));
 
 jest.mock(

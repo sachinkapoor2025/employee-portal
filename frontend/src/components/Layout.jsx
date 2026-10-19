@@ -37,7 +37,9 @@ import {
   switchPortalView,
   getViewRole,
   getLoggedInEmail,
+  PORTAL_ROLE_KEY,
 } from "../services/auth";
+import { canManageCostRates } from "../constants/roles";
 import { fetchLeaveNotifications, markNotificationRead, markAllNotificationsRead, fetchDocumentNotificationFeed, markDocumentNotificationsSeen } from "../services/api";
 import {
   isZoneNotification,
@@ -82,6 +84,12 @@ const ADMIN_NAV_SECTIONS = [
     items: [
       { label: "Employees", path: "/admin/employees", icon: Users },
       { label: "Shifts", path: "/admin/shifts", icon: Clock },
+      {
+        label: "Cost Rates",
+        path: "/admin/cost-rates",
+        icon: Wallet,
+        superAdminOnly: true,
+      },
     ],
   },
   {
@@ -118,6 +126,12 @@ const ADMIN_NAV_SECTIONS = [
 ];
 
 const ADMIN_NAV_FLAT = ADMIN_NAV_SECTIONS.flatMap((s) => s.items);
+
+function visibleAdminItems(items, actorRole) {
+  return items.filter(
+    (item) => !item.superAdminOnly || canManageCostRates(actorRole)
+  );
+}
 
 function isActivePath(pathname, path) {
   if (path === "/") return pathname === "/";
@@ -162,7 +176,13 @@ export default function Layout({ children }) {
 
   const isAdminAccount = canAccessAdmin();
   const showEmployeeNav = viewRole === "USER" || !isAdminAccount;
-  const navItems = showEmployeeNav ? EMPLOYEE_NAV : ADMIN_NAV_FLAT;
+  const actorPortalRole =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem(PORTAL_ROLE_KEY)
+      : "";
+  const navItems = showEmployeeNav
+    ? EMPLOYEE_NAV
+    : visibleAdminItems(ADMIN_NAV_FLAT, actorPortalRole);
   const email = getLoggedInEmail();
 
   useEffect(() => {
@@ -400,7 +420,7 @@ export default function Layout({ children }) {
             ADMIN_NAV_SECTIONS.map((section) => (
               <div key={section.title}>
                 <div className="dgv-sidebar__section">{section.title}</div>
-                {section.items.map((item) => {
+                {visibleAdminItems(section.items, actorPortalRole).map((item) => {
                   const Icon = item.icon;
                   const active = isActivePath(location.pathname, item.path);
                   return (

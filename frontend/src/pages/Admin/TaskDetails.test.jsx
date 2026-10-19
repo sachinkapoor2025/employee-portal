@@ -1932,7 +1932,7 @@ test("admin review complete does not require an attachment", async () => {
   expect(getTaskAttachmentUploadUrl).not.toHaveBeenCalled();
 });
 
-test("employee can submit for review without actual hours", async () => {
+test("employee cannot submit for review without actual hours", async () => {
   fetchTaskById.mockResolvedValue(
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
@@ -1944,8 +1944,7 @@ test("employee can submit for review without actual hours", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText(/Admin estimate/i)).toBeInTheDocument();
   expect(within(dialog).getByLabelText("Total Actual Hours")).toBeInTheDocument();
-  expect(within(dialog).getByText("3. Total Actual Hours")).toBeInTheDocument();
-  expect(within(dialog).queryByText("3. Total Actual Hours *")).not.toBeInTheDocument();
+  expect(within(dialog).getByText("3. Total Actual Hours *")).toBeInTheDocument();
   await uploadCompletionProof();
   await userEvent.type(
     within(dialog).getByLabelText("Completion Remark"),
@@ -1954,16 +1953,10 @@ test("employee can submit for review without actual hours", async () => {
   await userEvent.click(
     within(dialog).getByRole("button", { name: "Submit for Review" })
   );
-  await waitFor(() =>
-    expect(updateTask).toHaveBeenCalledWith({
-      taskId: "t1",
-      projectId: "p1",
-      status: "DONE",
-      assignmentEmail: "rahul@mydgv.com",
-      completionRemark: "Finished the outreach list.",
-    })
-  );
-  expect(updateTask.mock.calls[0][0].actualHours).toBeUndefined();
+  expect(
+    await within(dialog).findByText("Enter the total actual hours you spent on this task.")
+  ).toBeInTheDocument();
+  expect(updateTask).not.toHaveBeenCalled();
 });
 
 test("employee cannot submit invalid non-empty actual hours", async () => {

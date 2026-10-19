@@ -179,7 +179,11 @@ function entityTasks(ddb) {
 function assignmentRows(ddb) {
   return ddb
     .of(WORK)
-    .filter((item) => String(item.SK || "").startsWith("ASSIGNMENT#"));
+    .filter(
+      (item) =>
+        String(item.PK || "").startsWith("TASK#") &&
+        String(item.SK || "").startsWith("ASSIGNMENT#")
+    );
 }
 
 function activityRows(ddb) {
@@ -197,6 +201,7 @@ function createBody(extra = {}) {
     assignees: [PRIYA],
     startDate: "2026-09-28T16:00:00+05:30",
     dueDate: "2026-09-30T19:00:00+05:30",
+    estimatedHours: 2,
     ...extra,
   };
 }
@@ -248,8 +253,18 @@ async function run() {
     assert.strictEqual(assignments.length, 1);
     assert.strictEqual(assignments[0].email, PRIYA);
     assert.strictEqual(assignments[0].status, "TODO");
-    assert.strictEqual(task.estimatedHours, null);
+    assert.strictEqual(task.estimatedHours, 2);
     assert.strictEqual(task.durationHours, null);
+  });
+
+  await test("missing estimatedHours is rejected and does not persist", async () => {
+    const { ddb } = setup();
+    const res = parse(
+      await handler(adminPost(createBody({ estimatedHours: "" })))
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.ok(res.body.errors.estimatedHours);
+    assertNothingPersisted(ddb);
   });
 
   await test("estimatedHours 2.25 persists on canonical and project copy", async () => {

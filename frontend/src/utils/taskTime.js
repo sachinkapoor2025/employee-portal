@@ -19,7 +19,7 @@ export const PLANNED_HELPER =
 export const ACTUAL_REQUIRED =
   "Enter the total actual hours you spent on this task.";
 export const ACTUAL_HELPER =
-  "Optional. Manually enter the total hours you actually spent on this task. Do not include lunch or breaks.";
+  "Manually enter the total hours you actually spent on this task. Do not include lunch or breaks.";
 
 export function parseRequiredHours(raw) {
   const parsed = parseStoredHours(raw);

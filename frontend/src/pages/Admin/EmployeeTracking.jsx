@@ -12,7 +12,8 @@ import {
   fetchEmployeeShift,
   fetchWeekOffState,
 } from "../../services/api";
-import { roleLabel } from "../../constants/roles";
+import { canViewCostingReports, roleLabel } from "../../constants/roles";
+import EmployeeCostingPanel from "./EmployeeCostingPanel";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
 import ZoneBadge from "../../components/ZoneBadge";
 import { getWeeklyDisplayStatus } from "../../components/WeeklyAttendanceHistory";
@@ -48,7 +49,7 @@ import {
   trendRangeForSelectedWeek,
 } from "../../utils/adminEmployeeActivity";
 
-const TABS = [
+const BASE_TABS = [
   "Overview",
   "Attendance",
   "Tasks",
@@ -58,6 +59,17 @@ const TABS = [
   "Performance",
   "Activity",
 ];
+
+function trackingTabs() {
+  const portalRole =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("portalRole")
+      : "";
+  if (canViewCostingReports(portalRole)) {
+    return [...BASE_TABS.slice(0, 3), "Costing", ...BASE_TABS.slice(3)];
+  }
+  return BASE_TABS;
+}
 
 function ymd(d) {
   const dt = d instanceof Date ? d : new Date(d);
@@ -97,6 +109,7 @@ export default function EmployeeTracking() {
   const { email: rawEmail } = useParams();
   const [params, setParams] = useSearchParams();
   const email = decodeURIComponent(rawEmail || "").toLowerCase();
+  const TABS = trackingTabs();
   const requestedTab = params.get("tab");
   const from = params.get("from");
   const [tab, setTab] = useState(
@@ -104,7 +117,7 @@ export default function EmployeeTracking() {
   );
   const selectTab = useCallback(
     (nextTab) => {
-      if (!TABS.includes(nextTab)) return;
+      if (!trackingTabs().includes(nextTab)) return;
       setTab(nextTab);
       const next = new URLSearchParams(params);
       next.set("tab", nextTab);
@@ -125,7 +138,8 @@ export default function EmployeeTracking() {
   const [shiftConflicts, setShiftConflicts] = useState(null);
 
   useEffect(() => {
-    setTab(TABS.includes(requestedTab) ? requestedTab : "Overview");
+    const tabs = trackingTabs();
+    setTab(tabs.includes(requestedTab) ? requestedTab : "Overview");
   }, [email, requestedTab]);
 
   useEffect(() => {
@@ -334,6 +348,8 @@ export default function EmployeeTracking() {
                   email={email}
                   assignedShift={assignedShift}
                 />
+              ) : tab === "Costing" ? (
+                <EmployeeCostingPanel email={email} />
               ) : tab === "Documents" ? (
                 <EmployeeDocumentsPanel email={email} />
               ) : tab === "Leave" ? (

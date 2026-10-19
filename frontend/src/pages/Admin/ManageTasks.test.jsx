@@ -246,7 +246,7 @@ test("New Task shows estimated hours helper text", async () => {
   expect(within(dialog).getByText(HH_MM_HELPER, { exact: false })).toBeInTheDocument();
 });
 
-test("blank estimated hours still creates a task", async () => {
+test("blank estimated hours does not create a task", async () => {
   fetchUsers.mockResolvedValue([
     { email: "rahul@mydgv.com", name: "Rahul", status: "ACTIVE" },
   ]);
@@ -257,11 +257,10 @@ test("blank estimated hours still creates a task", async () => {
   const dialog = await screen.findByRole("dialog", { name: "New Task" });
   await fillRequiredTaskFields(dialog);
   userEvent.click(within(dialog).getByRole("button", { name: "Create Task" }));
-  await waitFor(() => {
-    expect(createTask).toHaveBeenCalled();
-  });
-  expect(createTask.mock.calls[0][0].estimatedHours).toBe(null);
-  expect(createTask.mock.calls[0][0].title).toBe("Banner update");
+  expect(
+    await within(dialog).findByText("Enter time as HH:MM (for example 02:30).")
+  ).toBeInTheDocument();
+  expect(createTask).not.toHaveBeenCalled();
 });
 
 test("HH:MM estimated hours are submitted as stored decimals", async () => {

@@ -1,5 +1,7 @@
 import {
   ROLES,
+  canManageCostRates,
+  canViewCostingReports,
   canManageUserAccessLifecycle,
   canAssignPortalRole,
   roleOptionsForActor,
@@ -97,6 +99,21 @@ test("ADMIN does not see Deactivate, Activate, or Delete", () => {
   expect(blocked.showActivate).toBe(false);
   expect(active.showDelete).toBe(false);
   expect(canManageUserAccessLifecycle(actorRole)).toBe(false);
+  expect(canManageCostRates(actorRole)).toBe(false);
+});
+
+test("only SUPER_ADMIN can manage cost rates", () => {
+  expect(canManageCostRates(ROLES.SUPER_ADMIN)).toBe(true);
+  expect(canManageCostRates(ROLES.ADMIN)).toBe(false);
+  expect(canManageCostRates(ROLES.MANAGER)).toBe(false);
+  expect(canManageCostRates(ROLES.EMPLOYEE)).toBe(false);
+});
+
+test("Admin and Super Admin can view costing reports", () => {
+  expect(canViewCostingReports(ROLES.SUPER_ADMIN)).toBe(true);
+  expect(canViewCostingReports(ROLES.ADMIN)).toBe(true);
+  expect(canViewCostingReports(ROLES.MANAGER)).toBe(false);
+  expect(canViewCostingReports(ROLES.EMPLOYEE)).toBe(false);
 });
 
 test("ADMIN cannot promote a user or themselves to SUPER_ADMIN", () => {

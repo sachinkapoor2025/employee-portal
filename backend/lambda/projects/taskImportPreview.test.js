@@ -54,14 +54,24 @@ const VALID_ROW = [
   "Update the homepage banner.",
 ];
 
+function withRequiredEstimate(row) {
+  if (!Array.isArray(row) || row.length !== 11) return row;
+  const blank = row.every((cell) => String(cell ?? "").trim() === "");
+  if (blank) return row;
+  return [...row, 2.25];
+}
+
 function workbookBuffer({
   rows = [TASK_IMPORT_COLUMNS, VALID_ROW],
   sheetName = "Tasks",
 } = {}) {
   const workbook = XLSX.utils.book_new();
-  const sheet = XLSX.utils.aoa_to_sheet(rows);
-  const lastRow = Math.max(1, rows.length);
-  const width = Math.max(11, ...rows.map((row) => (Array.isArray(row) ? row.length : 0)));
+  const normalized = rows.map((row, index) =>
+    index === 0 ? row : withRequiredEstimate(row)
+  );
+  const sheet = XLSX.utils.aoa_to_sheet(normalized);
+  const lastRow = Math.max(1, normalized.length);
+  const width = Math.max(12, ...normalized.map((row) => (Array.isArray(row) ? row.length : 0)));
   const lastCol = String.fromCharCode(64 + width);
   sheet["!ref"] = `A1:${lastCol}${lastRow}`;
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);

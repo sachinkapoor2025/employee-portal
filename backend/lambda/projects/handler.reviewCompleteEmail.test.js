@@ -297,6 +297,12 @@ function seedTask(ddb, extra = {}) {
       assignedAt: item.createdAt,
       assignedBy: ADMIN,
       removed: false,
+      ...((extra.assignmentStatuses?.[emailAddr] || extra.assignmentStatus || "IN_PROGRESS") ===
+        "REVIEW" ||
+      (extra.assignmentStatuses?.[emailAddr] || extra.assignmentStatus || "IN_PROGRESS") ===
+        "DONE"
+        ? { actualHours: 2 }
+        : {}),
     });
   }
   if (extra.proof !== false) {

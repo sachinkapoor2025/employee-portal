@@ -42,6 +42,10 @@ import EmployeeTracking from "./pages/Admin/EmployeeTracking";
 import EmployeeTrackingHub from "./pages/Admin/EmployeeTrackingHub";
 import ComingSoon from "./pages/Admin/ComingSoon";
 import ManageShifts from "./pages/Admin/ManageShifts";
+import CostRates from "./pages/Admin/CostRates";
+import ProjectCosting from "./pages/Admin/ProjectCosting";
+import { canManageCostRates } from "./constants/roles";
+import { PORTAL_ROLE_KEY } from "./services/auth";
 import Leave from "./pages/Leave";
 import MyActivity from "./pages/MyActivity";
 import SoftwareCenter from "./pages/SoftwareCenter";
@@ -75,6 +79,17 @@ function RequireAuth({ children, adminOnly = false }) {
       {children}
     </ConsentGate>
   );
+}
+
+function RequireSuperAdmin({ children }) {
+  const portalRole =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem(PORTAL_ROLE_KEY)
+      : "";
+  if (!canManageCostRates(portalRole)) {
+    return <Navigate to="/admin/dashboard" replace />;
+  }
+  return children;
 }
 
 function HomeRedirect() {
@@ -287,6 +302,16 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/cost-rates"
+          element={
+            <RequireAuth adminOnly>
+              <RequireSuperAdmin>
+                <CostRates />
+              </RequireSuperAdmin>
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/admin/employees/new"
           element={
             <RequireAuth adminOnly>
@@ -383,6 +408,14 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ManageProjects />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/projects/:projectId/costing"
+          element={
+            <RequireAuth adminOnly>
+              <ProjectCosting />
             </RequireAuth>
           }
         />

@@ -94,13 +94,67 @@ describe("api auth error handling", () => {
 describe("getApiBaseUrl", () => {
   const deployed = "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
-  test("uses the deployed AWS API instead of localhost", () => {
-    expect(getApiBaseUrl("http://localhost:3001")).toBe(deployed);
-    expect(getApiBaseUrl("http://127.0.0.1:3001")).toBe(deployed);
+  test("production builds never use localhost", () => {
+    expect(
+      getApiBaseUrl("http://localhost:3001", {
+        nodeEnv: "production",
+        useLocalApi: false,
+      })
+    ).toBe(deployed);
+    expect(
+      getApiBaseUrl("http://127.0.0.1:3001", {
+        nodeEnv: "production",
+        useLocalApi: false,
+      })
+    ).toBe(deployed);
   });
 
-  test("keeps a non-local API URL", () => {
-    expect(getApiBaseUrl(deployed)).toBe(deployed);
+  test("keeps a non-local API URL in production builds", () => {
+    expect(
+      getApiBaseUrl(deployed, { nodeEnv: "production", useLocalApi: false })
+    ).toBe(deployed);
+  });
+
+  test("development does not silently fall back to the deployed API", () => {
+    expect(
+      getApiBaseUrl(deployed, {
+        nodeEnv: "development",
+        useLocalApi: false,
+        allowDeployedApi: false,
+      })
+    ).toBe("");
+    expect(
+      getApiBaseUrl("", {
+        nodeEnv: "development",
+        useLocalApi: false,
+        allowDeployedApi: false,
+      })
+    ).toBe("");
+  });
+
+  test("uses the local API only when explicitly opted in", () => {
+    expect(
+      getApiBaseUrl("http://127.0.0.1:3001", {
+        nodeEnv: "development",
+        useLocalApi: true,
+      })
+    ).toBe("http://127.0.0.1:3001");
+    expect(
+      getApiBaseUrl(deployed, {
+        nodeEnv: "development",
+        useLocalApi: true,
+      })
+    ).toBe("");
+  });
+
+  test("allows an explicit deployed URL from local CRA when opted in", () => {
+    expect(
+      getApiBaseUrl(deployed, {
+        nodeEnv: "development",
+        useLocalApi: false,
+        allowDeployedApi: true,
+      })
+    ).toBe(deployed);
   });
 });
 

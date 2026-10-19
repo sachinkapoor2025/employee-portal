@@ -1047,6 +1047,66 @@ Resources:
             Path: /employees/{email}/shift
             Method: PUT
             RestApiId: !Ref ApiGateway
+        CostRateDesignationsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/designations
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        CostRateDesignationsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/designations
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        CostRateDesignationPatchApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/designations/{id}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        CostRateDesignationStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/designations/{id}/status
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        CostRateEmployeesGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/employees
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        CostRateEmployeeGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/employees/{email}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        CostRateEmployeePutApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/employees/{email}
+            Method: PUT
+            RestApiId: !Ref ApiGateway
+        CostRateEmployeeStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/cost-rates/employees/{email}/status
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        ProjectCostingGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/costing/projects/{projectId}
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        EmployeeCostingGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/costing/employees/{email}
+            Method: GET
+            RestApiId: !Ref ApiGateway
         ProjectsGetApi:
           Type: Api
           Properties:

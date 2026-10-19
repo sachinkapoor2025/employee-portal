@@ -1,4 +1,9 @@
 const { GetCommand, PutCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
+const {
+  userAssignmentPointerItem,
+  pointerPut,
+  isCompatiblePointer,
+} = require("./userAssignmentPointers");
 
 const TASK_COMPLETION_EMAIL_ATTRS = [
   "completionEmailStatus",
@@ -257,6 +262,49 @@ function assignmentPutItem(taskId, assignment) {
   return assignment;
 }
 
+async function putUserAssignmentPointer(ddb, tableName, assignmentItem) {
+  const pointer = userAssignmentPointerItem(assignmentItem);
+  if (!pointer) return { ok: true, skipped: true };
+  if (!ddb || !tableName) {
+    return { ok: false, reason: "USER_ASSIGNMENT_POINTER" };
+  }
+  try {
+    await ddb.send(new PutCommand(pointerPut(tableName, pointer).Put));
+    return { ok: true, pointer };
+  } catch (err) {
+    if (isConditionalCheckFailed(err) || isTransactionCanceled(err)) {
+      const existing = await getItem(ddb, tableName, {
+        PK: pointer.PK,
+        SK: pointer.SK,
+      });
+      if (isCompatiblePointer(existing, pointer)) {
+        return { ok: true, pointer, existing: true };
+      }
+      if (existing) {
+        console.error(
+          "USER_ASSIGNMENT_POINTER_CONFLICT",
+          JSON.stringify({
+            taskId: pointer.taskId,
+            email: pointer.email,
+            existingType: existing.type || null,
+          })
+        );
+        return { ok: false, reason: "USER_ASSIGNMENT_POINTER_CONFLICT" };
+      }
+      return { ok: false, reason: "USER_ASSIGNMENT_POINTER" };
+    }
+    console.error(
+      "USER_ASSIGNMENT_POINTER_FAILED",
+      JSON.stringify({
+        taskId: pointer.taskId,
+        email: pointer.email,
+        message: err?.message || String(err),
+      })
+    );
+    return { ok: false, reason: "USER_ASSIGNMENT_POINTER" };
+  }
+}
+
 /**
  * Create canonical + project-side task copies (and optional assignments)
  * only when the catalog exists, is not DELETING, and has no deletion lock.
@@ -299,6 +347,13 @@ async function putCreatedTaskRecords(ddb, tableName, task, assignmentItems = [])
         ConditionExpression: "attribute_not_exists(PK)",
       },
     });
+    const pointer = userAssignmentPointerItem({
+      ...row,
+      taskId: row.taskId || task.taskId,
+    });
+    if (pointer) {
+      puts.push(pointerPut(tableName, pointer));
+    }
   }
   try {
     await ddb.send(new TransactWriteCommand({ TransactItems: puts }));
@@ -360,7 +415,7 @@ async function putAssignmentSafe(ddb, tableName, item) {
   if (!ddb || !tableName || !item || !item.PK || !item.SK) {
     return { ok: false, reason: "INVALID_ITEM" };
   }
-  return putProtectedItem(
+  const result = await putProtectedItem(
     ddb,
     tableName,
     item,
@@ -369,6 +424,64 @@ async function putAssignmentSafe(ddb, tableName, item) {
     "redAdminNotifyClaimedAt",
     ASSIGNMENT_BLOCKER_ATTRS
   );
+  if (!result.ok) return result;
+  const pointerResult = await putUserAssignmentPointer(
+    ddb,
+    tableName,
+    result.item || item
+  );
+  if (!pointerResult.ok) {
+    return {
+      ok: false,
+      reason: pointerResult.reason || "USER_ASSIGNMENT_POINTER",
+      assignmentWritten: true,
+    };
+  }
+  return result;
+}
+
+async function prepareProtectedAssignmentPut(ddb, tableName, outgoing) {
+  if (!ddb || !tableName || !outgoing || !outgoing.PK || !outgoing.SK) {
+    return { ok: false, reason: "INVALID_ITEM" };
+  }
+  const stored = await getItem(ddb, tableName, {
+    PK: outgoing.PK,
+    SK: outgoing.SK,
+  });
+  if (!stored) {
+    return {
+      ok: true,
+      item: outgoing,
+      put: {
+        Put: {
+          TableName: tableName,
+          Item: outgoing,
+          ConditionExpression: "attribute_not_exists(PK)",
+        },
+      },
+    };
+  }
+  let item = overlayStoredAttrs(outgoing, stored, ASSIGNMENT_RED_NOTIFY_ATTRS);
+  item = overlayMissingAttrs(item, stored, ASSIGNMENT_BLOCKER_ATTRS);
+  item = overlayPreservedHours(item, stored);
+  const cond = statusCondition(
+    stored,
+    "redAdminNotifyStatus",
+    "redAdminNotifyClaimedAt"
+  );
+  return {
+    ok: true,
+    item,
+    put: {
+      Put: {
+        TableName: tableName,
+        Item: item,
+        ConditionExpression: cond.ConditionExpression,
+        ExpressionAttributeNames: cond.ExpressionAttributeNames,
+        ExpressionAttributeValues: cond.ExpressionAttributeValues,
+      },
+    },
+  };
 }
 
 module.exports = {
@@ -383,6 +496,9 @@ module.exports = {
   putCreatedTaskRecords,
   putTaskCopiesSafe,
   putAssignmentSafe,
+  putUserAssignmentPointer,
+  userAssignmentPointerItem,
+  prepareProtectedAssignmentPut,
   assertPersistOk,
   PersistConflictError,
   isConditionalCheckFailed,

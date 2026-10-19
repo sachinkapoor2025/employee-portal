@@ -309,12 +309,23 @@ const validCreate = validateCreatePayload({
   startDate: "2026-08-25T04:30:00.000Z",
   dueDate: "2026-08-25T11:30:00.000Z",
   category: "HR",
+  estimatedHours: "2",
 });
 assert.strictEqual(validCreate.ok, true);
 assert.strictEqual(validCreate.title, "Prepare Monthly Report");
 assert.strictEqual(validCreate.emails.length, 2);
 assert.strictEqual(validCreate.category, "HR");
-assert.strictEqual(validCreate.estimatedHours, null);
+assert.strictEqual(validCreate.estimatedHours, 2);
+
+const missingEstimate = validateCreatePayload({
+  title: "Missing estimate",
+  assignees: ["rahul@mydgv.com"],
+  priority: "MEDIUM",
+  startDate: "2026-08-25T04:30:00.000Z",
+  dueDate: "2026-08-25T11:30:00.000Z",
+});
+assert.strictEqual(missingEstimate.ok, false);
+assert.ok(missingEstimate.errors.estimatedHours);
 
 const withEstimate = validateCreatePayload({
   title: "Estimated task",

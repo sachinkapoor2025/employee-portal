@@ -1,4 +1,4 @@
-import { parseRequiredHours, formatHours, parseHoursInput, parseOptionalHoursInput } from "./taskTime";
+import { parseRequiredHours, formatHours, parseHoursInput } from "./taskTime";
 import { HH_MM_INVALID, HH_MM_POSITIVE } from "./durationHours";
 
 test("rejects blank zero negative and malformed hours", () => {
@@ -24,21 +24,14 @@ test("parses HH:MM input into stored hours", () => {
   expect(parseHoursInput("00:00").error).toBe(HH_MM_POSITIVE);
 });
 
-test("optional actual hours treat blank as omitted and reject invalid values", () => {
-  expect(parseOptionalHoursInput("")).toEqual({
-    ok: true,
-    value: null,
-    empty: true,
-  });
-  expect(parseOptionalHoursInput("  ")).toEqual({
-    ok: true,
-    value: null,
-    empty: true,
-  });
-  expect(parseOptionalHoursInput("02:30")).toEqual({ ok: true, value: 2.5 });
-  expect(parseOptionalHoursInput("24:30")).toEqual({ ok: true, value: 24.5 });
-  expect(parseOptionalHoursInput("00:00").ok).toBe(false);
-  expect(parseOptionalHoursInput("1:60").ok).toBe(false);
+test("HH:MM actual hours reject blank and invalid values", () => {
+  expect(parseHoursInput("").ok).toBe(false);
+  expect(parseHoursInput("").empty).toBe(true);
+  expect(parseHoursInput("  ").empty).toBe(true);
+  expect(parseHoursInput("02:30")).toEqual({ ok: true, value: 2.5 });
+  expect(parseHoursInput("24:30")).toEqual({ ok: true, value: 24.5 });
+  expect(parseHoursInput("00:00").ok).toBe(false);
+  expect(parseHoursInput("1:60").ok).toBe(false);
 });
 
 test("formats stored hours as HH:MM", () => {

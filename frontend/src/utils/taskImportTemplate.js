@@ -30,7 +30,7 @@ export const TASK_IMPORT_SAMPLE_ROWS = [
     "2026-10-03",
     "18:00",
     "Example row only. Delete these sample rows before importing live tasks.",
-    "",
+    "2.25",
   ],
   [
     "EXAMPLE — Q4 leave calendar design",
@@ -44,7 +44,7 @@ export const TASK_IMPORT_SAMPLE_ROWS = [
     "2026-10-20",
     "17:15",
     "Example row only. Scheduled tasks are assigned at Start Date/Time (IST).",
-    "",
+    "8",
   ],
   [
     "EXAMPLE — Client onboarding kit",
@@ -58,7 +58,7 @@ export const TASK_IMPORT_SAMPLE_ROWS = [
     "2026-09-22",
     "16:30",
     "Example row only. Use this row as a format reference, not a real assignment.",
-    "",
+    "4",
   ],
 ];
 
@@ -110,7 +110,7 @@ export const TASK_IMPORT_INSTRUCTION_ROWS = [
   ],
   [
     "Estimated Hours",
-    "Optional. Expected total effort to complete the task, excluding lunch and breaks. Leave blank if unknown. Nonblank values must be positive numbers such as 1.5 or 2.25. This is not the scheduled start/deadline duration.",
+    "Required. Expected total effort to complete the task, excluding lunch and breaks. Enter a positive number such as 1.5 or 2.25. Do not leave this cell blank. This is not the scheduled start/deadline duration.",
   ],
   [
     "Sample rows",

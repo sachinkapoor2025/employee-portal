@@ -38,6 +38,9 @@ const taskMutateAccess = require("./taskMutateAccess");
 const workflowAccess = require("./workflowAccess");
 const taskTime = require("./taskTime");
 const shiftCatalog = require("./shiftCatalog");
+const costRates = require("./costRates");
+const taskCosting = require("./taskCosting");
+const costingReports = require("./costingReports");
 const myActivity = require("./myActivity");
 const { notifyBlockerReported, notifyBlockerResolved } = require("./taskBlockerNotify");
 const {
@@ -258,6 +261,13 @@ function assignmentRecord(taskId, assignment) {
     ...(assignment.actualHours == null
       ? {}
       : { actualHours: assignment.actualHours }),
+    ...(assignment.supersededByTaskId
+      ? {
+          supersededByTaskId: assignment.supersededByTaskId,
+          supersededAt: assignment.supersededAt || null,
+          supersededReason: assignment.supersededReason || null,
+        }
+      : {}),
     ...escalation.assignmentBlockerFields(assignment, { omitIfAbsent: true }),
   };
 }
@@ -311,6 +321,9 @@ function snapshotTask(task, assignments) {
       removed: !!a.removed,
       plannedHours: a.plannedHours == null ? null : a.plannedHours,
       actualHours: a.actualHours == null ? null : a.actualHours,
+      supersededByTaskId: a.supersededByTaskId || null,
+      supersededAt: a.supersededAt || null,
+      supersededReason: a.supersededReason || null,
       ...escalation.assignmentBlockerFields(a),
     })),
     status: escalation.deriveParentStatus(assignments, task.status),
@@ -491,7 +504,30 @@ async function persistAssignmentsAndTask(task, assignments, options = {}) {
     });
     return merged;
   }
+  const costComplete = options.costComplete || null;
+  const costEmail = costComplete
+    ? escalation.normalizeEmail(costComplete.assignment?.email)
+    : "";
+  const costRow =
+    costComplete && costEmail
+      ? assignments.find(
+          (a) => escalation.normalizeEmail(a.email) === costEmail
+        )
+      : null;
+  if (costRow) {
+    await taskCosting.persistCompletionWithCost({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      assignmentItem: assignmentRecord(task.taskId, costRow),
+      task,
+      assignment: costRow,
+      project: costComplete.project,
+      approvedBy: costComplete.approvedBy,
+      nowIso: costComplete.nowIso,
+    });
+  }
   for (const a of assignments) {
+    if (costRow && escalation.normalizeEmail(a.email) === costEmail) continue;
     await writeAssignment(task.taskId, a, options);
   }
   const merged = snapshotTask(task, assignments);
@@ -928,15 +964,20 @@ async function runEscalationSweep() {
   return json(200, { ok: true, processed });
 }
 
-async function getProjectName(projectId) {
-  if (!projectId) return "";
+async function getProjectItem(projectId) {
+  if (!projectId) return null;
   const res = await ddb.send(
     new GetCommand({
       TableName: process.env.WORK_TABLE,
       Key: { PK: "ENTITY#PROJECT", SK: `PROJECT#${projectId}` },
     })
   );
-  return res.Item?.name || "";
+  return res.Item || null;
+}
+
+async function getProjectName(projectId) {
+  const item = await getProjectItem(projectId);
+  return item?.name || "";
 }
 
 async function attachProjectNames(tasks) {
@@ -1076,6 +1117,10 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
     category: sourceTask.category,
     startDate: body.startDate,
     dueDate: body.dueDate,
+    estimatedHours:
+      body.estimatedHours !== undefined
+        ? body.estimatedHours
+        : sourceTask.estimatedHours,
   });
   if (!createParsed.ok) {
     const first =
@@ -1147,7 +1192,6 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       ),
     },
   ];
-  const copiedEstimate = escalation.parseEstimatedHours(sourceTask.estimatedHours);
   const item = snapshotTask(
     {
       PK: "ENTITY#TASK",
@@ -1167,7 +1211,7 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
       durationDays: null,
       durationStart: null,
       durationEnd: null,
-      estimatedHours: copiedEstimate.ok ? copiedEstimate.value : null,
+      estimatedHours: createParsed.estimatedHours,
       completedDate: null,
       labels: Array.isArray(sourceTask.labels) ? sourceTask.labels : [],
       archived: false,
@@ -1185,6 +1229,17 @@ async function handleReviewReassign({ user, body, sourceTaskId, cache, event }) 
   );
 
   await persistAssignmentsAndTask(item, assignments, { create: true });
+  const sourceAssignment = sourceAssignments.find(
+    (a) =>
+      escalation.normalizeEmail(a.email) === parsedReview.sourceEmail &&
+      !a.removed
+  );
+  if (sourceAssignment) {
+    sourceAssignment.supersededByTaskId = id;
+    sourceAssignment.supersededAt = now;
+    sourceAssignment.supersededReason = parsedReview.reason;
+    await writeAssignment(sourceTaskId, sourceAssignment);
+  }
   await notifyAssignmentPlanPostponement({
     ddb,
     accessTable: process.env.USER_ACCESS_TABLE,
@@ -1407,6 +1462,129 @@ exports.handler = async (event) => {
         ddb,
         tableName: process.env.WORK_TABLE,
         accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+
+    const costRatesCtx = {
+      user,
+      body,
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      accessTable: process.env.USER_ACCESS_TABLE,
+      profileTable: process.env.USER_PROFILE_TABLE,
+      query: event.queryStringParameters || {},
+    };
+    if (costRates.designationsListPathMatch(path) && method === "GET") {
+      const result = await costRates.handleListDesignations(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (costRates.designationsListPathMatch(path) && method === "POST") {
+      const result = await costRates.handleCreateDesignation(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    const designationStatusId = costRates.designationStatusPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (designationStatusId?.malformed) {
+      const result = await costRates.handleMalformedPath(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (designationStatusId?.value && method === "POST") {
+      const result = await costRates.handleDesignationStatus({
+        ...costRatesCtx,
+        designationId: designationStatusId.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const designationId = costRates.designationIdPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (designationId?.malformed) {
+      const result = await costRates.handleMalformedPath(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (designationId?.value && method === "PATCH") {
+      const result = await costRates.handlePatchDesignation({
+        ...costRatesCtx,
+        designationId: designationId.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const costingProject = costingReports.costingProjectPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (costingProject?.malformed) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (costingProject && method === "GET") {
+      const result = await costingReports.handleGetProjectCosting({
+        ...costRatesCtx,
+        projectId: costingProject.projectId,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (costingProject) {
+      return json(405, { error: "Method not allowed" });
+    }
+    const costingEmployee = costingReports.costingEmployeePathMatch(
+      path,
+      event.pathParameters
+    );
+    if (costingEmployee?.malformed) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (costingEmployee && method === "GET") {
+      const result = await costingReports.handleGetEmployeeCosting({
+        ...costRatesCtx,
+        email: costingEmployee.email,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (costingEmployee) {
+      return json(405, { error: "Method not allowed" });
+    }
+    if (costRates.employeesListPathMatch(path) && method === "GET") {
+      const result = await costRates.handleListEmployees(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    const employeeRatesStatusEmail = costRates.employeeStatusPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (employeeRatesStatusEmail?.malformed) {
+      const result = await costRates.handleMalformedPath(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (employeeRatesStatusEmail?.value && method === "POST") {
+      const result = await costRates.handleEmployeeStatus({
+        ...costRatesCtx,
+        email: employeeRatesStatusEmail.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const employeeRatesEmail = costRates.employeeEmailPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (employeeRatesEmail?.malformed) {
+      const result = await costRates.handleMalformedPath(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (employeeRatesEmail?.value && method === "GET") {
+      const result = await costRates.handleGetEmployee({
+        ...costRatesCtx,
+        email: employeeRatesEmail.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (employeeRatesEmail?.value && method === "PUT") {
+      const result = await costRates.handlePutEmployee({
+        ...costRatesCtx,
+        email: employeeRatesEmail.value,
       });
       return json(result.statusCode, result.body);
     }
@@ -2164,6 +2342,7 @@ exports.handler = async (event) => {
       let completionTransitioned = false;
       let completedAssignment = null;
       let reviewSubmitted = null;
+      let costAssignment = null;
       const merged = {
         ...existing,
         ...allowed,
@@ -2457,18 +2636,18 @@ exports.handler = async (event) => {
                   error: "Please upload at least one proof file.",
                 });
               }
-              if (!mayAdminMutate) {
-                const parsedActual = taskTime.parseOptionalHours(actualHoursInput);
-                if (!parsedActual.ok) {
-                  return json(400, {
-                    error: parsedActual.error,
-                    errors: { actualHours: parsedActual.error },
-                  });
-                }
-                if (parsedActual.value != null) {
-                  mine.actualHours = parsedActual.value;
-                }
+              const parsedActual = taskTime.parseRequiredHours(
+                actualHoursInput !== undefined && actualHoursInput !== null
+                  ? actualHoursInput
+                  : mine.actualHours
+              );
+              if (!parsedActual.ok) {
+                return json(400, {
+                  error: taskTime.ACTUALS_REQUIRED_TO_REVIEW,
+                  errors: { actualHours: parsedActual.error },
+                });
               }
+              mine.actualHours = parsedActual.value;
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(
                 mine,
@@ -2504,7 +2683,30 @@ exports.handler = async (event) => {
                 });
               }
             } else {
+              if (nextStatus === "DONE") {
+                if (
+                  mine.supersededByTaskId &&
+                  !escalation.isComplete(mine.status)
+                ) {
+                  return json(409, {
+                    error: taskCosting.SUPERSEDED_MESSAGE,
+                    code: taskCosting.ASSIGNMENT_SUPERSEDED,
+                    supersededByTaskId: mine.supersededByTaskId,
+                  });
+                }
+                if (!taskTime.parseRequiredHours(mine.actualHours).ok) {
+                  return json(400, {
+                    error: taskTime.ACTUALS_REQUIRED_TO_REVIEW,
+                    errors: {
+                      actualHours: taskTime.parseRequiredHours(mine.actualHours)
+                        .error,
+                    },
+                  });
+                }
+                costAssignment = mine;
+              }
               await applyStatusToAssignment(mine, allowed.status);
+              if (nextStatus === "DONE") costAssignment = mine;
             }
           }
         } else if (mayAdminMutate && allowed.status === "CANCELLED") {
@@ -2679,7 +2881,42 @@ exports.handler = async (event) => {
       const assignmentPlan = merged.__assignmentPlan;
       delete merged.__assignmentPlan;
 
-      const saved = await persistAssignmentsAndTask(merged, assignments);
+      let saved;
+      const shouldCost =
+        costAssignment &&
+        mayAdminMutate &&
+        escalation.isComplete(costAssignment.status);
+      try {
+        const project = shouldCost
+          ? await getProjectItem(merged.projectId)
+          : null;
+        saved = await persistAssignmentsAndTask(merged, assignments, {
+          costComplete: shouldCost
+            ? {
+                assignment: costAssignment,
+                project,
+                approvedBy: user.email,
+                nowIso,
+              }
+            : null,
+        });
+      } catch (err) {
+        if (err instanceof PersistConflictError) throw err;
+        if (err.statusCode === 400) {
+          return json(400, { error: err.message, code: err.code });
+        }
+        if (shouldCost) {
+          console.error(
+            "TASK_COST_SNAPSHOT_ERROR",
+            JSON.stringify({ taskId, name: err?.name || "" })
+          );
+          return json(500, {
+            error:
+              "Unable to save the task cost record. Retry the completion action.",
+          });
+        }
+        throw err;
+      }
       if (assignmentPlan?.postponementCount) {
         await notifyAssignmentPlanPostponement({
           ddb,

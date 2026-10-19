@@ -11,6 +11,7 @@ import { getLoggedInDisplayName, getLoggedInEmail } from "../../services/auth";
 import { displayNameFromEmail } from "../../utils/meetings";
 import {
   ESTIMATED_HOURS_HELPER,
+  ESTIMATED_HOURS_INVALID,
   parseEstimatedHoursInput,
 } from "../../utils/estimatedHours";
 import DurationHoursInput from "../../components/DurationHoursInput";
@@ -497,7 +498,7 @@ export default function ManageTasks() {
     }
     const estimated = parseEstimatedHoursInput(taskForm.estimatedHours);
     if (!estimated.ok) {
-      errors.estimatedHours = estimated.error;
+      errors.estimatedHours = estimated.error || ESTIMATED_HOURS_INVALID;
     }
     if (Object.keys(errors).length) {
       setFormErrors(errors);
@@ -1256,6 +1257,7 @@ export default function ManageTasks() {
                 id="task-estimated-hours"
                 label="Estimated Hours"
                 aria-label="Estimated Hours"
+                required
                 value={taskForm.estimatedHours}
                 error={formErrors.estimatedHours}
                 helper={`${ESTIMATED_HOURS_HELPER} ${HH_MM_HELPER}`}

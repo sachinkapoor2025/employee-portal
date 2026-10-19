@@ -20,10 +20,10 @@ import { getLoggedInEmail } from "../../services/auth";
 import { formatEstimatedHours } from "../../utils/estimatedHours";
 import {
   ACTUAL_HELPER,
+  ACTUAL_REQUIRED,
   PLANNED_HELPER,
   formatHours,
   parseHoursInput,
-  parseOptionalHoursInput,
   parseRequiredHours,
 } from "../../utils/taskTime";
 import {
@@ -862,8 +862,12 @@ export default function TaskDetails() {
     setCompleteProofError(proofErr);
     if (proofErr) setAttachmentError("");
     setCompleteRemarkError(remarkErr);
-    const actual = parseOptionalHoursInput(actualHoursInput);
-    const actualErr = actual.ok ? "" : actual.error;
+    const actual = parseHoursInput(actualHoursInput);
+    const actualErr = actual.ok
+      ? ""
+      : actual.empty
+        ? ACTUAL_REQUIRED
+        : actual.error;
     setActualHoursError(actualErr);
     if (proofErr || remarkErr || actualErr) return;
     setSaving(true);
@@ -876,7 +880,7 @@ export default function TaskDetails() {
         status: "DONE",
         assignmentEmail: mine?.email || getLoggedInEmail(),
         completionRemark: remark,
-        ...(actual.value != null ? { actualHours: actual.value } : {}),
+        actualHours: actual.value,
       });
       closeCompletionModal();
       await load();
@@ -1654,7 +1658,7 @@ export default function TaskDetails() {
             style={{ ...formLabel, marginTop: 18 }}
             htmlFor="actual-hours"
           >
-            3. Total Actual Hours
+            3. Total Actual Hours *
           </label>
           <p style={{ margin: "0 0 8px", fontSize: 13, color: colors.textMuted }}>
             Admin estimate: {formatEstimatedHours(task?.estimatedHours)} · My planned hours:{" "}
@@ -1666,6 +1670,7 @@ export default function TaskDetails() {
           <DurationHoursInput
             id="actual-hours"
             aria-label="Total Actual Hours"
+            required
             value={actualHoursInput}
             error={actualHoursError}
             helper={HH_MM_HELPER}

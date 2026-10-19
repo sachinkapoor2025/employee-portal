@@ -12,20 +12,52 @@ import {
 const DEPLOYED_API_URL =
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
-/** Deployed AWS API Gateway. Never uses localhost, even if CRA env points at local-api. */
-export function getApiBaseUrl(raw = process.env.REACT_APP_API_URL) {
+const LOCAL_API_REQUIRED_MESSAGE =
+  "Local API is not configured. Set REACT_APP_USE_LOCAL_API=true and REACT_APP_API_URL=http://127.0.0.1:3001 to use backend/scripts/local-api.js, or set REACT_APP_ALLOW_DEPLOYED_API=true with a non-local REACT_APP_API_URL.";
+
+export function isLoopbackApiUrl(raw) {
+  try {
+    const host = new URL(String(raw || "").trim()).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function flagEnabled(value) {
+  return String(value || "").trim().toLowerCase() === "true";
+}
+
+/**
+ * Production/CI builds use the deployed API (never localhost).
+ * CRA `npm start` never falls back to production unless
+ * REACT_APP_ALLOW_DEPLOYED_API=true. Local proxy requires
+ * REACT_APP_USE_LOCAL_API=true and a loopback REACT_APP_API_URL.
+ */
+export function getApiBaseUrl(
+  raw = process.env.REACT_APP_API_URL,
+  options = {}
+) {
+  const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+  const useLocalApi =
+    options.useLocalApi ?? flagEnabled(process.env.REACT_APP_USE_LOCAL_API);
+  const allowDeployedApi =
+    options.allowDeployedApi ??
+    flagEnabled(process.env.REACT_APP_ALLOW_DEPLOYED_API);
   const fromEnv = String(raw || "")
     .trim()
     .replace(/\/+$/, "");
-  if (!fromEnv) return DEPLOYED_API_URL;
-  try {
-    const host = new URL(fromEnv).hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
-      return DEPLOYED_API_URL;
-    }
-  } catch {
-    return DEPLOYED_API_URL;
+  const loopback = Boolean(fromEnv) && isLoopbackApiUrl(fromEnv);
+
+  if (useLocalApi) {
+    return loopback ? fromEnv : "";
   }
+
+  if (nodeEnv === "development" && !allowDeployedApi) {
+    return "";
+  }
+
+  if (!fromEnv || loopback) return DEPLOYED_API_URL;
   return fromEnv;
 }
 
@@ -121,6 +153,9 @@ function networkApiError(networkErr) {
 }
 
 export const api = async (path, method = "GET", body) => {
+  if (!API) {
+    throw new Error(LOCAL_API_REQUIRED_MESSAGE);
+  }
   const token = localStorage.getItem("token");
   const headers = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -282,6 +317,59 @@ export const fetchEmployeeShift = (email) =>
   api(`/employees/${encodeURIComponent(email)}/shift`, "GET");
 export const assignEmployeeShift = (email, data) =>
   api(`/employees/${encodeURIComponent(email)}/shift`, "PUT", data);
+
+export const fetchCostRateDesignations = () =>
+  api("/admin/cost-rates/designations", "GET");
+export const createCostRateDesignation = (data) =>
+  api("/admin/cost-rates/designations", "POST", data);
+export const updateCostRateDesignation = (id, data) =>
+  api(`/admin/cost-rates/designations/${encodeURIComponent(id)}`, "PATCH", data);
+export const setCostRateDesignationStatus = (id, status) =>
+  api(
+    `/admin/cost-rates/designations/${encodeURIComponent(id)}/status`,
+    "POST",
+    { status }
+  );
+export const fetchCostRateEmployees = () =>
+  api("/admin/cost-rates/employees", "GET");
+export const fetchCostRateEmployee = (email) =>
+  api(`/admin/cost-rates/employees/${encodeURIComponent(email)}`, "GET");
+export const saveCostRateEmployee = (email, data) =>
+  api(`/admin/cost-rates/employees/${encodeURIComponent(email)}`, "PUT", data);
+export const setCostRateEmployeeStatus = (email, status) =>
+  api(
+    `/admin/cost-rates/employees/${encodeURIComponent(email)}/status`,
+    "POST",
+    { status }
+  );
+
+export const fetchProjectCosting = (projectId, params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.cursor) qs.set("cursor", params.cursor);
+  const query = qs.toString();
+  return api(
+    `/admin/costing/projects/${encodeURIComponent(projectId)}${
+      query ? `?${query}` : ""
+    }`,
+    "GET"
+  );
+};
+
+export const fetchEmployeeCosting = (email, params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.cursor) qs.set("cursor", params.cursor);
+  const query = qs.toString();
+  return api(
+    `/admin/costing/employees/${encodeURIComponent(email)}${
+      query ? `?${query}` : ""
+    }`,
+    "GET"
+  );
+};
 
 export const createProject = (data) => api("/projects", "POST", data);
 export const updateProject = (projectId, data) =>

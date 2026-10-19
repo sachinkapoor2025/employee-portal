@@ -45,6 +45,17 @@ export function canManageUserAccessLifecycle(role) {
   return isSuperAdminRole(role);
 }
 
+/** Cost rate catalog and employee rate records: Super Admin only. */
+export function canManageCostRates(role) {
+  return isSuperAdminRole(role);
+}
+
+/** Project and employee costing reports: Admin and Super Admin only. */
+export function canViewCostingReports(role) {
+  const r = normalizeRole(role);
+  return r === ROLES.SUPER_ADMIN || r === ROLES.ADMIN;
+}
+
 /** ADMIN may still assign ADMIN/MANAGER/EMPLOYEE; SUPER_ADMIN grant is Super Admin only. */
 export function canAssignPortalRole(actorRole, targetRole) {
   if (normalizeRole(targetRole) === ROLES.SUPER_ADMIN && !isSuperAdminRole(actorRole)) {

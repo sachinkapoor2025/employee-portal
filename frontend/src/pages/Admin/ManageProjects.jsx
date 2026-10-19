@@ -470,6 +470,20 @@ export default function ManageProjects() {
                                 <button
                                   type="button"
                                   role="menuitem"
+                                  onClick={() => {
+                                    setActionMenuId("");
+                                    navigate(
+                                      `/admin/projects/${encodeURIComponent(
+                                        project.projectId
+                                      )}/costing`
+                                    );
+                                  }}
+                                >
+                                  View Costing
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
                                   onClick={() => openEdit(project)}
                                 >
                                   Edit Project

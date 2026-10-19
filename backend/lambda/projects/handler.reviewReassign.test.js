@@ -41,6 +41,7 @@ function createMemoryDdb() {
   }
   return {
     items,
+    failCostTransact: 0,
     seed(tableName, item) {
       const idx = items.findIndex(
         (row) => keyOf(row.TableName, row.Item) === keyOf(tableName, item)
@@ -90,7 +91,17 @@ function createMemoryDdb() {
         };
       }
       if (command instanceof TransactWriteCommand) {
-        for (const op of command.input.TransactItems || []) {
+        const ops = command.input.TransactItems || [];
+        const hasCost = ops.some((op) =>
+          String(op.Put?.Item?.SK || "").startsWith("COST#")
+        );
+        if (hasCost && this.failCostTransact > 0) {
+          this.failCostTransact -= 1;
+          const err = new Error("cancelled");
+          err.name = "TransactionCanceledException";
+          throw err;
+        }
+        for (const op of ops) {
           if (op.Put) this.seed(op.Put.TableName, op.Put.Item);
         }
         return {};
@@ -139,6 +150,7 @@ function setup({
   assignmentStatuses,
   assignmentStatus = "REVIEW",
   seedShifts = true,
+  projectType,
 } = {}) {
   const ddb = createMemoryDdb();
   ddb.seed(WORK, {
@@ -147,6 +159,7 @@ function setup({
     projectId: PROJECT_ID,
     name: "DGV Employee Portal",
     status: "ACTIVE",
+    ...(projectType ? { projectType } : {}),
   });
   seedAccess(ddb, ADMIN, "ADMIN");
   seedAccess(ddb, PRIYA);
@@ -176,6 +189,7 @@ function setup({
     createdAt: "2026-09-20T10:00:00.000Z",
     updatedAt: "2026-09-20T10:00:00.000Z",
     archived: false,
+    estimatedHours: 4,
   };
   ddb.seed(WORK, item);
   ddb.seed(WORK, {
@@ -197,6 +211,7 @@ function setup({
           : null,
       assignedAt: item.createdAt,
       assignedBy: ADMIN,
+      actualHours: 2,
       removed: false,
     });
   }
@@ -237,6 +252,39 @@ function assignmentItem(ddb, email, taskId = TASK_ID) {
       (item) =>
         item.PK === `TASK#${taskId}` && item.SK === `ASSIGNMENT#${email}`
     );
+}
+
+function costItem(ddb, email, taskId = TASK_ID) {
+  return ddb
+    .of(WORK)
+    .find(
+      (item) => item.PK === `TASK#${taskId}` && item.SK === `COST#${email}`
+    );
+}
+
+function seedCostRates(ddb) {
+  ddb.seed(WORK, {
+    PK: "ENTITY#DESIGNATION",
+    SK: "DESIGNATION#seo",
+    type: "DESIGNATION",
+    designationId: "seo",
+    name: "SEO",
+    status: "ACTIVE",
+    internalHourlyRate: 2,
+    externalHourlyRate: 4,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  ddb.seed(WORK, {
+    PK: `USER#${PRIYA}`,
+    SK: "COST_RATES",
+    type: "EMPLOYEE_COST_RATES",
+    email: PRIYA,
+    designationId: "seo",
+    status: "ACTIVE",
+    internalHourlyRate: 2.25,
+    externalHourlyRate: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
 }
 
 function activityItems(ddb, taskId = TASK_ID) {
@@ -323,12 +371,16 @@ async function run() {
 
     const created = entityTask(ddb, res.body.taskId);
     assert.strictEqual(created.sourceTaskId, TASK_ID);
+    assert.strictEqual(created.estimatedHours, 4);
     assert.strictEqual(created.title, "Banner update");
     assert.strictEqual(created.description, "Original description");
     assert.strictEqual(created.priority, "HIGH");
     assert.strictEqual(created.category, "Marketing");
     const newAssignment = assignmentItem(ddb, PRIYA, res.body.taskId);
     assert.strictEqual(newAssignment.status, "TODO");
+    assert.ok(
+      newAssignment.actualHours == null || newAssignment.actualHours === undefined
+    );
     assert.ok(!newAssignment.completedAt);
     assert.strictEqual(created.startDate, NEW_START);
     assert.strictEqual(created.dueDate, NEW_DUE);
@@ -366,6 +418,49 @@ async function run() {
     assert.notStrictEqual(res.body.taskId, TASK_ID);
     assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
     assert.strictEqual(assignmentItem(ddb, PRIYA).completionRemark, ORIGINAL_REMARK);
+  });
+
+  await test("reassigned task requires its own estimate when the source has none", async () => {
+    const { ddb } = setup();
+    for (const row of ddb.items) {
+      if (
+        row.TableName === WORK &&
+        row.Item.taskId === TASK_ID &&
+        String(row.Item.SK || "").startsWith("TASK#")
+      ) {
+        delete row.Item.estimatedHours;
+      }
+    }
+    const res = parse(await handler(eventFor("POST", reassignBody())));
+    assert.strictEqual(res.statusCode, 400);
+    assert.ok(res.body.errors.estimatedHours);
+    assert.strictEqual(createdFollowUps(ddb).length, 0);
+  });
+
+  await test("reassigned task persists a supplied estimate without copying actual hours", async () => {
+    const { ddb } = setup();
+    for (const row of ddb.items) {
+      if (
+        row.TableName === WORK &&
+        row.Item.taskId === TASK_ID &&
+        String(row.Item.SK || "").startsWith("TASK#")
+      ) {
+        delete row.Item.estimatedHours;
+      }
+    }
+    const res = parse(
+      await handler(eventFor("POST", reassignBody({ estimatedHours: "3.5" })))
+    );
+    assert.strictEqual(res.statusCode, 201);
+    const created = entityTask(ddb, res.body.taskId);
+    assert.strictEqual(created.estimatedHours, 3.5);
+    const source = entityTask(ddb);
+    assert.ok(source.estimatedHours == null);
+    const newAssignment = assignmentItem(ddb, PRIYA, res.body.taskId);
+    assert.ok(
+      newAssignment.actualHours == null || newAssignment.actualHours === undefined
+    );
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 2);
   });
 
   await test("Same Employee uses the submitting employee", async () => {
@@ -598,6 +693,65 @@ async function run() {
     );
     assert.strictEqual(res.statusCode, 201);
     assert.strictEqual(Date.parse(res.body.startDate), Date.parse("2026-09-29T16:00:00+05:30"));
+  });
+
+  await test("reassign marks source superseded so Complete cannot double-count", async () => {
+    const { ddb } = setup({ projectType: "INTERNAL" });
+    seedCostRates(ddb);
+    const created = parse(await handler(eventFor("POST", reassignBody())));
+    assert.strictEqual(created.statusCode, 201);
+    const sourceAssignment = assignmentItem(ddb, PRIYA, TASK_ID);
+    assert.strictEqual(sourceAssignment.status, "REVIEW");
+    assert.strictEqual(sourceAssignment.supersededByTaskId, created.body.taskId);
+    const blocked = parse(
+      await handler(
+        eventFor("PUT", {
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(blocked.statusCode, 409);
+    assert.strictEqual(blocked.body.code, "ASSIGNMENT_SUPERSEDED");
+    assert.ok(!costItem(ddb, PRIYA, TASK_ID));
+    const followRow = ddb.items.find(
+      (row) =>
+        row.TableName === WORK &&
+        row.Item.PK === `TASK#${created.body.taskId}` &&
+        row.Item.SK === `ASSIGNMENT#${PRIYA}`
+    );
+    followRow.Item.status = "REVIEW";
+    followRow.Item.actualHours = 3;
+    followRow.Item.completionRemark = "Revised.";
+    for (const row of ddb.items) {
+      if (
+        row.TableName === WORK &&
+        row.Item.taskId === created.body.taskId &&
+        String(row.Item.SK || "").startsWith("TASK#")
+      ) {
+        row.Item.status = "REVIEW";
+      }
+    }
+    const followUp = parse(
+      await handler(
+        eventFor("PUT", {
+          taskId: created.body.taskId,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(followUp.statusCode, 200);
+    const followCost = costItem(ddb, PRIYA, created.body.taskId);
+    assert.ok(followCost);
+    assert.strictEqual(followCost.status, "COSTED");
+    assert.strictEqual(followCost.hourlyRateUsd, 2.25);
+    assert.strictEqual(followCost.amountUsd, 6.75);
+    assert.strictEqual(followCost.sourceTaskId, TASK_ID);
+    assert.ok(!costItem(ddb, PRIYA, TASK_ID));
   });
 
   await test("NO_SHIFT reassign is rejected", async () => {

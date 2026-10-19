@@ -361,8 +361,7 @@ function baseTaskFields({ row, batchId, taskId, user, createdByName, now }) {
     durationDays: null,
     durationStart: null,
     durationEnd: null,
-    estimatedHours:
-      row.values.estimatedHours == null ? null : row.values.estimatedHours,
+    estimatedHours: row.values.estimatedHours,
     completedDate: null,
     labels: [],
     archived: false,

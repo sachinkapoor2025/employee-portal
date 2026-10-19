@@ -47,6 +47,7 @@ jest.mock("../../services/api", () => ({
   fetchEmployeeShift: jest.fn(),
   fetchTaskActivity: jest.fn(),
   fetchWeekOffState: jest.fn(),
+  fetchEmployeeCosting: jest.fn(),
 }));
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -62,6 +63,7 @@ import {
   fetchEmployeeShift,
   fetchTaskActivity,
   fetchWeekOffState,
+  fetchEmployeeCosting,
 } from "../../services/api";
 import {
   addDaysToKey,
@@ -304,6 +306,7 @@ function attendanceRows() {
 }
 
 beforeEach(() => {
+  localStorage.removeItem("portalRole");
   trackingRoute.tab = "Tasks";
   trackingRoute.from = "";
   fetchUserProfile.mockResolvedValue({
@@ -320,6 +323,17 @@ beforeEach(() => {
   fetchTasks.mockResolvedValue([SOLO, MULTI, UNRELATED]);
   fetchEmployeeShift.mockResolvedValue({ shift: CURRENT_SHIFT });
   fetchTaskActivity.mockResolvedValue([]);
+  fetchEmployeeCosting.mockResolvedValue({
+    summary: {
+      completedActualHours: 0,
+      confirmedCostUsd: 0,
+      pendingReviewHours: 0,
+      missingRateCount: 0,
+      missingCostRecordCount: 0,
+    },
+    projects: [],
+    assignments: [],
+  });
   fetchWeekOffState.mockResolvedValue({
     weekStart: currentWeekStartKey(),
     weekEnd: addDaysToKey(currentWeekStartKey(), 6),
@@ -1189,6 +1203,18 @@ async function renderOverviewLoaded() {
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument()
   );
 }
+
+test("Admin Costing tab loads the costing report", async () => {
+  localStorage.setItem("portalRole", "ADMIN");
+  trackingRoute.tab = "Costing";
+  renderTracking();
+  expect(await screen.findByRole("tab", { name: "Costing" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(await screen.findByRole("heading", { name: "Costing" })).toBeInTheDocument();
+  expect(fetchEmployeeCosting).toHaveBeenCalled();
+});
 
 test("tab query Overview activates Overview", async () => {
   trackingRoute.tab = "Overview";

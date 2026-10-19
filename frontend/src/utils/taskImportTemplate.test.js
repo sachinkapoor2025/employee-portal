@@ -61,7 +61,7 @@ test("Instructions sheet covers admin rules", () => {
   expect(text).toMatch(/\+05:30/);
   expect(text).toMatch(/Estimated Hours/);
   expect(text).toMatch(/excluding lunch and breaks/);
-  expect(text).toMatch(/positive numbers/);
+  expect(text).toMatch(/positive number/);
 });
 
 test("generated file is a real xlsx zip", () => {

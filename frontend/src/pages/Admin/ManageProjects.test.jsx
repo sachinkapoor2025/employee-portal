@@ -58,6 +58,12 @@ beforeEach(() => {
   ]);
 });
 
+test("Take Action includes View Costing", async () => {
+  render(<ManageProjects />);
+  userEvent.click(await screen.findByRole("button", { name: "Take Action" }));
+  expect(screen.getByRole("menuitem", { name: "View Costing" })).toBeInTheDocument();
+});
+
 test("lists projects with Take Action and no row Delete button", async () => {
   render(<ManageProjects />);
   expect(await screen.findByText("Portal")).toBeInTheDocument();

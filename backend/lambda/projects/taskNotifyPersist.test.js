@@ -23,11 +23,15 @@ function createMemoryDdb() {
   const items = new Map();
   const puts = [];
   let failNextPut = 0;
+  let failUserPuts = 0;
   return {
     items,
     puts,
     failNextPuts(n) {
       failNextPut = n;
+    },
+    failUserAssignmentPointers(n) {
+      failUserPuts = n;
     },
     send: async (cmd) => {
       const input = cmd.input;
@@ -69,7 +73,18 @@ function createMemoryDdb() {
             const item = op.Put.Item;
             const existing = items.get(`${item.PK}|${item.SK}`);
             const expr = String(op.Put.ConditionExpression || "");
-            if (expr.includes("attribute_not_exists(PK)") && existing) {
+            if (expr.includes(":ptrType")) {
+              const compatible =
+                !existing ||
+                (existing.type === item.type &&
+                  existing.taskId === item.taskId &&
+                  existing.email === item.email);
+              if (!compatible) {
+                const err = new Error("canceled");
+                err.name = "TransactionCanceledException";
+                throw err;
+              }
+            } else if (expr.includes("attribute_not_exists(PK)") && existing) {
               const err = new Error("canceled");
               err.name = "TransactionCanceledException";
               throw err;
@@ -96,7 +111,22 @@ function createMemoryDdb() {
           failNextPut -= 1;
           throw conditionalFail();
         }
-        if (expr.includes("attribute_not_exists(PK)") && existing) {
+        if (
+          failUserPuts > 0 &&
+          String(input.Item.PK || "").startsWith("USER#")
+        ) {
+          failUserPuts -= 1;
+          throw new Error("pointer down");
+        }
+        if (expr.includes(":ptrType")) {
+          const item = input.Item;
+          const compatible =
+            !existing ||
+            (existing.type === item.type &&
+              existing.taskId === item.taskId &&
+              existing.email === item.email);
+          if (!compatible) throw conditionalFail();
+        } else if (expr.includes("attribute_not_exists(PK)") && existing) {
           throw conditionalFail();
         }
         if (expr.includes("#notifyStatus = :notifyStatus")) {
@@ -270,6 +300,75 @@ async function run() {
     status: "TODO",
   });
   assert.strictEqual(createdA.ok, true);
+  assert.strictEqual(
+    assignDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#t1").type,
+    "USER_ASSIGNMENT"
+  );
+  const pointerAgain = await putAssignmentSafe(assignDdb, tableName, {
+    PK: "TASK#t1",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    taskId: "t1",
+    type: "ASSIGNMENT",
+    status: "TODO",
+  });
+  assert.strictEqual(pointerAgain.ok, true);
+  assert.strictEqual(
+    assignDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#t1").taskId,
+    "t1"
+  );
+
+  const ptrFailDdb = createMemoryDdb();
+  ptrFailDdb.failUserAssignmentPointers(1);
+  const ptrFailed = await putAssignmentSafe(ptrFailDdb, tableName, {
+    PK: "TASK#t-ptr",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    taskId: "t-ptr",
+    type: "ASSIGNMENT",
+    status: "TODO",
+  });
+  assert.strictEqual(ptrFailed.ok, false);
+  assert.strictEqual(ptrFailed.reason, "USER_ASSIGNMENT_POINTER");
+  assert.strictEqual(ptrFailed.assignmentWritten, true);
+  assert.ok(ptrFailDdb.items.get("TASK#t-ptr|ASSIGNMENT#a@mydgv.com"));
+  assert.ok(!ptrFailDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#t-ptr"));
+  const ptrRetry = await putAssignmentSafe(ptrFailDdb, tableName, {
+    PK: "TASK#t-ptr",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    taskId: "t-ptr",
+    type: "ASSIGNMENT",
+    status: "TODO",
+  });
+  assert.strictEqual(ptrRetry.ok, true);
+  assert.strictEqual(
+    ptrFailDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#t-ptr").type,
+    "USER_ASSIGNMENT"
+  );
+
+  const conflictPtr = createMemoryDdb();
+  conflictPtr.items.set("USER#a@mydgv.com|ASSIGNMENT#t-c", {
+    PK: "USER#a@mydgv.com",
+    SK: "ASSIGNMENT#t-c",
+    type: "OTHER",
+    taskId: "other",
+    email: "other@mydgv.com",
+  });
+  const conflicted = await putAssignmentSafe(conflictPtr, tableName, {
+    PK: "TASK#t-c",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    email: "a@mydgv.com",
+    taskId: "t-c",
+    type: "ASSIGNMENT",
+    status: "TODO",
+  });
+  assert.strictEqual(conflicted.ok, false);
+  assert.strictEqual(conflicted.reason, "USER_ASSIGNMENT_POINTER_CONFLICT");
+  assert.strictEqual(
+    conflictPtr.items.get("USER#a@mydgv.com|ASSIGNMENT#t-c").type,
+    "OTHER"
+  );
   assignDdb.items.set("TASK#t1|ASSIGNMENT#a@mydgv.com", {
     PK: "TASK#t1",
     SK: "ASSIGNMENT#a@mydgv.com",
@@ -489,6 +588,75 @@ async function run() {
   assert.strictEqual(createdTask.ok, true);
   assert.ok(createDdb.items.get("ENTITY#TASK|TASK#new-1"));
   assert.ok(createDdb.items.get("PROJECT#p-live|TASK#new-1"));
+
+  const createdAssigned = await putCreatedTaskRecords(
+    createDdb,
+    tableName,
+    {
+      PK: "ENTITY#TASK",
+      SK: "TASK#new-asg",
+      taskId: "new-asg",
+      title: "Assigned",
+      projectId: "p-live",
+    },
+    [
+      {
+        PK: "TASK#new-asg",
+        SK: "ASSIGNMENT#a@mydgv.com",
+        type: "ASSIGNMENT",
+        taskId: "new-asg",
+        email: "a@mydgv.com",
+        status: "TODO",
+      },
+    ]
+  );
+  assert.strictEqual(createdAssigned.ok, true);
+  assert.strictEqual(
+    createDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#new-asg").type,
+    "USER_ASSIGNMENT"
+  );
+
+  const rollbackDdb = createMemoryDdb();
+  rollbackDdb.items.set("ENTITY#PROJECT|PROJECT#p-live", {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#p-live",
+    projectId: "p-live",
+  });
+  rollbackDdb.items.set("USER#a@mydgv.com|ASSIGNMENT#roll-1", {
+    PK: "USER#a@mydgv.com",
+    SK: "ASSIGNMENT#roll-1",
+    type: "OTHER",
+    taskId: "wrong",
+    email: "wrong@mydgv.com",
+  });
+  const rolled = await putCreatedTaskRecords(
+    rollbackDdb,
+    tableName,
+    {
+      PK: "ENTITY#TASK",
+      SK: "TASK#roll-1",
+      taskId: "roll-1",
+      title: "Roll",
+      projectId: "p-live",
+    },
+    [
+      {
+        PK: "TASK#roll-1",
+        SK: "ASSIGNMENT#a@mydgv.com",
+        type: "ASSIGNMENT",
+        taskId: "roll-1",
+        email: "a@mydgv.com",
+        status: "TODO",
+      },
+    ]
+  );
+  assert.strictEqual(rolled.ok, false);
+  assert.ok(!rollbackDdb.items.get("ENTITY#TASK|TASK#roll-1"));
+  assert.ok(!rollbackDdb.items.get("TASK#roll-1|ASSIGNMENT#a@mydgv.com"));
+  assert.strictEqual(
+    rollbackDdb.items.get("USER#a@mydgv.com|ASSIGNMENT#roll-1").type,
+    "OTHER"
+  );
 
   const lockedDdb = createMemoryDdb();
   lockedDdb.items.set("ENTITY#PROJECT|PROJECT#p-lock", {
