@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import DurationHoursInput from "./DurationHoursInput";
-import { HH_MM_HELPER, HH_MM_PLACEHOLDER } from "../utils/durationHours";
+import {
+  HH_MM_HELPER,
+  HH_MM_PLACEHOLDER,
+  prepareDurationSubmit,
+} from "../utils/durationHours";
 
 function Harness({ initial = "", onChange = jest.fn() }) {
   const [value, setValue] = useState(initial);
@@ -76,6 +80,79 @@ test("increment minutes from 23:59 rolls to 24:00", () => {
   render(<Harness initial="23:59" onChange={onChange} />);
   fireEvent.click(screen.getByRole("button", { name: "Increase Total Actual Hours minutes" }));
   expect(onChange).toHaveBeenLastCalledWith("24:00");
+});
+
+function SubmitHarness() {
+  const [value, setValue] = useState("");
+  const [saved, setSaved] = useState(null);
+  const [error, setError] = useState("");
+  return (
+    <div>
+      <DurationHoursInput
+        id="actual-hours"
+        label="Total Actual Hours"
+        value={value}
+        onChange={setValue}
+      />
+      <button
+        type="button"
+        onClick={() => {
+          const prepared = prepareDurationSubmit(value);
+          if (!prepared.ok) {
+            setError(prepared.error);
+            setSaved(null);
+            if (prepared.normalized) setValue(prepared.normalized);
+            return;
+          }
+          setError("");
+          setValue(prepared.normalized);
+          setSaved(prepared);
+        }}
+      >
+        Save hours
+      </button>
+      <output data-testid="saved">{saved ? String(saved.value) : ""}</output>
+      <output data-testid="error">{error}</output>
+    </div>
+  );
+}
+
+test("first submit normalizes 2:3 without a preceding blur", () => {
+  render(<SubmitHarness />);
+  fireEvent.change(screen.getByLabelText("Total Actual Hours hours"), {
+    target: { value: "2" },
+  });
+  fireEvent.change(screen.getByLabelText("Total Actual Hours minutes"), {
+    target: { value: "3" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
+  expect(screen.getByLabelText("Total Actual Hours hours")).toHaveValue("02");
+  expect(screen.getByLabelText("Total Actual Hours minutes")).toHaveValue("03");
+  expect(screen.getByTestId("saved")).toHaveTextContent("2.05");
+  expect(screen.getByTestId("error")).toHaveTextContent("");
+});
+
+test("first submit treats 8: as 08:00 and rejects invalid minutes", () => {
+  const { unmount } = render(<SubmitHarness />);
+  fireEvent.change(screen.getByLabelText("Total Actual Hours hours"), {
+    target: { value: "8" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
+  expect(screen.getByTestId("saved")).toHaveTextContent("8");
+  expect(screen.getByLabelText("Total Actual Hours hours")).toHaveValue("08");
+  expect(screen.getByLabelText("Total Actual Hours minutes")).toHaveValue("00");
+  unmount();
+
+  render(<SubmitHarness />);
+  fireEvent.change(screen.getByLabelText("Total Actual Hours hours"), {
+    target: { value: "1" },
+  });
+  fireEvent.change(screen.getByLabelText("Total Actual Hours minutes"), {
+    target: { value: "60" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save hours" }));
+  expect(screen.getByTestId("saved")).toHaveTextContent("");
+  expect(screen.getByTestId("error").textContent).not.toBe("");
 });
 
 test("increment and decrement hours and minutes", () => {

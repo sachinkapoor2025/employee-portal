@@ -41,6 +41,7 @@ const shiftCatalog = require("./shiftCatalog");
 const costRates = require("./costRates");
 const taskCosting = require("./taskCosting");
 const costingReports = require("./costingReports");
+const legacyBaseline = require("./legacyBaseline");
 const myActivity = require("./myActivity");
 const { notifyBlockerReported, notifyBlockerResolved } = require("./taskBlockerNotify");
 const {
@@ -261,6 +262,15 @@ function assignmentRecord(taskId, assignment) {
     ...(assignment.actualHours == null
       ? {}
       : { actualHours: assignment.actualHours }),
+    ...(Object.prototype.hasOwnProperty.call(assignment, "submittedAt")
+      ? { submittedAt: assignment.submittedAt || null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(assignment, "reviewNotifyPending")
+      ? { reviewNotifyPending: assignment.reviewNotifyPending === true ? true : null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(assignment, "reviewNotifySubmissionId")
+      ? { reviewNotifySubmissionId: assignment.reviewNotifySubmissionId || null }
+      : {}),
     ...(assignment.supersededByTaskId
       ? {
           supersededByTaskId: assignment.supersededByTaskId,
@@ -285,6 +295,57 @@ async function writeAssignment(taskId, assignment, options = {}) {
     SK: item.SK,
   });
   return result.item;
+}
+
+async function clearReviewNotifyPending(taskId, email) {
+  const targetEmail = escalation.normalizeEmail(email);
+  const stored = await loadAssignmentItems(taskId);
+  const target = (stored || []).find(
+    (item) => escalation.normalizeEmail(item.email) === targetEmail && !item.removed
+  );
+  if (!target || target.reviewNotifyPending !== true) return;
+  target.reviewNotifyPending = null;
+  await writeAssignment(taskId, target);
+}
+
+async function deliverReviewSubmittedNotice({ task, email, remark }) {
+  let projectName = "";
+  let employeeName = "";
+  try {
+    projectName = (await getProjectName(task.projectId)) || "";
+  } catch (err) {
+    console.error("TASK_REVIEW_PROJECT_NAME_ERROR", err?.name);
+  }
+  try {
+    const profile = await getAssigneeProfile(email);
+    employeeName =
+      escalation.pickPersonName(profile?.name) ||
+      escalation.displayNameFromEmail(email);
+  } catch (err) {
+    employeeName = escalation.displayNameFromEmail(email);
+    console.error("TASK_REVIEW_EMPLOYEE_NAME_ERROR", err?.name);
+  }
+  const result = await notifyTaskSubmittedForReview({
+    ddb,
+    tableName: process.env.WORK_TABLE,
+    accessTable: process.env.USER_ACCESS_TABLE,
+    task,
+    employeeEmail: email,
+    employeeName,
+    completionRemark: remark,
+    projectName,
+  });
+  if (result && result.status === "SENT") {
+    try {
+      await clearReviewNotifyPending(task.taskId, email);
+    } catch (err) {
+      console.error(
+        "TASK_REVIEW_NOTIFY_CLEAR_ERROR",
+        JSON.stringify({ taskId: task.taskId, name: err?.name || "" })
+      );
+    }
+  }
+  return result;
 }
 
 async function resolveAssignments(task) {
@@ -321,6 +382,7 @@ function snapshotTask(task, assignments) {
       removed: !!a.removed,
       plannedHours: a.plannedHours == null ? null : a.plannedHours,
       actualHours: a.actualHours == null ? null : a.actualHours,
+      submittedAt: a.submittedAt || null,
       supersededByTaskId: a.supersededByTaskId || null,
       supersededAt: a.supersededAt || null,
       supersededReason: a.supersededReason || null,
@@ -505,6 +567,43 @@ async function persistAssignmentsAndTask(task, assignments, options = {}) {
     return merged;
   }
   const costComplete = options.costComplete || null;
+  const costSubmit = options.costSubmit || null;
+  const costRetire = options.costRetire || [];
+  const handledEmails = new Set();
+  for (const retired of costRetire) {
+    const email = escalation.normalizeEmail(retired.email);
+    if (!email) continue;
+    handledEmails.add(email);
+    await taskCosting.retireSubmissionBasis({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      assignmentItem: assignmentRecord(task.taskId, retired.assignment),
+      task,
+      assignment: retired.assignment,
+      nowIso: retired.nowIso,
+    });
+  }
+  const submitEmail = costSubmit
+    ? escalation.normalizeEmail(costSubmit.assignment?.email)
+    : "";
+  const submitRow =
+    costSubmit && submitEmail
+      ? assignments.find(
+          (a) => escalation.normalizeEmail(a.email) === submitEmail
+        )
+      : null;
+  if (submitRow) {
+    handledEmails.add(submitEmail);
+    await taskCosting.persistSubmissionBasis({
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      assignmentItem: assignmentRecord(task.taskId, submitRow),
+      task,
+      assignment: submitRow,
+      project: costSubmit.project,
+      nowIso: costSubmit.nowIso,
+    });
+  }
   const costEmail = costComplete
     ? escalation.normalizeEmail(costComplete.assignment?.email)
     : "";
@@ -515,19 +614,19 @@ async function persistAssignmentsAndTask(task, assignments, options = {}) {
         )
       : null;
   if (costRow) {
+    handledEmails.add(costEmail);
     await taskCosting.persistCompletionWithCost({
       ddb,
       tableName: process.env.WORK_TABLE,
       assignmentItem: assignmentRecord(task.taskId, costRow),
       task,
       assignment: costRow,
-      project: costComplete.project,
       approvedBy: costComplete.approvedBy,
       nowIso: costComplete.nowIso,
     });
   }
   for (const a of assignments) {
-    if (costRow && escalation.normalizeEmail(a.email) === costEmail) continue;
+    if (handledEmails.has(escalation.normalizeEmail(a.email))) continue;
     await writeAssignment(task.taskId, a, options);
   }
   const merged = snapshotTask(task, assignments);
@@ -1513,6 +1612,18 @@ exports.handler = async (event) => {
       });
       return json(result.statusCode, result.body);
     }
+    if (legacyBaseline.legacyPreviewPathMatch(path) && method === "GET") {
+      const result = await legacyBaseline.handlePreviewLegacyBaseline({
+        ...costRatesCtx,
+        nowIso: new Date().toISOString(),
+        limit: costRatesCtx.query.limit,
+        cursor: costRatesCtx.query.cursor,
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (legacyBaseline.legacyPreviewPathMatch(path)) {
+      return json(405, { error: "Method not allowed" });
+    }
     const costingProject = costingReports.costingProjectPathMatch(
       path,
       event.pathParameters
@@ -2342,7 +2453,10 @@ exports.handler = async (event) => {
       let completionTransitioned = false;
       let completedAssignment = null;
       let reviewSubmitted = null;
+      let headerRepair = null;
       let costAssignment = null;
+      let submissionAssignment = null;
+      const retiredCostEmails = [];
       const merged = {
         ...existing,
         ...allowed,
@@ -2538,6 +2652,14 @@ exports.handler = async (event) => {
             target.completedDate = null;
             target.completedZone = null;
           }
+          if (
+            escalation.isReview(prev) &&
+            !escalation.isReview(nextStatus) &&
+            !escalation.isComplete(nextStatus)
+          ) {
+            retiredCostEmails.push(escalation.normalizeEmail(target.email));
+            target.reviewNotifyPending = null;
+          }
           if (prev !== nextStatus) {
             await appendActivity(
               taskId,
@@ -2648,6 +2770,7 @@ exports.handler = async (event) => {
                 });
               }
               mine.actualHours = parsedActual.value;
+              mine.submittedAt = nowIso;
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(
                 mine,
@@ -2664,23 +2787,37 @@ exports.handler = async (event) => {
               mine.recordedZone = frozenZone;
               mine.highestZone = escalation.maxZone(mine.highestZone, frozenZone);
               if (prev !== "REVIEW") {
-                await appendActivity(
-                  taskId,
-                  "status_changed",
-                  `${mine.email}: ${statusLabel(prev)} → ${statusLabel("REVIEW")}`,
-                  user.email,
-                  { assignmentEmail: mine.email }
-                );
                 reviewSubmitted = {
                   email: mine.email,
                   remark,
+                  previousStatus: prev,
                 };
+                submissionAssignment = mine;
               }
             } else if (!mayAdminMutate && nextStatus === "DONE") {
               if (currentStatus === "REVIEW") {
-                return json(400, {
-                  error: "This assignment is already in review",
+                const basis = await taskCosting.getAssignmentCost(
+                  ddb,
+                  process.env.WORK_TABLE,
+                  taskId,
+                  mine.email
+                );
+                const decision = taskCosting.reviewResubmitDecision({
+                  basis,
+                  actualHoursInput,
                 });
+                if (!decision.ok) {
+                  return json(decision.statusCode, {
+                    error: decision.error,
+                    code: decision.code,
+                  });
+                }
+                headerRepair = {
+                  email: mine.email,
+                  remark: mine.completionRemark || "",
+                  previousStatus: currentStatus,
+                  reviewNotifyPending: mine.reviewNotifyPending === true,
+                };
               }
             } else {
               if (nextStatus === "DONE") {
@@ -2886,10 +3023,20 @@ exports.handler = async (event) => {
         costAssignment &&
         mayAdminMutate &&
         escalation.isComplete(costAssignment.status);
+      const shouldSubmit = Boolean(submissionAssignment);
       try {
-        const project = shouldCost
-          ? await getProjectItem(merged.projectId)
-          : null;
+        const project =
+          shouldCost || shouldSubmit
+            ? await getProjectItem(merged.projectId)
+            : null;
+        const retireRows = retiredCostEmails
+          .map((email) =>
+            assignments.find(
+              (a) => escalation.normalizeEmail(a.email) === email && !a.removed
+            )
+          )
+          .filter(Boolean)
+          .map((assignment) => ({ email: assignment.email, assignment, nowIso }));
         saved = await persistAssignmentsAndTask(merged, assignments, {
           costComplete: shouldCost
             ? {
@@ -2899,13 +3046,21 @@ exports.handler = async (event) => {
                 nowIso,
               }
             : null,
+          costSubmit: shouldSubmit
+            ? {
+                assignment: submissionAssignment,
+                project,
+                nowIso,
+              }
+            : null,
+          costRetire: retireRows,
         });
       } catch (err) {
         if (err instanceof PersistConflictError) throw err;
-        if (err.statusCode === 400) {
-          return json(400, { error: err.message, code: err.code });
+        if (err.statusCode === 400 || err.statusCode === 409) {
+          return json(err.statusCode, { error: err.message, code: err.code });
         }
-        if (shouldCost) {
+        if (shouldCost || shouldSubmit || retiredCostEmails.length) {
           console.error(
             "TASK_COST_SNAPSHOT_ERROR",
             JSON.stringify({ taskId, name: err?.name || "" })
@@ -2917,6 +3072,32 @@ exports.handler = async (event) => {
         }
         throw err;
       }
+      if (reviewSubmitted) {
+        await appendActivity(
+          taskId,
+          "status_changed",
+          `${reviewSubmitted.email}: ${statusLabel(reviewSubmitted.previousStatus)} → ${statusLabel("REVIEW")}`,
+          user.email,
+          { assignmentEmail: reviewSubmitted.email }
+        );
+      } else if (headerRepair) {
+        const prior = await listByPrefix(`TASK#${taskId}`, "ACTIVITY#");
+        const alreadyRecorded = prior.some(
+          (item) =>
+            item.action === "status_changed" &&
+            item.assignmentEmail === headerRepair.email &&
+            /→ IN REVIEW/.test(String(item.detail || ""))
+        );
+        if (!alreadyRecorded) {
+          await appendActivity(
+            taskId,
+            "status_changed",
+            `${headerRepair.email}: recovered submission header → ${statusLabel("REVIEW")}`,
+            user.email,
+            { assignmentEmail: headerRepair.email }
+          );
+        }
+      }
       if (assignmentPlan?.postponementCount) {
         await notifyAssignmentPlanPostponement({
           ddb,
@@ -2927,33 +3108,15 @@ exports.handler = async (event) => {
           extraRecipients: [user.email],
         });
       }
-      if (reviewSubmitted) {
+      const reviewNotice = reviewSubmitted || (
+        headerRepair?.reviewNotifyPending ? headerRepair : null
+      );
+      if (reviewNotice) {
         try {
-          let projectName = "";
-          let employeeName = "";
-          try {
-            projectName = (await getProjectName(saved.projectId)) || "";
-          } catch (err) {
-            console.error("TASK_REVIEW_PROJECT_NAME_ERROR", err?.name);
-          }
-          try {
-            const profile = await getAssigneeProfile(reviewSubmitted.email);
-            employeeName =
-              escalation.pickPersonName(profile?.name) ||
-              escalation.displayNameFromEmail(reviewSubmitted.email);
-          } catch (err) {
-            employeeName = escalation.displayNameFromEmail(reviewSubmitted.email);
-            console.error("TASK_REVIEW_EMPLOYEE_NAME_ERROR", err?.name);
-          }
-          await notifyTaskSubmittedForReview({
-            ddb,
-            tableName: process.env.WORK_TABLE,
-            accessTable: process.env.USER_ACCESS_TABLE,
+          await deliverReviewSubmittedNotice({
             task: saved,
-            employeeEmail: reviewSubmitted.email,
-            employeeName,
-            completionRemark: reviewSubmitted.remark,
-            projectName,
+            email: reviewNotice.email,
+            remark: reviewNotice.remark,
           });
         } catch (err) {
           console.error(

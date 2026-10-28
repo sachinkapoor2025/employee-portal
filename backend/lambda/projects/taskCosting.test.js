@@ -13,8 +13,16 @@ const {
   reportingDateIst,
   ensureAssignmentCost,
   persistCompletionWithCost,
+  persistSubmissionBasis,
+  retireSubmissionBasis,
+  reviewResubmitDecision,
+  REVIEW_RECOVERY_MESSAGE,
   getAssignmentCost,
   roundUsd,
+  BASIS_ACTIVE,
+  BASIS_FINAL,
+  BASIS_RETURNED,
+  STATUS_SUBMISSION_BASIS,
 } = require("./taskCosting");
 const {
   handleCreateDesignation,
@@ -45,6 +53,12 @@ function evalCond(existing, cond, item) {
   if (cond.includes("attribute_exists(PK)") && !existing) return false;
   if (cond.includes("#status = :missing")) {
     return existing && existing.status === "MISSING_RATE";
+  }
+  if (cond.includes("#basis = :active")) {
+    return existing && existing.basisState === "ACTIVE";
+  }
+  if (cond.includes("#basis = :returned")) {
+    return existing && existing.basisState === "RETURNED";
   }
   return true;
 }
@@ -548,6 +562,18 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     status: "DONE",
     completedAt: "2026-02-02T00:00:00.000Z",
   };
+  const submitted = await persistSubmissionBasis({
+    ddb: atomic,
+    tableName: WORK,
+    assignmentItem: { ...storedAssignment, status: "REVIEW" },
+    task: { taskId: "t-atomic", projectId: "p1" },
+    assignment: { ...storedAssignment, status: "REVIEW", actualHours: 2 },
+    project: { projectType: "INTERNAL" },
+    nowIso: "2026-02-01T12:00:00.000Z",
+  });
+  assert.strictEqual(submitted.status, STATUS_MISSING_RATE);
+  assert.strictEqual(submitted.basisState, BASIS_ACTIVE);
+  assert.strictEqual(submitted.reason, REASON.HISTORICAL_DESIGNATION_UNKNOWN);
   atomic.transactFails = 1;
   let atomicErr = null;
   try {
@@ -557,7 +583,6 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
       assignmentItem: outgoingAssignment,
       task: { taskId: "t-atomic", projectId: "p1" },
       assignment: outgoingAssignment,
-      project: { projectType: "INTERNAL" },
       approvedBy: "admin@mydgv.com",
       nowIso: "2026-02-02T00:00:00.000Z",
     });
@@ -569,7 +594,10 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     atomic.items[keyOf(WORK, storedAssignment.PK, storedAssignment.SK)].status,
     "REVIEW"
   );
-  assert.ok(!atomic.items[keyOf(WORK, "TASK#t-atomic", "COST#rahul@mydgv.com")]);
+  assert.strictEqual(
+    atomic.items[keyOf(WORK, "TASK#t-atomic", "COST#rahul@mydgv.com")].basisState,
+    BASIS_ACTIVE
+  );
 
   const atomicOk = await persistCompletionWithCost({
     ddb: atomic,
@@ -577,11 +605,11 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     assignmentItem: outgoingAssignment,
     task: { taskId: "t-atomic", projectId: "p1" },
     assignment: outgoingAssignment,
-    project: { projectType: "INTERNAL" },
     approvedBy: "admin@mydgv.com",
     nowIso: "2026-02-02T00:00:00.000Z",
   });
   assert.strictEqual(atomicOk.status, STATUS_MISSING_RATE);
+  assert.strictEqual(atomicOk.basisState, BASIS_FINAL);
   assert.strictEqual(atomicOk.reason, REASON.HISTORICAL_DESIGNATION_UNKNOWN);
   assert.strictEqual(
     atomic.items[keyOf(WORK, storedAssignment.PK, storedAssignment.SK)].status,
@@ -599,6 +627,238 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   });
   assert.strictEqual(retryAtomic.status, STATUS_MISSING_RATE);
   assert.strictEqual(retryAtomic.createdAt, atomicOk.createdAt);
+
+  const missingBasis = memoryDdb(seedAccess());
+  let missingBasisErr = null;
+  try {
+    await persistCompletionWithCost({
+      ddb: missingBasis,
+      tableName: WORK,
+      assignmentItem: outgoingAssignment,
+      task: { taskId: "t-atomic", projectId: "p1" },
+      assignment: outgoingAssignment,
+      approvedBy: "admin@mydgv.com",
+      nowIso: "2026-02-02T00:00:00.000Z",
+    });
+  } catch (err) {
+    missingBasisErr = err;
+  }
+  assert.strictEqual(missingBasisErr.code, "SUBMISSION_BASIS_REQUIRED");
+
+  const rates = memoryDdb(seedAccess());
+  const writer = await handleCreateDesignation({
+    user: SUPER,
+    ddb: rates,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-10-01T00:00:00.000Z",
+    body: { name: "Writer", internalHourlyRate: 1, externalHourlyRate: 3 },
+  });
+  assert.strictEqual(writer.statusCode, 201);
+  const writerId = writer.body.designation.designationId;
+  const hired = await handlePutEmployee({
+    user: SUPER,
+    email: "rahul@mydgv.com",
+    ddb: rates,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-10-01T00:00:00.000Z",
+    body: { designationId: writerId, internalHourlyRate: 1, externalHourlyRate: null },
+  });
+  assert.strictEqual(hired.statusCode, 201);
+  const project = { projectType: "INTERNAL" };
+  const octTask = { taskId: "t-oct", projectId: "p1", createdAt: "2026-10-01T00:00:00.000Z" };
+  const octStored = {
+    PK: "TASK#t-oct",
+    SK: "ASSIGNMENT#rahul@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-oct",
+    email: "rahul@mydgv.com",
+    status: "IN_PROGRESS",
+    assignedAt: "2026-10-01T00:00:00.000Z",
+    actualHours: 6,
+  };
+  rates.items[keyOf(WORK, octStored.PK, octStored.SK)] = { ...octStored };
+  const octSubmit = await persistSubmissionBasis({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: { ...octStored, status: "REVIEW", submittedAt: "2026-10-28T04:00:00.000Z" },
+    task: octTask,
+    assignment: { ...octStored, status: "REVIEW", actualHours: 6 },
+    project,
+    nowIso: "2026-10-28T04:00:00.000Z",
+  });
+  assert.strictEqual(octSubmit.status, STATUS_SUBMISSION_BASIS);
+  assert.strictEqual(octSubmit.basisState, BASIS_ACTIVE);
+  assert.strictEqual(octSubmit.hourlyRateUsd, 1);
+  assert.strictEqual(octSubmit.amountUsd, 6);
+  assert.strictEqual(octSubmit.actualHours, 6);
+  assert.strictEqual(octSubmit.submittedAt, "2026-10-28T04:00:00.000Z");
+  assert.ok(octSubmit.rateVersionId);
+  assert.ok(octSubmit.rateSource);
+  const raised = await handlePutEmployee({
+    user: SUPER,
+    email: "rahul@mydgv.com",
+    ddb: rates,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-10-29T04:00:00.000Z",
+    body: { internalHourlyRate: 2, externalHourlyRate: null },
+  });
+  assert.strictEqual(raised.statusCode, 200);
+  const unchanged = await persistSubmissionBasis({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: { ...octStored, status: "REVIEW", actualHours: 9 },
+    task: octTask,
+    assignment: { ...octStored, status: "REVIEW", actualHours: 9 },
+    project,
+    nowIso: "2026-10-29T05:00:00.000Z",
+  });
+  assert.strictEqual(unchanged.submissionId, octSubmit.submissionId);
+  assert.strictEqual(unchanged.hourlyRateUsd, 1);
+  assert.strictEqual(unchanged.amountUsd, 6);
+  assert.strictEqual(unchanged.submittedAt, "2026-10-28T04:00:00.000Z");
+  assert.strictEqual(
+    rates.items[keyOf(WORK, octStored.PK, octStored.SK)].submittedAt,
+    "2026-10-28T04:00:00.000Z"
+  );
+  const approved = await persistCompletionWithCost({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: {
+      ...octStored,
+      status: "DONE",
+      actualHours: 9,
+      completedAt: "2026-10-30T04:00:00.000Z",
+    },
+    task: octTask,
+    assignment: {
+      ...octStored,
+      status: "DONE",
+      actualHours: 9,
+      completedAt: "2026-10-30T04:00:00.000Z",
+    },
+    approvedBy: "boss@mydgv.com",
+    nowIso: "2026-10-30T04:00:00.000Z",
+  });
+  assert.strictEqual(approved.status, STATUS_COSTED);
+  assert.strictEqual(approved.basisState, BASIS_FINAL);
+  assert.strictEqual(approved.hourlyRateUsd, 1);
+  assert.strictEqual(approved.amountUsd, 6);
+  assert.strictEqual(approved.actualHours, 6);
+  assert.strictEqual(approved.rateVersionId, octSubmit.rateVersionId);
+  assert.strictEqual(approved.rateSource, octSubmit.rateSource);
+  assert.strictEqual(approved.finalizedSubmissionId, octSubmit.submissionId);
+  assert.strictEqual(approved.submittedAt, "2026-10-28T04:00:00.000Z");
+  assert.strictEqual(
+    rates.items[keyOf(WORK, octStored.PK, octStored.SK)].actualHours,
+    6
+  );
+
+  const returnedTask = { taskId: "t-return", projectId: "p1" };
+  const returnedStored = {
+    ...octStored,
+    PK: "TASK#t-return",
+    taskId: "t-return",
+    status: "REVIEW",
+    actualHours: 6,
+  };
+  rates.items[keyOf(WORK, returnedStored.PK, returnedStored.SK)] = {
+    ...returnedStored,
+  };
+  const firstPass = await persistSubmissionBasis({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: returnedStored,
+    task: returnedTask,
+    assignment: returnedStored,
+    project,
+    nowIso: "2026-10-28T04:00:00.000Z",
+  });
+  assert.strictEqual(firstPass.amountUsd, 6);
+  await retireSubmissionBasis({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: { ...returnedStored, status: "IN_PROGRESS" },
+    task: returnedTask,
+    assignment: { ...returnedStored, status: "IN_PROGRESS" },
+    nowIso: "2026-10-29T06:00:00.000Z",
+  });
+  const retired = await getAssignmentCost(
+    rates,
+    WORK,
+    "t-return",
+    "rahul@mydgv.com"
+  );
+  assert.strictEqual(retired.basisState, BASIS_RETURNED);
+  assert.strictEqual(retired.amountUsd, 6);
+  assert.strictEqual(retired.submittedAt, "2026-10-28T04:00:00.000Z");
+  assert.strictEqual(
+    rates.items[keyOf(WORK, returnedStored.PK, returnedStored.SK)].submittedAt,
+    "2026-10-28T04:00:00.000Z"
+  );
+  const resubmit = await persistSubmissionBasis({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: { ...returnedStored, status: "REVIEW", actualHours: 4 },
+    task: returnedTask,
+    assignment: { ...returnedStored, status: "REVIEW", actualHours: 4 },
+    project,
+    nowIso: "2026-10-30T04:00:00.000Z",
+  });
+  assert.strictEqual(resubmit.hourlyRateUsd, 2);
+  assert.strictEqual(resubmit.actualHours, 4);
+  assert.strictEqual(resubmit.amountUsd, 8);
+  assert.notStrictEqual(resubmit.rateVersionId, firstPass.rateVersionId);
+  assert.notStrictEqual(resubmit.submissionId, firstPass.submissionId);
+  const history = Object.values(rates.items).filter(
+    (item) => item.SK && String(item.SK).startsWith("COSTHIST#")
+  );
+  const originalHistory = history.find((item) => item.submissionId === firstPass.submissionId);
+  assert.ok(originalHistory);
+  assert.strictEqual(originalHistory.submittedAt, "2026-10-28T04:00:00.000Z");
+  assert.strictEqual(resubmit.submittedAt, "2026-10-30T04:00:00.000Z");
+  const resubmitApproved = await persistCompletionWithCost({
+    ddb: rates,
+    tableName: WORK,
+    assignmentItem: {
+      ...returnedStored,
+      status: "DONE",
+      actualHours: 4,
+      completedAt: "2026-10-30T08:00:00.000Z",
+    },
+    task: returnedTask,
+    assignment: {
+      ...returnedStored,
+      status: "DONE",
+      actualHours: 4,
+      completedAt: "2026-10-30T08:00:00.000Z",
+    },
+    approvedBy: "boss@mydgv.com",
+    nowIso: "2026-10-30T08:00:00.000Z",
+  });
+  assert.strictEqual(resubmitApproved.amountUsd, 8);
+  assert.strictEqual(resubmitApproved.finalizedSubmissionId, resubmit.submissionId);
+
+  const missingDecision = reviewResubmitDecision({
+    basis: null,
+    actualHoursInput: 6,
+  });
+  assert.strictEqual(missingDecision.ok, false);
+  assert.strictEqual(missingDecision.code, "SUBMISSION_BASIS_REQUIRED");
+  assert.strictEqual(missingDecision.error, REVIEW_RECOVERY_MESSAGE);
+  const lockedDecision = reviewResubmitDecision({
+    basis: { basisState: "ACTIVE", actualHours: 6, status: "SUBMISSION_BASIS" },
+    actualHoursInput: 4,
+  });
+  assert.strictEqual(lockedDecision.code, "SUBMISSION_HOURS_LOCKED");
+  const repairDecision = reviewResubmitDecision({
+    basis: { basisState: "ACTIVE", actualHours: 6, status: "SUBMISSION_BASIS" },
+    actualHoursInput: 6,
+  });
+  assert.strictEqual(repairDecision.repair, true);
+  assert.strictEqual(repairDecision.actualHours, 6);
 
   console.log("taskCosting tests passed");
 })().catch((err) => {

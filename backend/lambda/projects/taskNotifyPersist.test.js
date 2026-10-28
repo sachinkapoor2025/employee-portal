@@ -6,12 +6,37 @@ const {
   ASSIGNMENT_BLOCKER_ATTRS,
   overlayStoredAttrs,
   overlayMissingAttrs,
+  overlayPreservedSubmission,
   putTaskCopiesSafe,
   putAssignmentSafe,
   putCreatedTaskRecords,
   assertPersistOk,
   PersistConflictError,
 } = require("./taskNotifyPersist");
+
+const preserved = overlayPreservedSubmission(
+  { PK: "TASK#t", SK: "ASSIGNMENT#a@mydgv.com", status: "REVIEW" },
+  {
+    submittedAt: "2026-10-28T04:00:00.000Z",
+    reviewNotifyPending: true,
+    reviewNotifySubmissionId: "sub-1",
+  }
+);
+assert.strictEqual(preserved.submittedAt, "2026-10-28T04:00:00.000Z");
+assert.strictEqual(preserved.reviewNotifyPending, true);
+assert.strictEqual(preserved.reviewNotifySubmissionId, "sub-1");
+const cleared = overlayPreservedSubmission(
+  { submittedAt: null, reviewNotifyPending: null },
+  { submittedAt: "2026-10-28T04:00:00.000Z", reviewNotifyPending: true }
+);
+assert.strictEqual(cleared.submittedAt, undefined);
+assert.strictEqual(cleared.reviewNotifyPending, undefined);
+const replaced = overlayPreservedSubmission(
+  { submittedAt: "2026-10-30T04:00:00.000Z" },
+  { submittedAt: "2026-10-28T04:00:00.000Z", reviewNotifyPending: true }
+);
+assert.strictEqual(replaced.submittedAt, "2026-10-30T04:00:00.000Z");
+assert.strictEqual(replaced.reviewNotifyPending, true);
 
 function conditionalFail() {
   const err = new Error("The conditional request failed");

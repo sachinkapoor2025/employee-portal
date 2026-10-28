@@ -3,8 +3,7 @@ import {
   HH_MM_HELPER,
   HH_MM_PLACEHOLDER,
   formatHhMm,
-  padHours,
-  padMinutes,
+  normalizeHhMmInput,
   stepDuration,
 } from "../utils/durationHours";
 
@@ -117,25 +116,8 @@ export default function DurationHoursInput({
     commit(parts.hours, next);
   };
 
-  const handleHoursBlur = () => {
-    if (parts.hours === "" && parts.minutes === "") return;
-    const hours = parts.hours === "" ? "00" : padHours(parts.hours);
-    const mins = parts.minutes === "" ? 0 : Number(parts.minutes);
-    if (!Number.isFinite(mins) || mins > 59) {
-      commit(hours, parts.minutes || "00");
-      return;
-    }
-    commit(hours, padMinutes(mins));
-  };
-
-  const handleMinutesBlur = () => {
-    if (parts.hours === "" && parts.minutes === "") return;
-    const mins = parts.minutes === "" ? 0 : Number(parts.minutes);
-    if (!Number.isFinite(mins) || mins > 59) {
-      commit(parts.hours || "00", parts.minutes);
-      return;
-    }
-    commit(parts.hours || "00", padMinutes(mins));
+  const handleBlur = () => {
+    onChange(normalizeHhMmInput(value));
   };
 
   const nudge = (unit, delta) => {
@@ -175,7 +157,7 @@ export default function DurationHoursInput({
             value={parts.hours}
             style={segmentInput}
             onChange={(e) => handleHoursChange(e.target.value)}
-            onBlur={handleHoursBlur}
+            onBlur={handleBlur}
             onWheel={onWheel("hours")}
           />
           <span
@@ -200,7 +182,7 @@ export default function DurationHoursInput({
             value={parts.minutes}
             style={segmentInput}
             onChange={(e) => handleMinutesChange(e.target.value)}
-            onBlur={handleMinutesBlur}
+            onBlur={handleBlur}
             onWheel={onWheel("minutes")}
           />
           <Stepper

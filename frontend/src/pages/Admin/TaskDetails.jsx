@@ -23,7 +23,7 @@ import {
   ACTUAL_REQUIRED,
   PLANNED_HELPER,
   formatHours,
-  parseHoursInput,
+  prepareHoursSubmit,
   parseRequiredHours,
 } from "../../utils/taskTime";
 import {
@@ -862,7 +862,10 @@ export default function TaskDetails() {
     setCompleteProofError(proofErr);
     if (proofErr) setAttachmentError("");
     setCompleteRemarkError(remarkErr);
-    const actual = parseHoursInput(actualHoursInput);
+    const actual = prepareHoursSubmit(actualHoursInput);
+    if (actual.normalized && actual.normalized !== actualHoursInput) {
+      setActualHoursInput(actual.normalized);
+    }
     const actualErr = actual.ok
       ? ""
       : actual.empty
@@ -898,7 +901,10 @@ export default function TaskDetails() {
   };
 
   const handleSavePlannedAndStart = async () => {
-    const parsed = parseHoursInput(plannedHoursInput);
+    const parsed = prepareHoursSubmit(plannedHoursInput);
+    if (parsed.normalized && parsed.normalized !== plannedHoursInput) {
+      setPlannedHoursInput(parsed.normalized);
+    }
     if (!parsed.ok) {
       setPlannedHoursError(parsed.empty ? HH_MM_INVALID : parsed.error);
       return;

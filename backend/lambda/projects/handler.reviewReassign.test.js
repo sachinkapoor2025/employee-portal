@@ -214,6 +214,32 @@ function setup({
       actualHours: 2,
       removed: false,
     });
+    const seededStatus = assignmentStatuses?.[email] || assignmentStatus;
+    if (seededStatus === "REVIEW" || seededStatus === "DONE") {
+      const basis = {
+        type: "ASSIGNMENT_COST",
+        status: "SUBMISSION_BASIS",
+        basisState: "ACTIVE",
+        reason: "EMPLOYEE_OVERRIDE",
+        submissionId: `sub-${email}`,
+        submittedAt: "2026-10-28T04:00:00.000Z",
+        taskId: TASK_ID,
+        email,
+        projectType: projectType || null,
+        actualHours: 2,
+        hourlyRateUsd: 1,
+        amountUsd: 2,
+        rateSource: "EMPLOYEE_OVERRIDE",
+        currency: "USD",
+        createdAt: "2026-10-28T04:00:00.000Z",
+      };
+      ddb.seed(WORK, { ...basis, PK: `TASK#${TASK_ID}`, SK: `COST#${email}` });
+      ddb.seed(WORK, {
+        ...basis,
+        PK: `USER#${email}`,
+        SK: `ASSIGNMENT_COST#${TASK_ID}`,
+      });
+    }
   }
   setClientsForTests({ ddb });
   return { ddb };
@@ -715,7 +741,10 @@ async function run() {
     );
     assert.strictEqual(blocked.statusCode, 409);
     assert.strictEqual(blocked.body.code, "ASSIGNMENT_SUPERSEDED");
-    assert.ok(!costItem(ddb, PRIYA, TASK_ID));
+    const sourceCost = costItem(ddb, PRIYA, TASK_ID);
+    assert.ok(sourceCost);
+    assert.notStrictEqual(sourceCost.status, "COSTED");
+    assert.notStrictEqual(sourceCost.basisState, "FINAL");
     const followRow = ddb.items.find(
       (row) =>
         row.TableName === WORK &&
@@ -725,6 +754,35 @@ async function run() {
     followRow.Item.status = "REVIEW";
     followRow.Item.actualHours = 3;
     followRow.Item.completionRemark = "Revised.";
+    const followBasis = {
+      type: "ASSIGNMENT_COST",
+      status: "SUBMISSION_BASIS",
+      basisState: "ACTIVE",
+      reason: "EMPLOYEE_OVERRIDE",
+      submissionId: "follow-submit",
+      submittedAt: "2026-10-30T04:00:00.000Z",
+      taskId: created.body.taskId,
+      email: PRIYA,
+      projectType: "INTERNAL",
+      actualHours: 3,
+      hourlyRateUsd: 1,
+      amountUsd: 3,
+      rateSource: "EMPLOYEE_OVERRIDE",
+      rateVersionId: "follow-version",
+      currency: "USD",
+      sourceTaskId: TASK_ID,
+      createdAt: "2026-10-30T04:00:00.000Z",
+    };
+    ddb.seed(WORK, {
+      ...followBasis,
+      PK: `TASK#${created.body.taskId}`,
+      SK: `COST#${PRIYA}`,
+    });
+    ddb.seed(WORK, {
+      ...followBasis,
+      PK: `USER#${PRIYA}`,
+      SK: `ASSIGNMENT_COST#${created.body.taskId}`,
+    });
     for (const row of ddb.items) {
       if (
         row.TableName === WORK &&
@@ -748,10 +806,14 @@ async function run() {
     const followCost = costItem(ddb, PRIYA, created.body.taskId);
     assert.ok(followCost);
     assert.strictEqual(followCost.status, "COSTED");
-    assert.strictEqual(followCost.hourlyRateUsd, 2.25);
-    assert.strictEqual(followCost.amountUsd, 6.75);
+    assert.strictEqual(followCost.hourlyRateUsd, 1);
+    assert.strictEqual(followCost.amountUsd, 3);
+    assert.strictEqual(followCost.actualHours, 3);
+    assert.strictEqual(followCost.finalizedSubmissionId, "follow-submit");
     assert.strictEqual(followCost.sourceTaskId, TASK_ID);
-    assert.ok(!costItem(ddb, PRIYA, TASK_ID));
+    const sourceAfter = costItem(ddb, PRIYA, TASK_ID);
+    assert.notStrictEqual(sourceAfter.status, "COSTED");
+    assert.notStrictEqual(sourceAfter.basisState, "FINAL");
   });
 
   await test("NO_SHIFT reassign is rejected", async () => {

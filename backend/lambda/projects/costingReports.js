@@ -209,6 +209,9 @@ function classifyAssignment(assignment, snapshot) {
   if (!escalation.isComplete(assignment.status)) {
     return { costStatus: STATUS_OPEN, includeInTotals: true };
   }
+  if (snapshot?.basisState === "RETURNED" || snapshot?.status === "SUBMISSION_BASIS") {
+    return { costStatus: STATUS_MISSING_COST_RECORD, includeInTotals: true };
+  }
   if (snapshot?.status === STATUS_COSTED && snapshot.amountUsd != null) {
     return { costStatus: STATUS_COSTED, includeInTotals: true };
   }
@@ -248,9 +251,18 @@ function buildRow({
     completedDate,
     assignmentStatus: assignment.status || "TODO",
     costStatus: classified.costStatus,
-    reason: snapshot?.reason || (classified.costStatus === STATUS_MISSING_COST_RECORD
-      ? STATUS_MISSING_COST_RECORD
-      : null),
+    reason:
+      snapshot?.basisState === "RETURNED"
+        ? "SUBMISSION_RETURNED"
+        : snapshot?.status === "SUBMISSION_BASIS"
+          ? "SUBMISSION_NOT_FINALIZED"
+          : snapshot?.reason ||
+            (classified.costStatus === STATUS_MISSING_COST_RECORD
+              ? STATUS_MISSING_COST_RECORD
+              : null),
+    basisState: snapshot?.basisState || null,
+    submissionId: snapshot?.submissionId || null,
+    legacyBaseline: snapshot?.legacyBaseline === true,
     estimatedHours: task.estimatedHours == null ? null : task.estimatedHours,
     plannedHours: assignment.plannedHours == null ? null : assignment.plannedHours,
     actualHours: assignment.actualHours == null ? null : assignment.actualHours,

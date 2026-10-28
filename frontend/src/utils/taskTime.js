@@ -2,6 +2,7 @@ import {
   formatStoredHoursAsHhMm,
   parseHhMmInput,
   parseStoredHours,
+  prepareDurationSubmit,
 } from "./durationHours";
 
 export {
@@ -34,6 +35,18 @@ export function parseHoursInput(raw) {
     ok: false,
     empty: Boolean(parsed.empty),
     error: parsed.empty ? HOURS_INVALID : parsed.error,
+  };
+}
+
+/** Normalize HH:MM, then parse. Submit handlers must use this, not the raw state. */
+export function prepareHoursSubmit(raw) {
+  const prepared = prepareDurationSubmit(raw);
+  if (prepared.ok) return prepared;
+  return {
+    ok: false,
+    normalized: prepared.normalized,
+    empty: Boolean(prepared.empty),
+    error: prepared.empty ? HOURS_INVALID : prepared.error,
   };
 }
 

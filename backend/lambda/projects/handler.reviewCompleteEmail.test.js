@@ -304,6 +304,31 @@ function seedTask(ddb, extra = {}) {
         ? { actualHours: 2 }
         : {}),
     });
+    const seededStatus =
+      extra.assignmentStatuses?.[emailAddr] || extra.assignmentStatus || "IN_PROGRESS";
+    if (seededStatus === "REVIEW" || seededStatus === "DONE") {
+      const basis = {
+        type: "ASSIGNMENT_COST",
+        status: "MISSING_RATE",
+        basisState: "ACTIVE",
+        reason: "UNCLASSIFIED_PROJECT",
+        submissionId: `sub-${emailAddr}`,
+        submittedAt: "2026-10-28T04:00:00.000Z",
+        taskId,
+        email: emailAddr,
+        actualHours: 2,
+        hourlyRateUsd: null,
+        amountUsd: null,
+        currency: "USD",
+        createdAt: "2026-10-28T04:00:00.000Z",
+      };
+      ddb.seed(WORK, { ...basis, PK: `TASK#${taskId}`, SK: `COST#${emailAddr}` });
+      ddb.seed(WORK, {
+        ...basis,
+        PK: `USER#${emailAddr}`,
+        SK: `ASSIGNMENT_COST#${taskId}`,
+      });
+    }
   }
   if (extra.proof !== false) {
     emails.forEach((emailAddr, idx) => {
@@ -506,7 +531,7 @@ async function run() {
 
   await test("already REVIEW does not send review email", async () => {
     await withMail(async (mails) => {
-      setup({ assignmentStatus: "REVIEW" });
+      const { ddb } = setup({ assignmentStatus: "REVIEW" });
       const res = parse(
         await handler(
           eventFor({
@@ -517,8 +542,49 @@ async function run() {
           })
         )
       );
-      assert.strictEqual(res.statusCode, 400);
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
       assert.strictEqual(mails.filter((m) => /Submitted for Review/.test(m.subject)).length, 0);
+    });
+  });
+
+  await test("header repair sends a missed review email once", async () => {
+    await withMail(async (mails) => {
+      const { ddb } = setup({ assignmentStatus: "REVIEW" });
+      const stored = ddb.items.find(
+        (entry) =>
+          entry.TableName === WORK &&
+          entry.Item.PK === `TASK#${TASK_ID}` &&
+          entry.Item.SK === `ASSIGNMENT#${PRIYA}`
+      );
+      stored.Item.reviewNotifyPending = true;
+      stored.Item.reviewNotifySubmissionId = "sub-priya";
+      const first = parse(
+        await handler(
+          eventFor({
+            taskId: TASK_ID,
+            status: "DONE",
+            actualHours: 2,
+            completionRemark: "Again",
+          })
+        )
+      );
+      assert.strictEqual(first.statusCode, 200);
+      assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+      assert.notStrictEqual(assignmentItem(ddb, PRIYA).reviewNotifyPending, true);
+      assert.strictEqual(mails.filter((m) => /Submitted for Review/.test(m.subject)).length, 2);
+      const second = parse(
+        await handler(
+          eventFor({
+            taskId: TASK_ID,
+            status: "DONE",
+            actualHours: 2,
+            completionRemark: "Again",
+          })
+        )
+      );
+      assert.strictEqual(second.statusCode, 200);
+      assert.strictEqual(mails.filter((m) => /Submitted for Review/.test(m.subject)).length, 2);
     });
   });
 

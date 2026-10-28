@@ -8,6 +8,7 @@ import {
   companyDateKey,
   confirmedCostHeadline,
   costStatusLabel,
+  costingBasisNote,
   defaultCostingRange,
   formatReportDate,
   hoursLabel,
@@ -281,7 +282,14 @@ export default function EmployeeCostingPanel({ email }) {
                       </div>
                     </td>
                     <td>{moneyUsd(row.amountUsd)}</td>
-                    <td>{costStatusLabel(row.costStatus)}</td>
+                    <td>
+                      <div>{costStatusLabel(row.costStatus)}</div>
+                      {costingBasisNote(row) ? (
+                        <div style={{ fontSize: 12, color: colors.textMuted }}>
+                          {costingBasisNote(row)}
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>

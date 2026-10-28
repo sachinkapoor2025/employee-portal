@@ -12,10 +12,9 @@ import { displayNameFromEmail } from "../../utils/meetings";
 import {
   ESTIMATED_HOURS_HELPER,
   ESTIMATED_HOURS_INVALID,
-  parseEstimatedHoursInput,
 } from "../../utils/estimatedHours";
 import DurationHoursInput from "../../components/DurationHoursInput";
-import { HH_MM_HELPER } from "../../utils/durationHours";
+import { HH_MM_HELPER, prepareDurationSubmit } from "../../utils/durationHours";
 import {
   colors,
   pageCard,
@@ -496,7 +495,13 @@ export default function ManageTasks() {
     if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
       errors.dueDate = "Deadline must be after the start date and time.";
     }
-    const estimated = parseEstimatedHoursInput(taskForm.estimatedHours);
+    const estimated = prepareDurationSubmit(taskForm.estimatedHours);
+    if (estimated.normalized && estimated.normalized !== taskForm.estimatedHours) {
+      setTaskForm((current) => ({
+        ...current,
+        estimatedHours: estimated.normalized,
+      }));
+    }
     if (!estimated.ok) {
       errors.estimatedHours = estimated.error || ESTIMATED_HOURS_INVALID;
     }
