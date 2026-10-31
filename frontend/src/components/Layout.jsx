@@ -96,7 +96,7 @@ const ADMIN_NAV_SECTIONS = [
     title: "Work Management",
     items: [
       { label: "Tasks", path: "/admin/tasks", icon: ListTodo },
-      { label: "🚧 Blockers", path: "/admin/blockers", icon: Construction },
+      { label: "Blockers", path: "/admin/blockers", icon: Construction },
       { label: "Projects", path: "/admin/projects", icon: FolderKanban },
       {
         label: "Attendance",

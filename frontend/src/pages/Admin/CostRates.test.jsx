@@ -54,6 +54,13 @@ const EMPLOYEE = {
   },
 };
 
+async function openRahul() {
+  await userEvent.click(screen.getByRole("tab", { name: "Employees" }));
+  const search = screen.getByRole("combobox", { name: "Search employees" });
+  await userEvent.type(search, "rah");
+  await userEvent.click(screen.getByRole("option", { name: /Rahul/ }));
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   fetchCostRateDesignations.mockResolvedValue({ designations: [DESIGNATION] });
@@ -73,6 +80,7 @@ test("loads designations and supports create, edit, and deactivate", async () =>
   expect(screen.queryByText("No configured rate")).not.toBeInTheDocument();
   expect(screen.getAllByText("$2.00").length).toBeGreaterThan(0);
 
+  await userEvent.click(screen.getByRole("button", { name: "+ New designation" }));
   await userEvent.type(screen.getByLabelText("Designation name"), "QA");
   await userEvent.type(screen.getByLabelText("Internal hourly rate (USD)"), "4.50");
   await userEvent.click(screen.getByRole("button", { name: "Create designation" }));
@@ -108,6 +116,7 @@ test("shows API errors from designation create", async () => {
   );
   render(<CostRates />);
   await screen.findByText("SEO Executive");
+  await userEvent.click(screen.getByRole("button", { name: "+ New designation" }));
   await userEvent.type(screen.getByLabelText("Designation name"), "SEO Executive");
   await userEvent.click(screen.getByRole("button", { name: "Create designation" }));
   expect(
@@ -131,18 +140,14 @@ test("employee rates show resolved source and can clear a personal rate", async 
 
   render(<CostRates />);
   await screen.findByText("SEO Executive");
-  await userEvent.click(screen.getByRole("button", { name: "Employees" }));
-  await userEvent.click(
-    screen.getByRole("button", { name: /Rahul \(rahul@mydgv.com\)/ })
-  );
-  expect(await screen.findByText(/Resolved Internal/)).toBeInTheDocument();
-  expect(screen.getByText("$2.25")).toBeInTheDocument();
-  expect(screen.getByText("(Employee)")).toBeInTheDocument();
-  expect(screen.getByText("$3.00")).toBeInTheDocument();
-  expect(screen.getByText("(Designation)")).toBeInTheDocument();
+  await openRahul();
+  expect(await screen.findByText(/Resolved Internal/)).toHaveTextContent("$2.25");
+  expect(screen.getByText(/Resolved Internal/)).toHaveTextContent("(Employee)");
+  expect(screen.getByText(/Resolved External/)).toHaveTextContent("$3.00");
+  expect(screen.getByText(/Resolved External/)).toHaveTextContent("(Designation)");
   expect(screen.getByText(/Profile designation/)).toHaveTextContent("Free text SEO");
 
-  const internal = screen.getByLabelText("Personal internal hourly rate (USD)");
+  const internal = screen.getByLabelText("Internal hourly rate (USD)");
   await userEvent.clear(internal);
   await userEvent.click(screen.getByRole("button", { name: "Save employee rates" }));
   await waitFor(() =>
@@ -165,13 +170,8 @@ test("shows API errors when Super Admin load fails", async () => {
 test("shows validation error for invalid employee rate", async () => {
   render(<CostRates />);
   await screen.findByText("SEO Executive");
-  await userEvent.click(screen.getByRole("button", { name: "Employees" }));
-  await userEvent.click(
-    screen.getByRole("button", { name: /Rahul \(rahul@mydgv.com\)/ })
-  );
-  const internal = await screen.findByLabelText(
-    "Personal internal hourly rate (USD)"
-  );
+  await openRahul();
+  const internal = await screen.findByLabelText("Internal hourly rate (USD)");
   await userEvent.clear(internal);
   await userEvent.type(internal, "1.234");
   await userEvent.click(screen.getByRole("button", { name: "Save employee rates" }));

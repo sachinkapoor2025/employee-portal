@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import Layout from "../../components/Layout";
 import Button from "../../components/ui/Button";
+import Modal, { confirmDiscardIfDirty } from "../../components/ui/Modal";
 import {
   createCostRateDesignation,
   fetchCostRateDesignations,
@@ -13,6 +15,7 @@ import {
 } from "../../services/api";
 import {
   displayRateOrUnset,
+  formatUsdRate,
   parseUsdRateInput,
   rateSourceLabel,
 } from "../../utils/costRates";
@@ -62,6 +65,19 @@ function ResolvedCell({ side }) {
   );
 }
 
+function fallbackHint(designation, side) {
+  const rate =
+    side === "internal"
+      ? designation?.internalHourlyRate
+      : designation?.externalHourlyRate;
+  const label = side === "internal" ? "internal" : "external";
+  const name = designation?.name || "the linked designation";
+  if (rate == null) {
+    return `Unset. ${name} has no ${label} rate, so this side stays unconfigured. A blank rate is not zero.`;
+  }
+  return `Unset. Falls back to ${name}'s ${label} rate (${formatUsdRate(rate)}). A blank rate is not zero.`;
+}
+
 export default function CostRates() {
   const [tab, setTab] = useState("designations");
   const [designations, setDesignations] = useState([]);
@@ -73,10 +89,17 @@ export default function CostRates() {
   const [savingEmp, setSavingEmp] = useState(false);
   const [statusBusy, setStatusBusy] = useState("");
   const [desForm, setDesForm] = useState(EMPTY_DES_FORM);
+  const [desModalOpen, setDesModalOpen] = useState(false);
+  const [desDirty, setDesDirty] = useState(false);
   const [editingDesId, setEditingDesId] = useState("");
   const [empForm, setEmpForm] = useState(EMPTY_EMP_FORM);
+  const [empModalOpen, setEmpModalOpen] = useState(false);
+  const [empDirty, setEmpDirty] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [employeeQuery, setEmployeeQuery] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const pickerRef = useRef(null);
 
   const load = useCallback(async ({ silent } = {}) => {
     if (!silent) setLoading(true);
@@ -110,9 +133,44 @@ export default function CostRates() {
     });
   }, [employees, employeeQuery]);
 
+  useEffect(() => {
+    if (!pickerOpen) return undefined;
+    const onPointer = (event) => {
+      if (!pickerRef.current?.contains(event.target)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    return () => document.removeEventListener("mousedown", onPointer);
+  }, [pickerOpen]);
+
+  const closeDesModal = () => {
+    setDesModalOpen(false);
+    setDesDirty(false);
+    setEditingDesId("");
+    setDesForm(EMPTY_DES_FORM);
+  };
+
+  const requestCloseDes = () => {
+    if (savingDes) return;
+    if (!confirmDiscardIfDirty(desDirty)) return;
+    closeDesModal();
+  };
+
+  const closeEmpModal = () => {
+    setEmpModalOpen(false);
+    setEmpDirty(false);
+  };
+
+  const requestCloseEmp = () => {
+    if (savingEmp) return;
+    if (!confirmDiscardIfDirty(empDirty)) return;
+    closeEmpModal();
+  };
+
   const startCreateDes = () => {
     setEditingDesId("");
     setDesForm(EMPTY_DES_FORM);
+    setDesDirty(false);
+    setDesModalOpen(true);
     setMessage("");
     setError("");
   };
@@ -124,6 +182,8 @@ export default function CostRates() {
       internalHourlyRate: rateFieldValue(row.internalHourlyRate),
       externalHourlyRate: rateFieldValue(row.externalHourlyRate),
     });
+    setDesDirty(false);
+    setDesModalOpen(true);
     setMessage("");
     setError("");
   };
@@ -159,8 +219,8 @@ export default function CostRates() {
       } else {
         await createCostRateDesignation(payload);
         setMessage("Designation created.");
-        setDesForm(EMPTY_DES_FORM);
       }
+      closeDesModal();
       await load({ silent: true });
     } catch (err) {
       setError(err?.message || "Unable to save designation.");
@@ -193,6 +253,9 @@ export default function CostRates() {
   const selectEmployee = async (row) => {
     setError("");
     setMessage("");
+    setPickerOpen(false);
+    setEmpDirty(false);
+    setEmpModalOpen(true);
     setSelectedEmployee(row);
     setEmpForm({
       email: row.email,
@@ -212,6 +275,36 @@ export default function CostRates() {
       });
     } catch (err) {
       setError(err?.message || "Unable to load employee rates.");
+    }
+  };
+
+  const onPickerKeyDown = (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setPickerOpen(true);
+      setActiveIndex((current) => {
+        if (!filteredEmployees.length) return -1;
+        if (current < 0 || current >= filteredEmployees.length - 1) return 0;
+        return current + 1;
+      });
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setPickerOpen(true);
+      setActiveIndex((current) => {
+        if (!filteredEmployees.length) return -1;
+        return current <= 0 ? 0 : current - 1;
+      });
+      return;
+    }
+    if (event.key === "Escape") {
+      setPickerOpen(false);
+      return;
+    }
+    if (event.key === "Enter" && pickerOpen && filteredEmployees[activeIndex]) {
+      event.preventDefault();
+      selectEmployee(filteredEmployees[activeIndex]);
     }
   };
 
@@ -245,6 +338,7 @@ export default function CostRates() {
         externalHourlyRate: external.value,
       });
       setMessage("Employee rates saved.");
+      setEmpDirty(false);
       await load({ silent: true });
       const res = await fetchCostRateEmployee(empForm.email);
       if (res?.employee) {
@@ -289,23 +383,12 @@ export default function CostRates() {
     }
   };
 
-  const tabBtn = (id, label) => (
-    <button
-      type="button"
-      onClick={() => setTab(id)}
-      aria-pressed={tab === id}
-      style={{
-        ...formInput,
-        width: "auto",
-        fontWeight: tab === id ? 700 : 500,
-        background: tab === id ? colors.primary : colors.card,
-        color: tab === id ? "#fff" : colors.text,
-        cursor: "pointer",
-      }}
-    >
-      {label}
-    </button>
+  const linkedDesignation = designations.find(
+    (row) => row.designationId === empForm.designationId
   );
+  const pageAlert = !desModalOpen && !empModalOpen;
+  const activeOptionId =
+    activeIndex >= 0 ? `emp-suggestion-${activeIndex}` : undefined;
 
   return (
     <Layout>
@@ -317,7 +400,7 @@ export default function CostRates() {
         configured.
       </p>
 
-      {error ? (
+      {pageAlert && error ? (
         <div
           className="dgv-alert dgv-alert--error"
           style={{ ...alertError, marginBottom: 16 }}
@@ -325,98 +408,58 @@ export default function CostRates() {
           {error}
         </div>
       ) : null}
-      {message ? (
+      {pageAlert && message ? (
         <div style={{ ...alertSuccess, marginBottom: 16 }}>{message}</div>
       ) : null}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {tabBtn("designations", "Designations")}
-        {tabBtn("employees", "Employees")}
+      <div className="dgv-cost-rates-tabs" role="tablist" aria-label="Cost rates">
+        <button
+          type="button"
+          role="tab"
+          className="dgv-cost-rates-tab"
+          aria-selected={tab === "designations"}
+          aria-pressed={tab === "designations"}
+          onClick={() => setTab("designations")}
+        >
+          Designations
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className="dgv-cost-rates-tab"
+          aria-selected={tab === "employees"}
+          aria-pressed={tab === "employees"}
+          onClick={() => setTab("employees")}
+        >
+          Employees
+        </button>
       </div>
 
       {loading ? <p>Loading cost rates…</p> : null}
 
       {!loading && tab === "designations" ? (
-        <>
-          <div style={pageCard}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>
-              {editingDesId ? "Edit designation" : "Add designation"}
-            </h2>
-            <form
-              onSubmit={saveDesignation}
-              style={{ display: "grid", gap: 12, maxWidth: 520 }}
-            >
-              <label style={formLabel} htmlFor="des-name">
-                Designation name
-                <input
-                  id="des-name"
-                  style={formInput}
-                  value={desForm.name}
-                  onChange={(e) =>
-                    setDesForm((f) => ({ ...f, name: e.target.value }))
-                  }
-                  required
-                />
-              </label>
-              <label style={formLabel} htmlFor="des-internal">
-                Internal hourly rate (USD)
-                <input
-                  id="des-internal"
-                  style={formInput}
-                  inputMode="decimal"
-                  placeholder="Unset"
-                  value={desForm.internalHourlyRate}
-                  onChange={(e) =>
-                    setDesForm((f) => ({
-                      ...f,
-                      internalHourlyRate: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label style={formLabel} htmlFor="des-external">
-                External hourly rate (USD)
-                <input
-                  id="des-external"
-                  style={formInput}
-                  inputMode="decimal"
-                  placeholder="Unset"
-                  value={desForm.externalHourlyRate}
-                  onChange={(e) =>
-                    setDesForm((f) => ({
-                      ...f,
-                      externalHourlyRate: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <p style={{ ...pageSubtitle, margin: 0 }}>
+        <div style={pageCard}>
+          <div className="dgv-cost-rates-head">
+            <div>
+              <h2>Designations</h2>
+              <p className="dgv-cost-rates-note">
                 Leave a rate blank to leave it unset. Do not enter 0.
               </p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button type="submit" loading={savingDes} disabled={savingDes}>
-                  {editingDesId ? "Save designation" : "Create designation"}
-                </Button>
-                {editingDesId ? (
-                  <Button type="button" variant="secondary" onClick={startCreateDes}>
-                    Cancel
-                  </Button>
-                ) : null}
-              </div>
-            </form>
+            </div>
+            <Button type="button" onClick={startCreateDes}>
+              + New designation
+            </Button>
           </div>
-
-          <div style={{ ...pageCard, marginTop: 16 }}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Designation catalog</h2>
-            {designations.length === 0 ? (
-              <p style={pageSubtitle}>No designations yet.</p>
-            ) : (
-              <table className="dgv-employees-table">
+          {designations.length === 0 ? (
+            <p style={pageSubtitle}>No designations yet.</p>
+          ) : (
+            <div className="dgv-cost-rates-table-wrap">
+              <table className="dgv-cost-rates-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Internal</th>
-                    <th>External</th>
+                    <th>Designation name</th>
+                    <th>Internal hourly rate (USD)</th>
+                    <th>External hourly rate (USD)</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -424,194 +467,374 @@ export default function CostRates() {
                 <tbody>
                   {designations.map((row) => (
                     <tr key={row.designationId}>
-                      <td>
+                      <td data-label="Designation name">
                         {row.name}
                         {!row.hasConfiguredRate ? (
-                          <div style={{ fontSize: 12, color: colors.textMuted }}>
-                            No configured rate
-                          </div>
+                          <div className="dgv-cost-rates-note">No configured rate</div>
                         ) : null}
                       </td>
-                      <td>{displayRateOrUnset(row.internalHourlyRate)}</td>
-                      <td>{displayRateOrUnset(row.externalHourlyRate)}</td>
-                      <td>{row.status}</td>
-                      <td>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          onClick={() => startEditDes(row)}
-                        >
-                          Edit
-                        </Button>{" "}
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          loading={statusBusy === `des:${row.designationId}`}
-                          disabled={Boolean(statusBusy)}
-                          onClick={() => toggleDesStatus(row)}
-                        >
-                          {String(row.status).toUpperCase() === "ACTIVE"
-                            ? "Deactivate"
-                            : "Activate"}
-                        </Button>
+                      <td data-label="Internal hourly rate (USD)">
+                        {displayRateOrUnset(row.internalHourlyRate)}
+                      </td>
+                      <td data-label="External hourly rate (USD)">
+                        {displayRateOrUnset(row.externalHourlyRate)}
+                      </td>
+                      <td data-label="Status">{row.status}</td>
+                      <td data-label="Actions">
+                        <div className="dgv-cost-rates-actions">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => startEditDes(row)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            loading={statusBusy === `des:${row.designationId}`}
+                            disabled={Boolean(statusBusy)}
+                            onClick={() => toggleDesStatus(row)}
+                          >
+                            {String(row.status).toUpperCase() === "ACTIVE"
+                              ? "Deactivate"
+                              : "Activate"}
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
-        </>
+            </div>
+          )}
+        </div>
       ) : null}
 
       {!loading && tab === "employees" ? (
-        <>
-          <div style={pageCard}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Employee rates</h2>
-            <label style={formLabel} htmlFor="emp-search">
-              Search employees
+        <div style={pageCard}>
+          <h2 style={{ marginTop: 0, fontSize: 18 }}>Employees</h2>
+          <p style={{ ...pageSubtitle, marginTop: 0 }}>
+            Search for an employee, then set personal rates. A blank rate stays
+            unset and falls back to the linked designation.
+          </p>
+          <label style={formLabel} htmlFor="emp-search">
+            Search employees
+          </label>
+          <div className="dgv-cost-rates-picker" ref={pickerRef}>
+            <div className="dgv-cost-rates-picker__field">
               <input
                 id="emp-search"
-                style={formInput}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={pickerOpen}
+                aria-controls="emp-suggestions"
+                aria-activedescendant={pickerOpen ? activeOptionId : undefined}
                 value={employeeQuery}
-                onChange={(e) => setEmployeeQuery(e.target.value)}
-                placeholder="Email, name, or employee ID"
+                placeholder="Name, email, or employee ID"
+                onChange={(event) => {
+                  setEmployeeQuery(event.target.value);
+                  setPickerOpen(true);
+                  setActiveIndex(-1);
+                }}
+                onFocus={() => setPickerOpen(true)}
+                onKeyDown={onPickerKeyDown}
               />
-            </label>
-            <div style={{ maxHeight: 220, overflow: "auto", marginTop: 8 }}>
-              {filteredEmployees.map((row) => (
-                <button
-                  key={row.email}
-                  type="button"
-                  onClick={() => selectEmployee(row)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "8px 10px",
-                    border:
-                      selectedEmployee?.email === row.email
-                        ? `1px solid ${colors.primary}`
-                        : "1px solid transparent",
-                    background:
-                      selectedEmployee?.email === row.email
-                        ? colors.background
-                        : "transparent",
-                    cursor: "pointer",
-                  }}
-                >
-                  {row.name || row.email} ({row.email})
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {selectedEmployee ? (
-            <div style={{ ...pageCard, marginTop: 16 }}>
-              <h2 style={{ marginTop: 0, fontSize: 16 }}>
-                Rates for {selectedEmployee.email}
-              </h2>
-              <p style={pageSubtitle}>
-                Profile designation (not used for costing):{" "}
-                {selectedEmployee.profileDesignation || "—"}
-              </p>
-              <form
-                onSubmit={saveEmployee}
-                style={{ display: "grid", gap: 12, maxWidth: 520 }}
+              <button
+                type="button"
+                className="dgv-cost-rates-picker__chevron"
+                aria-label={pickerOpen ? "Hide employees" : "Show employees"}
+                aria-expanded={pickerOpen}
+                aria-controls="emp-suggestions"
+                onClick={() => {
+                  setPickerOpen((open) => !open);
+                  setActiveIndex(-1);
+                }}
               >
-                <label style={formLabel} htmlFor="emp-des">
-                  Managed designation
-                  <select
-                    id="emp-des"
-                    style={formInput}
-                    value={empForm.designationId}
-                    onChange={(e) =>
-                      setEmpForm((f) => ({ ...f, designationId: e.target.value }))
-                    }
-                    required
-                  >
-                    <option value="">Select designation</option>
-                    {designations.map((d) => (
-                      <option key={d.designationId} value={d.designationId}>
-                        {d.name}
-                        {String(d.status).toUpperCase() === "INACTIVE"
-                          ? " (inactive)"
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label style={formLabel} htmlFor="emp-internal">
-                  Personal internal hourly rate (USD)
-                  <input
-                    id="emp-internal"
-                    style={formInput}
-                    inputMode="decimal"
-                    placeholder="Use designation"
-                    value={empForm.internalHourlyRate}
-                    onChange={(e) =>
-                      setEmpForm((f) => ({
-                        ...f,
-                        internalHourlyRate: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label style={formLabel} htmlFor="emp-external">
-                  Personal external hourly rate (USD)
-                  <input
-                    id="emp-external"
-                    style={formInput}
-                    inputMode="decimal"
-                    placeholder="Use designation"
-                    value={empForm.externalHourlyRate}
-                    onChange={(e) =>
-                      setEmpForm((f) => ({
-                        ...f,
-                        externalHourlyRate: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <p style={{ ...pageSubtitle, margin: 0 }}>
-                  Clear a personal rate to use the designation fallback for that
-                  project type only.
-                </p>
-                <div>
-                  <div>
-                    Resolved Internal:{" "}
-                    <ResolvedCell side={selectedEmployee.resolved?.internal} />
-                  </div>
-                  <div>
-                    Resolved External:{" "}
-                    <ResolvedCell side={selectedEmployee.resolved?.external} />
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Button type="submit" loading={savingEmp} disabled={savingEmp}>
-                    Save employee rates
-                  </Button>
-                  {selectedEmployee.hasRateRecord ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      loading={statusBusy === `emp:${selectedEmployee.email}`}
-                      disabled={Boolean(statusBusy)}
-                      onClick={toggleEmpStatus}
-                    >
-                      {String(selectedEmployee.status).toUpperCase() === "ACTIVE"
-                        ? "Deactivate employee rates"
-                        : "Activate employee rates"}
-                    </Button>
-                  ) : null}
-                </div>
-              </form>
+                <ChevronDown size={18} aria-hidden="true" />
+              </button>
             </div>
-          ) : (
-            <p style={pageSubtitle}>Select an employee to configure rates.</p>
-          )}
-        </>
+            {pickerOpen ? (
+              <ul
+                id="emp-suggestions"
+                role="listbox"
+                aria-label="Matching employees"
+                className="dgv-cost-rates-picker__list"
+              >
+                {filteredEmployees.length === 0 ? (
+                  <li className="dgv-cost-rates-picker__meta" style={{ padding: 12 }}>
+                    No matching employees
+                  </li>
+                ) : (
+                  filteredEmployees.map((row, index) => (
+                    <li key={row.email}>
+                      <button
+                        type="button"
+                        id={`emp-suggestion-${index}`}
+                        role="option"
+                        aria-selected={index === activeIndex}
+                        className="dgv-cost-rates-picker__option"
+                        onClick={() => selectEmployee(row)}
+                      >
+                        <span>{row.name || row.email}</span>
+                        <span className="dgv-cost-rates-picker__meta">
+                          {row.email}
+                          {row.empId ? ` · ${row.empId}` : ""}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            ) : null}
+          </div>
+        </div>
       ) : null}
+
+      <Modal
+        open={desModalOpen}
+        onClose={closeDesModal}
+        dirty={desDirty}
+        closeDisabled={savingDes}
+        title={editingDesId ? "Edit designation" : "New designation"}
+        footer={
+          <div className="dgv-cost-rates-actions">
+            <Button
+              type="submit"
+              form="designation-rate-form"
+              loading={savingDes}
+              disabled={savingDes}
+            >
+              {editingDesId ? "Save designation" : "Create designation"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={requestCloseDes}
+              disabled={savingDes}
+            >
+              Cancel
+            </Button>
+          </div>
+        }
+      >
+        {error ? (
+          <div
+            className="dgv-alert dgv-alert--error"
+            style={{ ...alertError, marginBottom: 16 }}
+          >
+            {error}
+          </div>
+        ) : null}
+        <form
+          id="designation-rate-form"
+          className="dgv-cost-rates-form"
+          onSubmit={saveDesignation}
+        >
+          <label style={formLabel} htmlFor="des-name">
+            Designation name
+            <input
+              id="des-name"
+              style={formInput}
+              value={desForm.name}
+              onChange={(event) => {
+                setDesDirty(true);
+                setDesForm((form) => ({ ...form, name: event.target.value }));
+              }}
+              required
+            />
+          </label>
+          <label style={formLabel} htmlFor="des-internal">
+            Internal hourly rate (USD)
+            <input
+              id="des-internal"
+              style={formInput}
+              inputMode="decimal"
+              placeholder="Unset"
+              value={desForm.internalHourlyRate}
+              onChange={(event) => {
+                setDesDirty(true);
+                setDesForm((form) => ({
+                  ...form,
+                  internalHourlyRate: event.target.value,
+                }));
+              }}
+            />
+          </label>
+          <label style={formLabel} htmlFor="des-external">
+            External hourly rate (USD)
+            <input
+              id="des-external"
+              style={formInput}
+              inputMode="decimal"
+              placeholder="Unset"
+              value={desForm.externalHourlyRate}
+              onChange={(event) => {
+                setDesDirty(true);
+                setDesForm((form) => ({
+                  ...form,
+                  externalHourlyRate: event.target.value,
+                }));
+              }}
+            />
+          </label>
+          <p className="dgv-cost-rates-hint">
+            Leave a rate blank to leave it unset. Do not enter 0.
+          </p>
+        </form>
+      </Modal>
+
+      <Modal
+        open={empModalOpen}
+        onClose={closeEmpModal}
+        dirty={empDirty}
+        closeDisabled={savingEmp}
+        title={selectedEmployee?.name || selectedEmployee?.email || "Employee rates"}
+        maxWidth={560}
+        footer={
+          <div className="dgv-cost-rates-actions">
+            <Button
+              type="submit"
+              form="employee-rate-form"
+              loading={savingEmp}
+              disabled={savingEmp}
+            >
+              Save employee rates
+            </Button>
+            {selectedEmployee?.hasRateRecord ? (
+              <Button
+                type="button"
+                variant="secondary"
+                loading={statusBusy === `emp:${selectedEmployee.email}`}
+                disabled={Boolean(statusBusy) || savingEmp}
+                onClick={toggleEmpStatus}
+              >
+                {String(selectedEmployee.status).toUpperCase() === "ACTIVE"
+                  ? "Deactivate employee rates"
+                  : "Activate employee rates"}
+              </Button>
+            ) : null}
+          </div>
+        }
+      >
+        {error ? (
+          <div
+            className="dgv-alert dgv-alert--error"
+            style={{ ...alertError, marginBottom: 16 }}
+          >
+            {error}
+          </div>
+        ) : null}
+        {message ? (
+          <div style={{ ...alertSuccess, marginBottom: 16 }}>{message}</div>
+        ) : null}
+        {selectedEmployee ? (
+          <>
+            <p className="dgv-cost-rates-identity">
+              {selectedEmployee.email}
+              {selectedEmployee.empId ? ` · ${selectedEmployee.empId}` : ""}
+            </p>
+            <p style={pageSubtitle}>
+              Profile designation (not used for costing):{" "}
+              {selectedEmployee.profileDesignation || "—"}
+            </p>
+            <form
+              id="employee-rate-form"
+              className="dgv-cost-rates-form"
+              onSubmit={saveEmployee}
+            >
+              <label style={formLabel} htmlFor="emp-des">
+                Linked designation
+                <select
+                  id="emp-des"
+                  style={formInput}
+                  value={empForm.designationId}
+                  onChange={(event) => {
+                    setEmpDirty(true);
+                    setEmpForm((form) => ({
+                      ...form,
+                      designationId: event.target.value,
+                    }));
+                  }}
+                  required
+                >
+                  <option value="">Select designation</option>
+                  {designations.map((row) => (
+                    <option key={row.designationId} value={row.designationId}>
+                      {row.name}
+                      {String(row.status).toUpperCase() === "INACTIVE"
+                        ? " (inactive)"
+                        : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={formLabel} htmlFor="emp-internal">
+                Internal hourly rate (USD)
+                <input
+                  id="emp-internal"
+                  style={formInput}
+                  inputMode="decimal"
+                  placeholder="Unset"
+                  value={empForm.internalHourlyRate}
+                  onChange={(event) => {
+                    setEmpDirty(true);
+                    setEmpForm((form) => ({
+                      ...form,
+                      internalHourlyRate: event.target.value,
+                    }));
+                  }}
+                />
+              </label>
+              {!empForm.internalHourlyRate.trim() ? (
+                <p className="dgv-cost-rates-hint">
+                  {fallbackHint(linkedDesignation, "internal")}
+                </p>
+              ) : (
+                <p className="dgv-cost-rates-hint">
+                  Personal internal rate. This overrides the linked designation.
+                </p>
+              )}
+              <label style={formLabel} htmlFor="emp-external">
+                External hourly rate (USD)
+                <input
+                  id="emp-external"
+                  style={formInput}
+                  inputMode="decimal"
+                  placeholder="Unset"
+                  value={empForm.externalHourlyRate}
+                  onChange={(event) => {
+                    setEmpDirty(true);
+                    setEmpForm((form) => ({
+                      ...form,
+                      externalHourlyRate: event.target.value,
+                    }));
+                  }}
+                />
+              </label>
+              {!empForm.externalHourlyRate.trim() ? (
+                <p className="dgv-cost-rates-hint">
+                  {fallbackHint(linkedDesignation, "external")}
+                </p>
+              ) : (
+                <p className="dgv-cost-rates-hint">
+                  Personal external rate. This overrides the linked designation.
+                </p>
+              )}
+              <div>
+                <div>
+                  Resolved Internal:{" "}
+                  <ResolvedCell side={selectedEmployee.resolved?.internal} />
+                </div>
+                <div>
+                  Resolved External:{" "}
+                  <ResolvedCell side={selectedEmployee.resolved?.external} />
+                </div>
+              </div>
+            </form>
+          </>
+        ) : null}
+      </Modal>
     </Layout>
   );
 }

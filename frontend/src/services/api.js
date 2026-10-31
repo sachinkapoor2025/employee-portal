@@ -12,8 +12,8 @@ import {
 const DEPLOYED_API_URL =
   "https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod";
 
-const LOCAL_API_REQUIRED_MESSAGE =
-  "Local API is not configured. Set REACT_APP_USE_LOCAL_API=true and REACT_APP_API_URL=http://127.0.0.1:3001 to use backend/scripts/local-api.js, or set REACT_APP_ALLOW_DEPLOYED_API=true with a non-local REACT_APP_API_URL.";
+export const LOCAL_API_REQUIRED_MESSAGE =
+  "API base URL is not configured. Local development uses the deployed AWS API unless REACT_APP_USE_LOCAL_API=true and REACT_APP_API_URL is a loopback address such as http://127.0.0.1:3001.";
 
 export function isLoopbackApiUrl(raw) {
   try {
@@ -29,21 +29,19 @@ function flagEnabled(value) {
 }
 
 /**
- * Production/CI builds use the deployed API (never localhost).
- * CRA `npm start` never falls back to production unless
- * REACT_APP_ALLOW_DEPLOYED_API=true. Local proxy requires
- * REACT_APP_USE_LOCAL_API=true and a loopback REACT_APP_API_URL.
+ * CRA `npm start` uses the deployed AWS API: REACT_APP_API_URL when it is
+ * not a loopback address, otherwise the known API Gateway URL.
+ * A local backend is used only when REACT_APP_USE_LOCAL_API=true and
+ * REACT_APP_API_URL is a loopback address. An empty base is never returned
+ * for normal local development, so requests cannot fall through to the
+ * frontend origin.
  */
 export function getApiBaseUrl(
   raw = process.env.REACT_APP_API_URL,
   options = {}
 ) {
-  const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
   const useLocalApi =
     options.useLocalApi ?? flagEnabled(process.env.REACT_APP_USE_LOCAL_API);
-  const allowDeployedApi =
-    options.allowDeployedApi ??
-    flagEnabled(process.env.REACT_APP_ALLOW_DEPLOYED_API);
   const fromEnv = String(raw || "")
     .trim()
     .replace(/\/+$/, "");
@@ -51,10 +49,6 @@ export function getApiBaseUrl(
 
   if (useLocalApi) {
     return loopback ? fromEnv : "";
-  }
-
-  if (nodeEnv === "development" && !allowDeployedApi) {
-    return "";
   }
 
   if (!fromEnv || loopback) return DEPLOYED_API_URL;

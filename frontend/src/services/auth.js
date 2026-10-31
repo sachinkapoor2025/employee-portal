@@ -1,4 +1,4 @@
-import { getApiBaseUrl } from "./api";
+import { getApiBaseUrl, LOCAL_API_REQUIRED_MESSAGE } from "./api";
 
 const domain =
   process.env.REACT_APP_COGNITO_DOMAIN ||
@@ -7,7 +7,13 @@ const clientId =
   process.env.REACT_APP_COGNITO_CLIENT_ID || "5q797v9k55ad1q36mol3glhecf";
 const redirectUri = `${window.location.origin}/callback`;
 
-const apiUrl = getApiBaseUrl();
+function requireApiBase() {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error(LOCAL_API_REQUIRED_MESSAGE);
+  }
+  return base;
+}
 
 export const PORTAL_INTENT_KEY = "portalIntent";
 export const ACTUAL_ROLE_KEY = "actualRole";
@@ -78,15 +84,31 @@ export async function checkAccess() {
     return { access: "NONE" };
   }
 
-  const res = await fetch(`${apiUrl}/access`, {
+  const base = requireApiBase();
+  const res = await fetch(`${base}/access`, {
     headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
   });
+
+  if (res.status === 401) {
+    localStorage.clear();
+    throw new Error("Session expired. Please sign in again.");
+  }
 
   if (!res.ok) {
     throw new Error(`Access check failed (${res.status})`);
   }
 
-  return res.json();
+  const contentType = res.headers?.get?.("content-type") || "";
+  if (contentType.includes("text/html")) {
+    throw new Error("Access check did not reach the API.");
+  }
+
+  try {
+    return await res.json();
+  } catch {
+    throw new Error("Access check did not reach the API.");
+  }
 }
 
 export function applyAccessRedirect(data) {
@@ -198,7 +220,7 @@ export const requestAccess = async () => {
     throw new Error("Not signed in");
   }
 
-  const res = await fetch(`${apiUrl}/request-access`, {
+  const res = await fetch(`${requireApiBase()}/request-access`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

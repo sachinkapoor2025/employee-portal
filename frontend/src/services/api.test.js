@@ -115,21 +115,25 @@ describe("getApiBaseUrl", () => {
     ).toBe(deployed);
   });
 
-  test("development does not silently fall back to the deployed API", () => {
+  test("local development uses the deployed API without an extra opt-in", () => {
     expect(
       getApiBaseUrl(deployed, {
         nodeEnv: "development",
         useLocalApi: false,
-        allowDeployedApi: false,
       })
-    ).toBe("");
+    ).toBe(deployed);
     expect(
       getApiBaseUrl("", {
         nodeEnv: "development",
         useLocalApi: false,
-        allowDeployedApi: false,
       })
-    ).toBe("");
+    ).toBe(deployed);
+    expect(
+      getApiBaseUrl("http://127.0.0.1:3001", {
+        nodeEnv: "development",
+        useLocalApi: false,
+      })
+    ).toBe(deployed);
   });
 
   test("uses the local API only when explicitly opted in", () => {
@@ -145,16 +149,6 @@ describe("getApiBaseUrl", () => {
         useLocalApi: true,
       })
     ).toBe("");
-  });
-
-  test("allows an explicit deployed URL from local CRA when opted in", () => {
-    expect(
-      getApiBaseUrl(deployed, {
-        nodeEnv: "development",
-        useLocalApi: false,
-        allowDeployedApi: true,
-      })
-    ).toBe(deployed);
   });
 });
 

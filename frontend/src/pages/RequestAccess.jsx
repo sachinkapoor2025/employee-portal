@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   requestAccess,
@@ -16,31 +16,46 @@ export default function RequestAccess() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
   const email = getLoggedInEmail();
+  const navigateRef = useRef(navigate);
+  const statusRef = useRef(status);
+  navigateRef.current = navigate;
+  statusRef.current = status;
 
   useEffect(() => {
+    let cancelled = false;
     const verifyAccess = async () => {
       try {
         const data = await checkAccess();
-        if (data.access === "USER" || data.access === "ADMIN") {
+        if (cancelled) return;
+        if (
+          data.access === "USER" ||
+          data.access === "ADMIN" ||
+          data.access === "BLOCKED" ||
+          data.access === "DENIED"
+        ) {
           applyAccessRedirect(data);
           return;
         }
-        if (data.access === "BLOCKED" || data.access === "DENIED") {
-          applyAccessRedirect(data);
+        if (data.access === "PENDING" && statusRef.current !== "pending") {
+          navigateRef.current("/request-access?status=pending", { replace: true });
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (!localStorage.getItem("token")) {
+          navigateRef.current("/login", { replace: true });
           return;
         }
-        if (data.access === "PENDING") {
-          navigate("/request-access?status=pending", { replace: true });
-        }
-      } catch {
-        navigate("/login", { replace: true });
+        setMsg(err.message || "Unable to check access.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     verifyAccess();
-  }, [navigate]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleRequest = async () => {
     setMsg("");

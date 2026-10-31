@@ -3574,3 +3574,214 @@ button:disabled.dgv-btn {
     transition-duration: 0.01ms !important;
   }
 }
+
+.dgv-cost-rates-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.dgv-cost-rates-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.dgv-cost-rates-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.dgv-cost-rates-tab {
+  min-height: 40px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--dgv-border);
+  background: var(--dgv-card);
+  color: var(--dgv-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dgv-cost-rates-tab[aria-pressed="true"] {
+  background: var(--dgv-primary);
+  border-color: var(--dgv-primary);
+  color: #fff;
+}
+
+.dgv-cost-rates-table-wrap {
+  width: 100%;
+}
+
+.dgv-cost-rates-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dgv-cost-rates-table th,
+.dgv-cost-rates-table td {
+  padding: 14px 12px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--dgv-border);
+}
+
+.dgv-cost-rates-table th {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--dgv-text-muted);
+}
+
+.dgv-cost-rates-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dgv-cost-rates-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dgv-text-muted);
+}
+
+.dgv-cost-rates-form {
+  display: grid;
+  gap: 4px;
+}
+
+.dgv-cost-rates-form .dgv-cost-rates-hint {
+  margin: -8px 0 8px;
+  font-size: 13px;
+  color: var(--dgv-text-secondary);
+}
+
+.dgv-cost-rates-picker {
+  position: relative;
+  max-width: 560px;
+}
+
+.dgv-cost-rates-picker__field {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--dgv-border);
+  border-radius: 8px;
+  background: var(--dgv-surface-solid);
+}
+
+.dgv-cost-rates-picker__field:focus-within {
+  border-color: var(--dgv-primary);
+  box-shadow: 0 0 0 3px var(--dgv-accent-soft);
+}
+
+.dgv-cost-rates-picker__field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dgv-text);
+  min-height: 44px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.dgv-cost-rates-picker__field input:focus {
+  outline: none;
+}
+
+.dgv-cost-rates-picker__chevron {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-left: 1px solid var(--dgv-border);
+  background: transparent;
+  color: var(--dgv-text);
+  cursor: pointer;
+}
+
+.dgv-cost-rates-picker__list {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--dgv-surface-solid);
+  border: 1px solid var(--dgv-border);
+  border-radius: 10px;
+  box-shadow: var(--dgv-shadow-lg);
+}
+
+.dgv-cost-rates-picker__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dgv-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dgv-cost-rates-picker__option[aria-selected="true"],
+.dgv-cost-rates-picker__option:hover {
+  background: var(--dgv-accent-soft);
+}
+
+.dgv-cost-rates-picker__meta {
+  font-size: 13px;
+  color: var(--dgv-text-muted);
+}
+
+.dgv-cost-rates-identity {
+  margin: 0 0 12px;
+  color: var(--dgv-text-secondary);
+}
+
+@media (max-width: 720px) {
+  .dgv-cost-rates-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dgv-cost-rates-table thead {
+    display: none;
+  }
+
+  .dgv-cost-rates-table,
+  .dgv-cost-rates-table tbody,
+  .dgv-cost-rates-table tr,
+  .dgv-cost-rates-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .dgv-cost-rates-table tr {
+    padding: 8px 0 12px;
+    border-bottom: 1px solid var(--dgv-border);
+  }
+
+  .dgv-cost-rates-table td {
+    border: 0;
+    padding: 6px 0;
+  }
+
+  .dgv-cost-rates-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--dgv-text-muted);
+  }
+}
