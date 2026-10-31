@@ -1101,6 +1101,12 @@ Resources:
             Path: /admin/costing/projects/{projectId}
             Method: GET
             RestApiId: !Ref ApiGateway
+        EmployeeCostingRosterGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/costing/employees
+            Method: GET
+            RestApiId: !Ref ApiGateway
         EmployeeCostingGetApi:
           Type: Api
           Properties:

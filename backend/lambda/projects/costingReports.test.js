@@ -1,4 +1,6 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 const {
   GetCommand,
   QueryCommand,
@@ -1022,6 +1024,29 @@ assert.strictEqual(
   assert.strictEqual(empty.confirmedCostUsd, 0);
   assert.deepStrictEqual(empty.projects, []);
   assert.strictEqual(includeRosterEntry(empty), false);
+
+  const template = fs.readFileSync(
+    path.join(__dirname, "../../template.yaml"),
+    "utf8"
+  );
+  assert.match(template, /AddDefaultAuthorizerToCorsPreflight:\s*false/);
+  assert.match(
+    template,
+    /AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"/
+  );
+  assert.match(template, /AllowHeaders: "'Authorization,Content-Type'"/);
+  const rosterEvent = template.match(
+    /EmployeeCostingRosterGetApi:[\s\S]*?RestApiId: !Ref ApiGateway/
+  );
+  assert.ok(rosterEvent, "roster GET route must be declared for API Gateway CORS");
+  assert.match(rosterEvent[0], /Path: \/admin\/costing\/employees\r?\n/);
+  assert.doesNotMatch(rosterEvent[0], /\{email\}/);
+  assert.match(rosterEvent[0], /Method: GET/);
+  assert.doesNotMatch(rosterEvent[0], /Auth:/);
+  assert.match(
+    template,
+    /Path: \/admin\/costing\/employees\/\{email\}/
+  );
 
   console.log("costingReports tests passed");
 })().catch((err) => {
