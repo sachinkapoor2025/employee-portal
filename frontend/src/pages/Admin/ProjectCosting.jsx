@@ -22,6 +22,35 @@ import {
 } from "../../utils/costingReports";
 import { projectTypeLabel } from "../../utils/workProjectManage";
 
+const TASK_PAGE_SIZE = 10;
+
+function formatTaskDate(value) {
+  if (!value) return "—";
+  const raw = String(value).trim();
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (dateOnly) {
+    const date = new Date(
+      Number(dateOnly[1]),
+      Number(dateOnly[2]) - 1,
+      Number(dateOnly[3])
+    );
+    return date.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  }
+  return formatReportDate(value);
+}
+
+function taskPageNumbers(current, total) {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, index) => index + 1);
+  }
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  return [...pages].filter((page) => page >= 1 && page <= total).sort((a, b) => a - b);
+}
+
 function Summary({ summary, truncated }) {
   const items = [
     { label: "Tasks", value: summary?.taskCount ?? 0 },
@@ -84,6 +113,7 @@ export default function ProjectCosting() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
+  const [taskPage, setTaskPage] = useState(1);
 
   const load = useCallback(
     async (cursor) => {
@@ -105,6 +135,7 @@ export default function ProjectCosting() {
             reset: !pageCursor,
           })
         );
+        setTaskPage(1);
       } catch (err) {
         setError(err.message || "Unable to load project costing.");
         if (!pageCursor) {
@@ -125,6 +156,13 @@ export default function ProjectCosting() {
 
   const project = data?.project;
   const truncated = isCostingTruncated(data);
+  const taskPageCount = Math.max(1, Math.ceil(rows.length / TASK_PAGE_SIZE));
+  const currentTaskPage = Math.min(Math.max(taskPage, 1), taskPageCount);
+  const visibleRows = rows.slice(
+    (currentTaskPage - 1) * TASK_PAGE_SIZE,
+    currentTaskPage * TASK_PAGE_SIZE
+  );
+  const taskPageList = taskPageNumbers(currentTaskPage, taskPageCount);
 
   return (
     <Layout>
@@ -178,73 +216,127 @@ export default function ProjectCosting() {
                 {moneyUsd(data?.summary?.confirmedCostUsd)}
               </p>
             ) : null}
-            <div style={{ overflowX: "auto" }}>
-              <table className="dgv-projects-table">
+            <div className="dgv-costing-tasks">
+              <div className="dgv-costing-tasks__scroll">
+              <table className="dgv-costing-tasks__grid">
                 <thead>
                   <tr>
-                    <th>Task</th>
+                    <th className="dgv-costing-tasks__wrap">Task</th>
                     <th>Employee</th>
                     <th>Status</th>
-                    <th>Est.</th>
-                    <th>Planned</th>
-                    <th>Actual</th>
+                    <th className="dgv-costing-tasks__num">Est.</th>
+                    <th className="dgv-costing-tasks__num">Planned</th>
+                    <th className="dgv-costing-tasks__num">Actual</th>
                     <th>Assigned</th>
                     <th>Submitted</th>
                     <th>Completed</th>
-                    <th>Rate</th>
-                    <th>Cost</th>
+                    <th className="dgv-costing-tasks__wrap">Rate</th>
+                    <th className="dgv-costing-tasks__num">Cost</th>
                     <th>Cost status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row) => (
+                  {visibleRows.map((row) => (
                     <tr key={`${row.taskId}:${row.email}`}>
-                      <td>
+                      <td className="dgv-costing-tasks__wrap">
                         <Link to={`/admin/tasks/${row.taskId}`}>
                           {row.title || row.taskId}
                         </Link>
                       </td>
                       <td>
                         {row.employeeName || row.email}
-                        <div style={{ fontSize: 12, color: colors.textMuted }}>
-                          {row.email}
-                        </div>
+                        <div className="dgv-costing-tasks__meta">{row.email}</div>
                       </td>
                       <td>{row.assignmentStatus}</td>
-                      <td>{hoursLabel(row.estimatedHours)}</td>
-                      <td>{hoursLabel(row.plannedHours)}</td>
-                      <td>{hoursLabel(row.actualHours)}</td>
-                      <td>{formatReportDate(row.assignedAt)}</td>
-                      <td>{formatReportDate(row.submittedAt)}</td>
-                      <td>
-                        {row.completedDate || formatReportDate(row.completedAt)}
+                      <td className="dgv-costing-tasks__num">
+                        {hoursLabel(row.estimatedHours)}
                       </td>
+                      <td className="dgv-costing-tasks__num">
+                        {hoursLabel(row.plannedHours)}
+                      </td>
+                      <td className="dgv-costing-tasks__num">
+                        {hoursLabel(row.actualHours)}
+                      </td>
+                      <td>{formatTaskDate(row.assignedAt)}</td>
+                      <td>{formatTaskDate(row.submittedAt)}</td>
                       <td>
+                        {formatTaskDate(row.completedDate || row.completedAt)}
+                      </td>
+                      <td className="dgv-costing-tasks__wrap">
                         {moneyUsd(row.hourlyRateUsd)}
-                        <div style={{ fontSize: 12, color: colors.textMuted }}>
+                        <div className="dgv-costing-tasks__meta">
                           {rateSourceLabel(row.rateSource)}
                           {row.rateVersionId ? ` · ${row.rateVersionId}` : ""}
                         </div>
                       </td>
-                      <td>{moneyUsd(row.amountUsd)}</td>
+                      <td className="dgv-costing-tasks__num">
+                        {moneyUsd(row.amountUsd)}
+                      </td>
                       <td>
                         <div>{costStatusLabel(row.costStatus)}</div>
                         {costingBasisNote(row) ? (
-                          <div style={{ fontSize: 12, color: colors.textMuted }}>
+                          <div className="dgv-costing-tasks__meta">
                             {costingBasisNote(row)}
                           </div>
                         ) : null}
                         {row.reason ? (
-                          <div style={{ fontSize: 12, color: colors.textMuted }}>
-                            {row.reason}
-                          </div>
+                          <div className="dgv-costing-tasks__meta">{row.reason}</div>
                         ) : null}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
+            <nav
+              aria-label="Task pagination"
+              style={{
+                display: "flex",
+                gap: 8,
+                marginTop: 16,
+                flexWrap: "wrap",
+                alignItems: "center",
+              }}
+            >
+              <span>
+                {rows.length} {rows.length === 1 ? "task" : "tasks"}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={currentTaskPage <= 1}
+                onClick={() => setTaskPage(currentTaskPage - 1)}
+              >
+                Previous
+              </Button>
+              {taskPageList.map((pageNumber, index) => {
+                const previous = taskPageList[index - 1];
+                const gap = previous != null && pageNumber - previous > 1;
+                return (
+                  <span key={pageNumber} style={{ display: "inline-flex", gap: 8 }}>
+                    {gap ? <span aria-hidden="true">…</span> : null}
+                    <Button
+                      type="button"
+                      variant={pageNumber === currentTaskPage ? "primary" : "outline"}
+                      aria-label={`Page ${pageNumber}`}
+                      aria-current={pageNumber === currentTaskPage ? "page" : undefined}
+                      onClick={() => setTaskPage(pageNumber)}
+                    >
+                      {pageNumber}
+                    </Button>
+                  </span>
+                );
+              })}
+              <Button
+                type="button"
+                variant="outline"
+                disabled={currentTaskPage >= taskPageCount}
+                onClick={() => setTaskPage(currentTaskPage + 1)}
+              >
+                Next
+              </Button>
+            </nav>
             <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
               <Button
                 type="button"

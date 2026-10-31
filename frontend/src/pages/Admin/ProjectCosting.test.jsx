@@ -29,7 +29,44 @@ import {
   PARTIAL_COLLECTED_AMOUNT_LABEL,
 } from "../../utils/costingReports";
 
+function assignment(n, title) {
+  return {
+    taskId: `t${n}`,
+    email: "rahul@mydgv.com",
+    employeeName: "Rahul",
+    title: title || `Task ${n}`,
+    assignmentStatus: "DONE",
+    estimatedHours: 1,
+    plannedHours: 1,
+    actualHours: 1,
+    costStatus: "COSTED",
+    amountUsd: 1,
+  };
+}
+
+function costingPayload(projectId, name, assignments) {
+  return {
+    project: {
+      projectId,
+      name,
+      projectCode: projectId === "p1" ? "INT-001" : "EXT-002",
+      projectType: "INTERNAL",
+    },
+    summary: {
+      taskCount: assignments.length,
+      completedTaskCount: assignments.length,
+      completedActualHours: assignments.length,
+      confirmedCostUsd: assignments.length,
+      pendingReviewHours: 0,
+      missingRateCount: 0,
+      missingCostRecordCount: 0,
+    },
+    assignments,
+  };
+}
+
 beforeEach(() => {
+  route.projectId = "p1";
   fetchProjectCosting.mockResolvedValue({
     project: {
       projectId: "p1",
@@ -194,4 +231,122 @@ test("refreshing a complete project response clears truncation", async () => {
     expect(screen.getByText("$6.75")).toBeInTheDocument();
   });
   expect(screen.queryByText(INCOMPLETE_TOTAL_DISPLAY)).not.toBeInTheDocument();
+});
+
+test("task table keeps readable dates and pagination below the rows", async () => {
+  render(<ProjectCosting />);
+  const title = await screen.findByText("Done work");
+  const table = screen.getByRole("table");
+  expect(table.closest(".dgv-costing-tasks")).not.toBeNull();
+  expect(title.closest("td")).toHaveClass("dgv-costing-tasks__wrap");
+  expect(screen.getByText("11 Feb 2026")).toBeInTheDocument();
+  expect(screen.getByText("rahul@mydgv.com").closest("div")).toHaveClass(
+    "dgv-costing-tasks__meta"
+  );
+  const nav = screen.getByRole("navigation", { name: "Task pagination" });
+  expect(
+    table.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy();
+  expect(screen.getByText("Confirmed cost")).toBeInTheDocument();
+});
+
+test("shows 10 tasks per page and moves with next and previous", async () => {
+  const assignments = Array.from({ length: 12 }, (_, index) =>
+    assignment(index + 1)
+  );
+  fetchProjectCosting.mockResolvedValue(
+    costingPayload("p1", "Portal", assignments)
+  );
+  render(<ProjectCosting />);
+  expect(await screen.findByText("Task 1")).toBeInTheDocument();
+  for (let n = 1; n <= 10; n += 1) {
+    expect(screen.getByText(`Task ${n}`)).toBeInTheDocument();
+  }
+  expect(screen.queryByText("Task 11")).not.toBeInTheDocument();
+  expect(screen.queryByText("Task 12")).not.toBeInTheDocument();
+  expect(screen.getByText("12 tasks")).toBeInTheDocument();
+  expect(screen.getByText("Tasks").parentElement).toHaveTextContent("12");
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Page 1" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(screen.getByText("Task 11")).toBeInTheDocument();
+  expect(screen.getByText("Task 12")).toBeInTheDocument();
+  expect(screen.queryByText("Task 1")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Page 2" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Previous" }));
+  expect(screen.getByText("Task 1")).toBeInTheDocument();
+  expect(screen.queryByText("Task 11")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Page 1" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+});
+
+test("returns to page 1 when the project or loaded task dataset changes", async () => {
+  fetchProjectCosting.mockResolvedValue(
+    costingPayload(
+      "p1",
+      "Portal",
+      Array.from({ length: 12 }, (_, index) => assignment(index + 1))
+    )
+  );
+  const view = render(<ProjectCosting />);
+  expect(await screen.findByText("Task 10")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(screen.getByText("Task 11")).toBeInTheDocument();
+
+  fetchProjectCosting.mockResolvedValue(
+    costingPayload("p1", "Portal", [
+      assignment(1, "Kept alpha"),
+      assignment(2, "Kept beta"),
+      assignment(3, "Kept gamma"),
+    ])
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(await screen.findByText("Kept alpha")).toBeInTheDocument();
+  expect(screen.getByText("Kept gamma")).toBeInTheDocument();
+  expect(screen.queryByText("Task 11")).not.toBeInTheDocument();
+  expect(screen.getByText("3 tasks")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Page 1" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+
+  fetchProjectCosting.mockResolvedValue(
+    costingPayload(
+      "p1",
+      "Portal",
+      Array.from({ length: 12 }, (_, index) => assignment(index + 1))
+    )
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(await screen.findByText("Task 1")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(screen.getByText("Task 11")).toBeInTheDocument();
+
+  route.projectId = "p2";
+  fetchProjectCosting.mockResolvedValue(
+    costingPayload("p2", "Other", [assignment(1, "Other project task")])
+  );
+  view.rerender(<ProjectCosting />);
+  expect(
+    await screen.findByRole("heading", { name: "Other" })
+  ).toBeInTheDocument();
+  expect(screen.getByText("Other project task")).toBeInTheDocument();
+  expect(screen.queryByText("Task 11")).not.toBeInTheDocument();
+  expect(screen.getByText("1 task")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Page 1" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
 });

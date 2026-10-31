@@ -30,6 +30,8 @@ jest.mock("../services/api", () => ({
   markDocumentNotificationsSeen: jest.fn(),
 }));
 
+import fs from "fs";
+import path from "path";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Layout from "./Layout";
@@ -161,6 +163,22 @@ test("existing individual mark-read still works", async () => {
   await waitFor(() =>
     expect(markNotificationRead).toHaveBeenCalledWith("NOTIFY#1")
   );
+});
+
+test("top navbar stays sticky without nesting another page scrollbar", () => {
+  const css = fs.readFileSync(
+    path.join(__dirname, "../styles/design-system.css"),
+    "utf8"
+  );
+  const shell = css.match(/\.dgv-shell \{[^}]+\}/)[0];
+  const navbar = css.match(/\.dgv-navbar \{[^}]+\}/)[0];
+  const main = css.match(/\.dgv-main-wrap \{[^}]+\}/)[0];
+  expect(shell).toMatch(/overflow-x:\s*clip/);
+  expect(shell).not.toMatch(/overflow-y:\s*(auto|scroll)/);
+  expect(navbar).toMatch(/position:\s*sticky/);
+  expect(navbar).toMatch(/top:\s*0/);
+  expect(navbar).toMatch(/z-index:\s*30/);
+  expect(main).not.toMatch(/overflow-y:\s*(auto|scroll)/);
 });
 
 test("duplicate mark-all clicks while in flight are ignored", async () => {

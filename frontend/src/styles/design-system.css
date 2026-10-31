@@ -184,7 +184,8 @@ a {
   min-height: 100vh;
   display: flex;
   color: var(--dgv-text);
-  overflow-x: hidden;
+  /* clip avoids a scrollport, so the sticky navbar can stick to the page */
+  overflow-x: clip;
 }
 
 .dgv-main-wrap {
@@ -517,6 +518,7 @@ a {
   position: sticky;
   top: 0;
   z-index: 30;
+  flex-shrink: 0;
   height: var(--dgv-navbar-h);
   display: flex;
   align-items: center;
@@ -3784,4 +3786,74 @@ button:disabled.dgv-btn {
     font-weight: 700;
     color: var(--dgv-text-muted);
   }
+}
+
+.dgv-costing-tasks {
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid var(--dgv-border);
+  border-radius: 12px;
+  background: var(--dgv-bg);
+}
+
+.dgv-costing-tasks__scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: clip;
+}
+
+.dgv-costing-tasks__grid {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--dgv-surface-solid);
+  border-radius: 8px;
+}
+
+.dgv-costing-tasks__grid th,
+.dgv-costing-tasks__grid td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--dgv-divider);
+  text-align: left;
+  vertical-align: top;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.dgv-costing-tasks__grid th {
+  background: var(--dgv-bg);
+  color: var(--dgv-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dgv-costing-tasks__grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.dgv-costing-tasks__grid th.dgv-costing-tasks__num,
+.dgv-costing-tasks__grid td.dgv-costing-tasks__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dgv-costing-tasks__grid td.dgv-costing-tasks__wrap {
+  width: 16rem;
+  min-width: 10rem;
+  max-width: 18rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.dgv-costing-tasks__meta {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--dgv-text-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
