@@ -13,6 +13,7 @@ jest.mock("../../services/api", () => ({
   fetchCostRateEmployee: jest.fn(),
   saveCostRateEmployee: jest.fn(),
   setCostRateEmployeeStatus: jest.fn(),
+  fetchCostingRoster: jest.fn(),
 }));
 
 import { render, screen, waitFor } from "@testing-library/react";

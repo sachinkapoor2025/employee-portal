@@ -1648,6 +1648,13 @@ exports.handler = async (event) => {
     if (costingProject) {
       return json(405, { error: "Method not allowed" });
     }
+    if (costingReports.costingRosterPathMatch(path) && method === "GET") {
+      const result = await costingReports.handleGetCostingRoster(costRatesCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (costingReports.costingRosterPathMatch(path)) {
+      return json(405, { error: "Method not allowed" });
+    }
     const costingEmployee = costingReports.costingEmployeePathMatch(
       path,
       event.pathParameters

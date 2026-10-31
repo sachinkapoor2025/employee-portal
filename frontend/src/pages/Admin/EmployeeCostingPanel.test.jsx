@@ -20,6 +20,11 @@ import {
   PARTIAL_COLLECTED_AMOUNT_LABEL,
 } from "../../utils/costingReports";
 
+function metricCard(label) {
+  return screen.getByText(label, { selector: ".dgv-costing-metrics__label" })
+    .parentElement;
+}
+
 beforeEach(() => {
   fetchEmployeeCosting.mockResolvedValue({
     employee: { email: "rahul@mydgv.com", name: "Rahul" },
@@ -62,9 +67,11 @@ beforeEach(() => {
 
 test("loads employee costing for the selected date range", async () => {
   render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
-  expect(await screen.findByText("Banner")).toBeInTheDocument();
+  expect(await screen.findByRole("link", { name: "Portal" })).toBeInTheDocument();
+  expect(screen.queryByText("Banner")).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Task" })).not.toBeInTheDocument();
   expect(screen.getAllByText("$6.75").length).toBeGreaterThan(0);
-  expect(screen.getByText(/Missing rate 1/)).toBeInTheDocument();
+  expect(metricCard("Missing rate")).toHaveTextContent("1");
   expect(fetchEmployeeCosting).toHaveBeenCalledWith(
     "rahul@mydgv.com",
     expect.objectContaining({
@@ -77,20 +84,19 @@ test("loads employee costing for the selected date range", async () => {
     screen.queryByText(/more assignments than the report window/i)
   ).not.toBeInTheDocument();
   expect(screen.queryByText(INCOMPLETE_REPORT_TITLE)).not.toBeInTheDocument();
-  expect(screen.getByText(/Confirmed cost \$6\.75/)).toBeInTheDocument();
+  expect(metricCard("Confirmed cost")).toHaveTextContent("$6.75");
   expect(
     screen.queryByText(PARTIAL_COLLECTED_AMOUNT_LABEL, { exact: false })
   ).not.toBeInTheDocument();
   expect(
-    screen.getByText(/empty range is not proof that earlier work never existed/i)
+    screen.getByText(/approved task snapshots within the selected date range/i)
   ).toBeInTheDocument();
   expect(
-    screen.getByText(/only includes assignments that have an employee index pointer/i)
+    screen.getByText(/Pending review and missing records are not included/i)
   ).toBeInTheDocument();
-  expect(screen.getByText("Costed")).toBeInTheDocument();
 });
 
-test("shows missing-rate and legacy-baseline notes on employee rows", async () => {
+test("does not render task rows returned with the costing summary", async () => {
   fetchEmployeeCosting.mockResolvedValueOnce({
     summary: { missingRateCount: 1, confirmedCostUsd: 6, completedActualHours: 6 },
     projects: [],
@@ -117,18 +123,20 @@ test("shows missing-rate and legacy-baseline notes on employee rows", async () =
     truncated: false,
   });
   render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
-  expect(await screen.findByText("No rate task")).toBeInTheDocument();
+  expect(await screen.findByText("Confirmed cost")).toBeInTheDocument();
+  expect(screen.queryByText("No rate task")).not.toBeInTheDocument();
+  expect(screen.queryByText("Legacy task")).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Task" })).not.toBeInTheDocument();
   expect(
-    screen.getByText("No applicable rate is stored, so there is no confirmed cost.")
-  ).toBeInTheDocument();
-  expect(
-    screen.getByText("Current-rate baseline. Not a historically verified rate.")
-  ).toBeInTheDocument();
+    screen.queryByText("No applicable rate is stored, so there is no confirmed cost.")
+  ).not.toBeInTheDocument();
+  expect(metricCard("Missing rate")).toHaveTextContent("1");
+  expect(metricCard("Confirmed cost")).toHaveTextContent("$6.00");
 });
 
 test("resets the cursor when the date filter changes and on refresh", async () => {
   render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
-  expect(await screen.findByText("Banner")).toBeInTheDocument();
+  expect(await screen.findByRole("link", { name: "Portal" })).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Load more" }));
   expect(fetchEmployeeCosting).toHaveBeenLastCalledWith(
     "rahul@mydgv.com",
@@ -220,22 +228,18 @@ test("warns when employee costing results are truncated", async () => {
   expect(
     screen.getByText(/not a complete or authoritative cost/i)
   ).toBeInTheDocument();
-  expect(screen.getByText(/Confirmed cost Incomplete — not authoritative/)).toBeInTheDocument();
-  expect(screen.queryByText(/Confirmed cost \$6\.75/)).not.toBeInTheDocument();
+  expect(metricCard("Confirmed cost")).toHaveTextContent(INCOMPLETE_TOTAL_DISPLAY);
+  expect(metricCard("Confirmed cost")).not.toHaveTextContent("$6.75");
   expect(
     screen.getByText(`${PARTIAL_COLLECTED_AMOUNT_LABEL}: $6.75`)
   ).toBeInTheDocument();
-  expect(screen.getByText(INCOMPLETE_TOTAL_DISPLAY)).toBeInTheDocument();
-  expect(
-    screen.getByText(/empty range is not proof that earlier work never existed/i)
-  ).toBeInTheDocument();
-  expect(screen.getByText("Costed")).toBeInTheDocument();
-  expect(screen.getByText("Pending review")).toBeInTheDocument();
-  expect(screen.getByText("Missing rate")).toBeInTheDocument();
-  expect(screen.getByText("Missing cost record")).toBeInTheDocument();
-  expect(screen.getByText("Reassigned")).toBeInTheDocument();
-  expect(screen.getByText(/Missing rate 1/)).toBeInTheDocument();
-  expect(screen.getByText(/Missing cost records 1/)).toBeInTheDocument();
+  expect(screen.getAllByText(INCOMPLETE_TOTAL_DISPLAY).length).toBeGreaterThan(0);
+  expect(screen.queryByText("Banner")).not.toBeInTheDocument();
+  expect(screen.queryByText("Review work")).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Task" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Portal" })).toBeInTheDocument();
+  expect(metricCard("Missing rate")).toHaveTextContent("1");
+  expect(metricCard("Missing cost records")).toHaveTextContent("1");
 });
 
 test("keeps the truncated warning after loading another page", async () => {
@@ -263,7 +267,7 @@ test("keeps the truncated warning after loading another page", async () => {
     expect(fetchEmployeeCosting).toHaveBeenCalledTimes(2);
   });
   expect(screen.getByText(INCOMPLETE_REPORT_TITLE)).toBeInTheDocument();
-  expect(screen.queryByText(/Confirmed cost \$6\.75/)).not.toBeInTheDocument();
+  expect(metricCard("Confirmed cost")).not.toHaveTextContent("$6.75");
 });
 
 test("refreshing a complete response clears a previous truncation warning", async () => {
@@ -293,7 +297,7 @@ test("refreshing a complete response clears a previous truncation warning", asyn
   await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => {
     expect(screen.queryByText(INCOMPLETE_REPORT_TITLE)).not.toBeInTheDocument();
-    expect(screen.getByText(/Confirmed cost \$6\.75/)).toBeInTheDocument();
+    expect(metricCard("Confirmed cost")).toHaveTextContent("$6.75");
   });
 });
 
@@ -326,6 +330,59 @@ test("changing the date filter cannot leave a stale truncation warning", async (
   });
   await waitFor(() => {
     expect(screen.queryByText(INCOMPLETE_REPORT_TITLE)).not.toBeInTheDocument();
-    expect(screen.getByText(/Confirmed cost \$6\.75/)).toBeInTheDocument();
+    expect(metricCard("Confirmed cost")).toHaveTextContent("$6.75");
   });
+});
+
+test("shows summary metrics as cards and a linked project breakdown", async () => {
+  fetchEmployeeCosting.mockResolvedValueOnce({
+    summary: {
+      completedActualHours: 3,
+      confirmedCostUsd: 6.75,
+      pendingReviewHours: 4,
+      missingRateCount: 1,
+      missingCostRecordCount: 0,
+      unpricedLegacyHours: 2,
+    },
+    projects: [
+      {
+        projectId: "p1",
+        name: "Portal",
+        completedActualHours: 3,
+        confirmedCostUsd: 6.75,
+        missingRateCount: 1,
+        missingCostRecordCount: 0,
+      },
+    ],
+    assignments: [],
+    truncated: false,
+  });
+  render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
+  expect(await screen.findByRole("link", { name: "Portal" })).toHaveAttribute(
+    "href",
+    "/admin/projects/p1/costing"
+  );
+  expect(metricCard("Completed hours")).toHaveTextContent("3");
+  expect(metricCard("Confirmed cost")).toHaveTextContent("$6.75");
+  expect(metricCard("Pending review hours")).toHaveTextContent("4");
+  expect(metricCard("Missing rate")).toHaveTextContent("1");
+  expect(metricCard("Missing cost records")).toHaveTextContent("0");
+  expect(metricCard("Unpriced legacy hours")).toHaveTextContent("2");
+  const projectLink = screen.getByRole("link", { name: "Portal" });
+  const projectTable = projectLink.closest("table");
+  expect(projectTable).toHaveClass("dgv-costing-tasks__grid");
+  expect(projectTable).toHaveClass("dgv-costing-tasks__grid--projects");
+  expect(projectLink.closest(".dgv-costing-tasks")).not.toBeNull();
+  expect(projectLink.closest("td")).toHaveClass("dgv-costing-tasks__wrap");
+  expect(screen.getByRole("columnheader", { name: "Confirmed cost" })).toHaveClass(
+    "dgv-costing-tasks__num"
+  );
+  expect(screen.queryByRole("columnheader", { name: "Task" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Hours" })).not.toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Costing date range" })).toContainElement(
+    screen.getByLabelText("Range")
+  );
+  expect(
+    screen.getByText(/approved task snapshots within the selected date range/i)
+  ).toHaveClass("dgv-costing-note");
 });

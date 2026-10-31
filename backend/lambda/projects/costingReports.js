@@ -1,4 +1,4 @@
-const { GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { GetCommand, QueryCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
 const { normalizeEmail } = require("./projectAccess");
 const escalation = require("./escalation");
@@ -59,6 +59,10 @@ function costingProjectPathMatch(path, pathParameters) {
   if (!decoded.ok) return { malformed: true };
   const projectId = String(decoded.value || "").trim();
   return projectId ? { projectId } : null;
+}
+
+function costingRosterPathMatch(path) {
+  return /\/admin\/costing\/employees$/.test(normalizePath(path));
 }
 
 function costingEmployeePathMatch(path, pathParameters) {
@@ -420,6 +424,31 @@ function summarizeRows(rows) {
     }
   }
   return summary;
+}
+
+function compactConfirmedProjects(rows) {
+  return projectBreakdown(rows)
+    .filter((project) => Number(project.confirmedCostUsd) > 0)
+    .map((project) => ({
+      projectId: project.projectId || null,
+      name: project.name || "",
+      confirmedCostUsd: project.confirmedCostUsd,
+    }));
+}
+
+function buildEmployeeRosterEntry({ email, name, rows, truncated }) {
+  const summary = summarizeRows(rows);
+  return {
+    email,
+    name: name || "",
+    confirmedCostUsd: summary.confirmedCostUsd,
+    truncated: truncated === true,
+    projects: compactConfirmedProjects(rows),
+  };
+}
+
+function includeRosterEntry(entry) {
+  return entry.truncated === true || Number(entry.confirmedCostUsd) > 0;
 }
 
 function projectBreakdown(rows) {
@@ -793,6 +822,87 @@ async function handleGetProjectCosting({
   };
 }
 
+async function scanAccessEmails(ddb, accessTable) {
+  if (!accessTable) return { emails: [], truncated: false };
+  const items = [];
+  let lastKey;
+  let pages = 0;
+  do {
+    const res = await ddb.send(
+      new ScanCommand({
+        TableName: accessTable,
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(res.Items || []));
+    lastKey = res.LastEvaluatedKey;
+    pages += 1;
+  } while (lastKey && pages < maxQueryPagesCap);
+  const emails = [];
+  const seen = new Set();
+  for (const row of items) {
+    const email = normalizeEmail(row.email || row.PK);
+    if (!email || !email.includes("@") || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+  }
+  emails.sort();
+  return { emails, truncated: Boolean(lastKey) };
+}
+
+async function handleGetCostingRoster({
+  user,
+  ddb,
+  tableName,
+  accessTable,
+  profileTable,
+  query,
+}) {
+  const auth = await requireEligiblePortalAdmin({ user, ddb, accessTable });
+  if (!auth.ok) return { statusCode: auth.statusCode, body: auth.body };
+  const from = parseDateKey(query?.from);
+  const to = parseDateKey(query?.to);
+  if (!from.ok || !to.ok) {
+    return { statusCode: 400, body: { error: "Dates must be YYYY-MM-DD." } };
+  }
+  if (from.value && to.value && from.value > to.value) {
+    return { statusCode: 400, body: { error: "from must be on or before to." } };
+  }
+  const listed = await scanAccessEmails(ddb, accessTable);
+  const employees = [];
+  let truncated = listed.truncated;
+  for (const email of listed.emails) {
+    const collected = await collectEmployeeRows({
+      ddb,
+      tableName,
+      profileTable,
+      email,
+    });
+    if (collected.truncated) truncated = true;
+    const filtered = collected.rows.filter((row) =>
+      inCompletedDateRange(row, from.value, to.value)
+    );
+    const entry = buildEmployeeRosterEntry({
+      email,
+      name: filtered[0]?.employeeName || collected.rows[0]?.employeeName || "",
+      rows: filtered,
+      truncated: collected.truncated,
+    });
+    if (includeRosterEntry(entry)) employees.push(entry);
+  }
+  employees.sort((a, b) =>
+    String(a.name || a.email).localeCompare(String(b.name || b.email))
+  );
+  return {
+    statusCode: 200,
+    body: {
+      range: { from: from.value, to: to.value },
+      truncated,
+      employees,
+    },
+  };
+}
+
 async function handleGetEmployeeCosting({
   user,
   email,
@@ -861,6 +971,7 @@ module.exports = {
   STATUS_SUPERSEDED,
   STATUS_UNPRICED_LEGACY,
   costingProjectPathMatch,
+  costingRosterPathMatch,
   costingEmployeePathMatch,
   classifyAssignment,
   buildRow,
@@ -868,7 +979,10 @@ module.exports = {
   projectBreakdown,
   inCompletedDateRange,
   handleGetProjectCosting,
+  handleGetCostingRoster,
   handleGetEmployeeCosting,
+  buildEmployeeRosterEntry,
+  includeRosterEntry,
   setCostingCapsForTest,
   collectEmployeeTaskIds,
   parseCursor,

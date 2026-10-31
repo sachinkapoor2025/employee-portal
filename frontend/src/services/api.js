@@ -350,6 +350,14 @@ export const fetchProjectCosting = (projectId, params = {}) => {
   );
 };
 
+export const fetchCostingRoster = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  const query = qs.toString();
+  return api(`/admin/costing/employees${query ? `?${query}` : ""}`, "GET");
+};
+
 export const fetchEmployeeCosting = (email, params = {}) => {
   const qs = new URLSearchParams();
   if (params.from) qs.set("from", params.from);

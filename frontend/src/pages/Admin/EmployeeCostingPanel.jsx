@@ -7,20 +7,15 @@ import {
   addDaysToKey,
   companyDateKey,
   confirmedCostHeadline,
-  costStatusLabel,
-  costingBasisNote,
   defaultCostingRange,
-  formatReportDate,
   hoursLabel,
   INCOMPLETE_COSTING_TOTALS,
   INCOMPLETE_REPORT_DETAIL,
   INCOMPLETE_REPORT_TITLE,
   INCOMPLETE_TOTAL_DISPLAY,
   isCostingTruncated,
-  mergeCostingPages,
   moneyUsd,
   PARTIAL_COLLECTED_AMOUNT_LABEL,
-  rateSourceLabel,
   withPersistedTruncation,
 } from "../../utils/costingReports";
 
@@ -43,13 +38,48 @@ function rangeForPreset(preset) {
   return defaultCostingRange();
 }
 
+function SummaryMetrics({ summary, truncated }) {
+  const items = [
+    {
+      label: "Completed hours",
+      value: hoursLabel(summary?.completedActualHours),
+    },
+    {
+      label: "Confirmed cost",
+      value: confirmedCostHeadline(truncated, summary?.confirmedCostUsd),
+    },
+    {
+      label: "Pending review hours",
+      value: hoursLabel(summary?.pendingReviewHours),
+    },
+    { label: "Missing rate", value: summary?.missingRateCount ?? 0 },
+    {
+      label: "Missing cost records",
+      value: summary?.missingCostRecordCount ?? 0,
+    },
+    {
+      label: "Unpriced legacy hours",
+      value: hoursLabel(summary?.unpricedLegacyHours),
+    },
+  ];
+  return (
+    <div className="dgv-costing-metrics">
+      {items.map((item) => (
+        <div key={item.label} className="dgv-costing-metrics__card">
+          <div className="dgv-costing-metrics__label">{item.label}</div>
+          <div className="dgv-costing-metrics__value">{item.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function EmployeeCostingPanel({ email }) {
   const initial = defaultCostingRange();
   const [preset, setPreset] = useState("30");
   const [from, setFrom] = useState(initial.from);
   const [to, setTo] = useState(initial.to);
   const [data, setData] = useState(null);
-  const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -79,16 +109,10 @@ export default function EmployeeCostingPanel({ email }) {
         setData((prev) =>
           withPersistedTruncation(prev, result, { paged: Boolean(pageCursor) })
         );
-        setRows((prev) =>
-          mergeCostingPages(prev, result.assignments || [], {
-            reset: !pageCursor,
-          })
-        );
       } catch (err) {
         setError(err.message || "Unable to load employee costing.");
         if (!pageCursor) {
           setData(null);
-          setRows([]);
         }
       } finally {
         setLoading(false);
@@ -108,28 +132,19 @@ export default function EmployeeCostingPanel({ email }) {
   return (
     <div>
       <h3 style={{ marginTop: 0 }}>Costing</h3>
-      <p style={{ color: colors.textMuted, marginTop: 0 }}>
-        Confirmed cost is based on the Admin completion date in Asia/Kolkata.
-        Pending review hours stay separate and are never priced from a later rate.
-        This list only includes assignments that have an employee index pointer
-        or a saved cost snapshot; an empty range is not proof that earlier work
-        never existed. If an assignment is completed while you page through this
-        list, use Refresh to reload totals and rows.
+      <p className="dgv-costing-note">
+        Confirmed cost is based on approved task snapshots within the selected
+        date range.
+        <span className="dgv-costing-note__aside">
+          Pending review and missing records are not included in that total.
+        </span>
       </p>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 12,
-          marginBottom: 16,
-          alignItems: "end",
-        }}
-      >
+      <div className="dgv-costing-filters" role="group" aria-label="Costing date range">
         <label>
           <div style={formLabel}>Range</div>
           <select
             className="dgv-input"
-            style={formInput}
+            style={{ ...formInput, marginBottom: 0 }}
             value={preset}
             onChange={(event) => applyPreset(event.target.value)}
           >
@@ -145,7 +160,7 @@ export default function EmployeeCostingPanel({ email }) {
           <input
             type="date"
             className="dgv-input"
-            style={formInput}
+            style={{ ...formInput, marginBottom: 0 }}
             value={from}
             onChange={(event) => {
               setPreset("custom");
@@ -158,7 +173,7 @@ export default function EmployeeCostingPanel({ email }) {
           <input
             type="date"
             className="dgv-input"
-            style={formInput}
+            style={{ ...formInput, marginBottom: 0 }}
             value={to}
             onChange={(event) => {
               setPreset("custom");
@@ -192,15 +207,7 @@ export default function EmployeeCostingPanel({ email }) {
               </p>
             </div>
           ) : null}
-          <p>
-            Completed hours {hoursLabel(summary?.completedActualHours)} · Confirmed
-            cost {confirmedCostHeadline(truncated, summary?.confirmedCostUsd)} ·
-            Pending review {hoursLabel(summary?.pendingReviewHours)} · Missing
-            rate {summary?.missingRateCount ?? 0} · Missing cost records{" "}
-            {summary?.missingCostRecordCount ?? 0} · Unpriced legacy{" "}
-            {summary?.unpricedLegacyCount ?? 0} (
-            {hoursLabel(summary?.unpricedLegacyHours)} h)
-          </p>
+          <SummaryMetrics summary={summary} truncated={truncated} />
           {truncated ? (
             <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 0 }}>
               {PARTIAL_COLLECTED_AMOUNT_LABEL}:{" "}
@@ -208,95 +215,43 @@ export default function EmployeeCostingPanel({ email }) {
             </p>
           ) : null}
           {(data?.projects || []).length ? (
-            <div style={{ overflowX: "auto", marginBottom: 16 }}>
-              <table className="dgv-projects-table">
-                <thead>
-                  <tr>
-                    <th>Project</th>
-                    <th>Hours</th>
-                    <th>Confirmed cost</th>
-                    <th>Missing</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.projects.map((project) => (
-                    <tr key={project.projectId || project.name}>
-                      <td>
-                        {project.projectId ? (
-                          <Link
-                            to={`/admin/projects/${encodeURIComponent(
-                              project.projectId
-                            )}/costing`}
-                          >
-                            {project.name || project.projectId}
-                          </Link>
-                        ) : (
-                          project.name || "—"
-                        )}
-                      </td>
-                      <td>{hoursLabel(project.completedActualHours)}</td>
-                      <td>
-                        {truncated
-                          ? INCOMPLETE_TOTAL_DISPLAY
-                          : moneyUsd(project.confirmedCostUsd)}
-                      </td>
-                      <td>
-                        {project.missingRateCount} rate /{" "}
-                        {project.missingCostRecordCount} records
-                      </td>
+            <div className="dgv-costing-tasks">
+              <div className="dgv-costing-tasks__scroll">
+                <table className="dgv-costing-tasks__grid dgv-costing-tasks__grid--projects">
+                  <thead>
+                    <tr>
+                      <th className="dgv-costing-tasks__wrap">Project</th>
+                      <th className="dgv-costing-tasks__num">Confirmed cost</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.projects.map((project) => (
+                      <tr key={project.projectId || project.name}>
+                        <td className="dgv-costing-tasks__wrap">
+                          {project.projectId ? (
+                            <Link
+                              to={`/admin/projects/${encodeURIComponent(
+                                project.projectId
+                              )}/costing`}
+                            >
+                              {project.name || project.projectId}
+                            </Link>
+                          ) : (
+                            project.name || "—"
+                          )}
+                        </td>
+                        <td className="dgv-costing-tasks__num">
+                          {truncated
+                            ? INCOMPLETE_TOTAL_DISPLAY
+                            : moneyUsd(project.confirmedCostUsd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : null}
-          <div style={{ overflowX: "auto" }}>
-            <table className="dgv-projects-table">
-              <thead>
-                <tr>
-                  <th>Task</th>
-                  <th>Project</th>
-                  <th>Actual</th>
-                  <th>Assigned</th>
-                  <th>Completed</th>
-                  <th>Rate</th>
-                  <th>Cost</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={`${row.taskId}:${row.email}`}>
-                    <td>
-                      <Link to={`/admin/tasks/${row.taskId}`}>
-                        {row.title || row.taskId}
-                      </Link>
-                    </td>
-                    <td>{row.projectName || row.projectId || "—"}</td>
-                    <td>{hoursLabel(row.actualHours)}</td>
-                    <td>{formatReportDate(row.assignedAt)}</td>
-                    <td>{row.completedDate || formatReportDate(row.completedAt)}</td>
-                    <td>
-                      {moneyUsd(row.hourlyRateUsd)}
-                      <div style={{ fontSize: 12, color: colors.textMuted }}>
-                        {rateSourceLabel(row.rateSource)}
-                        {row.rateVersionId ? ` · ${row.rateVersionId}` : ""}
-                      </div>
-                    </td>
-                    <td>{moneyUsd(row.amountUsd)}</td>
-                    <td>
-                      <div>{costStatusLabel(row.costStatus)}</div>
-                      {costingBasisNote(row) ? (
-                        <div style={{ fontSize: 12, color: colors.textMuted }}>
-                          {costingBasisNote(row)}
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
           <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
             <Button
               type="button"

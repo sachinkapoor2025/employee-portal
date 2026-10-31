@@ -8,6 +8,7 @@ const {
   STATUS_PENDING_REVIEW,
   STATUS_UNPRICED_LEGACY,
   costingProjectPathMatch,
+  costingRosterPathMatch,
   costingEmployeePathMatch,
   classifyAssignment,
   buildRow,
@@ -15,6 +16,8 @@ const {
   inCompletedDateRange,
   handleGetProjectCosting,
   handleGetEmployeeCosting,
+  buildEmployeeRosterEntry,
+  includeRosterEntry,
   setCostingCapsForTest,
   collectEmployeeTaskIds,
   parseCursor,
@@ -931,6 +934,94 @@ assert.strictEqual(
     orphanItems[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-orphan")].amountUsd,
     20
   );
+
+  assert.strictEqual(costingRosterPathMatch("/prod/admin/costing/employees"), true);
+  assert.strictEqual(
+    costingRosterPathMatch("/prod/admin/costing/employees/rahul@mydgv.com"),
+    false
+  );
+  const roster = buildEmployeeRosterEntry({
+    email: "rahul@mydgv.com",
+    name: "Rahul",
+    truncated: false,
+    rows: [
+      {
+        taskId: "t-cost",
+        costStatus: STATUS_COSTED,
+        includeInTotals: true,
+        amountUsd: 10,
+        actualHours: 2,
+        projectId: "p1",
+        projectName: "Portal",
+        completedDate: "2026-02-11",
+      },
+      {
+        taskId: "t-review",
+        costStatus: STATUS_PENDING_REVIEW,
+        includeInTotals: true,
+        amountUsd: 99,
+        actualHours: 5,
+        projectId: "p1",
+        projectName: "Portal",
+        completedDate: "2026-02-12",
+      },
+      {
+        taskId: "t-missing",
+        costStatus: STATUS_MISSING_COST_RECORD,
+        includeInTotals: true,
+        amountUsd: 40,
+        actualHours: 1,
+        projectId: "p2",
+        projectName: "Other",
+        completedDate: "2026-02-13",
+      },
+      {
+        taskId: "t-legacy",
+        costStatus: STATUS_UNPRICED_LEGACY,
+        includeInTotals: false,
+        amountUsd: 80,
+        actualHours: 4,
+        assignmentStatus: "DONE",
+        projectId: "p1",
+        projectName: "Portal",
+        completedDate: "2026-02-14",
+      },
+      {
+        taskId: "t-old",
+        costStatus: STATUS_COSTED,
+        includeInTotals: true,
+        amountUsd: 7,
+        actualHours: 1,
+        projectId: "p1",
+        projectName: "Portal",
+        completedDate: "2025-01-01",
+      },
+    ].filter((row) => inCompletedDateRange(row, "2026-01-01", "2026-03-01")),
+  });
+  assert.strictEqual(roster.confirmedCostUsd, 10);
+  assert.strictEqual(roster.projects.length, 1);
+  assert.strictEqual(roster.projects[0].name, "Portal");
+  assert.strictEqual(roster.projects[0].confirmedCostUsd, 10);
+  assert.strictEqual(includeRosterEntry(roster), true);
+  const empty = buildEmployeeRosterEntry({
+    email: "none@mydgv.com",
+    name: "None",
+    rows: [
+      {
+        taskId: "t-review",
+        costStatus: STATUS_PENDING_REVIEW,
+        includeInTotals: true,
+        amountUsd: 99,
+        actualHours: 5,
+        projectId: "p1",
+        projectName: "Portal",
+      },
+    ],
+    truncated: false,
+  });
+  assert.strictEqual(empty.confirmedCostUsd, 0);
+  assert.deepStrictEqual(empty.projects, []);
+  assert.strictEqual(includeRosterEntry(empty), false);
 
   console.log("costingReports tests passed");
 })().catch((err) => {

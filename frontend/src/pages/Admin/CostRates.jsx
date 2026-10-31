@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import Layout from "../../components/Layout";
+import CostRatesCosting from "./CostRatesCosting";
 import Button from "../../components/ui/Button";
 import Modal, { confirmDiscardIfDirty } from "../../components/ui/Modal";
 import {
@@ -425,6 +426,15 @@ export default function CostRates() {
         >
           Employees
         </button>
+        <button
+          type="button"
+          role="tab"
+          className="dgv-cost-rates-tab"
+          aria-selected={tab === "costing"}
+          onClick={() => setTab("costing")}
+        >
+          Costing
+        </button>
       </div>
 
       {loading ? <p>Loading cost rates…</p> : null}
@@ -500,6 +510,12 @@ export default function CostRates() {
               </table>
             </div>
           )}
+        </div>
+      ) : null}
+
+      {!loading && tab === "costing" ? (
+        <div style={pageCard}>
+          <CostRatesCosting />
         </div>
       ) : null}
 
