@@ -1,4 +1,5 @@
-const { GetCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
+const { randomUUID } = require("crypto");
+const { GetCommand, PutCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   prepareProtectedAssignmentPut,
   putAssignmentSafe,
@@ -17,13 +18,12 @@ const {
 const { parseRequiredHours } = require("./taskTime");
 
 /**
- * Reassignment costing (Phase 2):
- * Each follow-up is a new task with its own assignment date and snapshot.
- * The abandoned source REVIEW row is flagged supersededByTaskId and Admin
- * Complete is rejected with 409 ASSIGNMENT_SUPERSEDED so it cannot become a
- * second payable effort. Source history stays in REVIEW; only the follow-up
- * is costed unless a future workflow explicitly allows completing superseded
- * assignments.
+ * Submission costing:
+ * The snapshot is written when the assignment enters REVIEW, using the rate
+ * effective at that submission instant. Approval does not rewrite it.
+ * A rejected attempt keeps its snapshot. The follow-up is a new task and gets
+ * its own snapshot when that attempt is submitted. Admin Complete of a
+ * superseded source is still rejected with 409 ASSIGNMENT_SUPERSEDED.
  */
 const TYPE_ASSIGNMENT_COST = "ASSIGNMENT_COST";
 const STATUS_COSTED = "COSTED";
@@ -64,6 +64,51 @@ function reportingDateIst(iso, timeZone = companyTimeZone()) {
   const day = parts.find((part) => part.type === "day")?.value;
   if (!year || !month || !day) return null;
   return `${year}-${month}-${day}`;
+}
+
+const COST_INDEX_PAIRED = "PAIRED";
+const COST_INDEX_ABSENT = "ABSENT";
+const COST_INDEX_MISSING_TASK = "MISSING_TASK_COST_INDEX";
+const COST_INDEX_MISSING_EMPLOYEE = "MISSING_EMPLOYEE_COST_INDEX";
+const COST_INDEX_MISMATCH = "COST_INDEX_MISMATCH";
+
+/**
+ * Compare the task cost copy and the employee cost copy.
+ * This does not write or delete either record.
+ * Repair is a later maintenance copy of the surviving item onto the missing
+ * key. Keep the stored amount, rate, hours, submittedAt, and attemptId.
+ * Do not recalculate and do not delete the surviving copy.
+ */
+function diagnoseCostIndexes(taskItem, employeeItem) {
+  if (!taskItem && !employeeItem) {
+    return { status: COST_INDEX_ABSENT, repair: null };
+  }
+  if (taskItem && !employeeItem) {
+    return {
+      status: COST_INDEX_MISSING_EMPLOYEE,
+      repair:
+        "Copy TASK#taskId / COST#email onto USER#email / ASSIGNMENT_COST#taskId. Do not delete the task copy or recalculate the amount.",
+    };
+  }
+  if (!taskItem && employeeItem) {
+    return {
+      status: COST_INDEX_MISSING_TASK,
+      repair:
+        "Copy USER#email / ASSIGNMENT_COST#taskId onto TASK#taskId / COST#email. Do not delete the employee copy or recalculate the amount. The project costing report reads only the task copy, so it stays unpriced until that copy is restored.",
+    };
+  }
+  const paired =
+    taskItem.status === employeeItem.status &&
+    taskItem.amountUsd === employeeItem.amountUsd &&
+    taskItem.actualHours === employeeItem.actualHours;
+  if (!paired) {
+    return {
+      status: COST_INDEX_MISMATCH,
+      repair:
+        "Do not delete either copy. Restore the differing copy from the record that matches the assignment submission. Do not recalculate the amount.",
+    };
+  }
+  return { status: COST_INDEX_PAIRED, repair: null };
 }
 
 function costSk(email) {
@@ -109,7 +154,9 @@ function buildCostSnapshot({
   const projectType = classifyProjectType(project);
   const assignedAt =
     assignment.assignedAt || task.createdAt || nowIso;
-  const completedAt = assignment.completedAt || nowIso;
+  const submittedAt = assignment.submittedAt || null;
+  const completedAt = assignment.completedAt || (submittedAt ? null : nowIso);
+  const datedAt = submittedAt || completedAt;
   const applies = Boolean(resolved?.project?.applies);
   const rate = resolved?.project?.rate;
   const hasRate = applies && isValidPositiveRate(rate);
@@ -134,6 +181,8 @@ function buildCostSnapshot({
     projectType,
     assignmentSk: assignmentSk(email),
     assignedAt,
+    submittedAt,
+    attemptId: assignment.attemptId || null,
     actualHours,
     hourlyRateUsd,
     currency: CURRENCY_USD,
@@ -142,7 +191,7 @@ function buildCostSnapshot({
     designationId: resolved?.designationId || assignment.designationId || null,
     amountUsd,
     completedAt,
-    completedDate: reportingDateIst(completedAt),
+    completedDate: datedAt ? reportingDateIst(datedAt) : null,
     approvedBy: normalizeEmail(approvedBy) || "",
     sourceTaskId: task.sourceTaskId || null,
     createdAt: nowIso,
@@ -478,6 +527,140 @@ async function persistCompletionWithCost({
   }
 }
 
+/**
+ * Write the REVIEW assignment and its two cost copies together.
+ * A second call for the same task and email returns the existing snapshot
+ * and does not create another amount.
+ */
+function submissionActivityPut(tableName, activityItem) {
+  if (!activityItem?.PK || !activityItem?.SK) return null;
+  return {
+    Put: {
+      TableName: tableName,
+      Item: activityItem,
+      ConditionExpression: "attribute_not_exists(PK)",
+    },
+  };
+}
+
+async function putSubmissionActivityOnce(ddb, tableName, activityItem) {
+  const put = submissionActivityPut(tableName, activityItem);
+  if (!put) return;
+  try {
+    await ddb.send(new PutCommand(put.Put));
+  } catch (err) {
+    if (!isConditionalOrCanceled(err)) throw err;
+  }
+}
+
+async function persistSubmissionWithCost({
+  ddb,
+  tableName,
+  assignmentItem,
+  task,
+  assignment,
+  project,
+  nowIso,
+  activityItem = null,
+}) {
+  const hours = parseRequiredHours(assignment?.actualHours);
+  if (!hours.ok) {
+    const err = new Error(hours.error);
+    err.statusCode = 400;
+    err.code = "ACTUAL_HOURS_REQUIRED";
+    throw err;
+  }
+  const email = normalizeEmail(assignment.email);
+  const submittedAt = assignment.submittedAt || nowIso;
+  const attemptId = assignment.attemptId || randomUUID();
+  const pricedAssignment = {
+    ...assignment,
+    actualHours: hours.value,
+    submittedAt,
+    attemptId,
+  };
+  const existing = await getAssignmentCost(ddb, tableName, task.taskId, email);
+  if (existing?.status === STATUS_COSTED || existing?.status === STATUS_MISSING_RATE) {
+    const preserved = await prepareProtectedAssignmentPut(ddb, tableName, {
+      ...assignmentItem,
+      actualHours: existing.actualHours ?? hours.value,
+      submittedAt: existing.submittedAt || submittedAt,
+      attemptId: existing.attemptId || attemptId,
+      status: "REVIEW",
+    });
+    if (preserved.ok) {
+      const written = await putAssignmentSafe(ddb, tableName, preserved.item);
+      assertPersistOk(written, {
+        op: "writeAssignmentWithExistingSubmissionCost",
+        taskId: task.taskId,
+        email,
+      });
+      await putSubmissionActivityOnce(ddb, tableName, activityItem);
+    }
+    return existing;
+  }
+  const resolved = await resolveHourlyRatesAt({
+    ddb,
+    tableName,
+    email,
+    projectType: classifyProjectType(project),
+    atIso: submittedAt,
+  });
+  const snapshots = buildCostSnapshot({
+    task,
+    assignment: pricedAssignment,
+    project,
+    resolved,
+    actualHours: hours.value,
+    approvedBy: "",
+    nowIso,
+  });
+  const prepared = await prepareProtectedAssignmentPut(ddb, tableName, {
+    ...assignmentItem,
+    actualHours: hours.value,
+    submittedAt,
+    attemptId,
+    status: "REVIEW",
+  });
+  if (!prepared.ok) {
+    throw snapshotError(new Error(prepared.reason || "ASSIGNMENT_PREPARE"));
+  }
+  const pointer = userAssignmentPointerItem(prepared.item || assignmentItem);
+  const activityPut = activityItem ? submissionActivityPut(tableName, activityItem) : null;
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          prepared.put,
+          {
+            Put: {
+              TableName: tableName,
+              Item: snapshots.taskItem,
+              ConditionExpression: "attribute_not_exists(PK)",
+            },
+          },
+          {
+            Put: {
+              TableName: tableName,
+              Item: snapshots.employeeItem,
+              ConditionExpression: "attribute_not_exists(PK)",
+            },
+          },
+          ...(pointer ? [pointerPut(tableName, pointer)] : []),
+          ...(activityPut ? [activityPut] : []),
+        ],
+      })
+    );
+    return snapshots.taskItem;
+  } catch (err) {
+    if (isConditionalOrCanceled(err)) {
+      const raced = await getAssignmentCost(ddb, tableName, task.taskId, email);
+      if (raced) return raced;
+    }
+    throw snapshotError(err);
+  }
+}
+
 function supersededError(assignment) {
   const err = new Error(SUPERSEDED_MESSAGE);
   err.statusCode = 409;
@@ -505,10 +688,17 @@ module.exports = {
   costSk,
   employeeCostSk,
   classifyProjectType,
+  COST_INDEX_PAIRED,
+  COST_INDEX_ABSENT,
+  COST_INDEX_MISSING_TASK,
+  COST_INDEX_MISSING_EMPLOYEE,
+  COST_INDEX_MISMATCH,
+  diagnoseCostIndexes,
   getAssignmentCost,
   buildCostSnapshot,
   ensureAssignmentCost,
   persistCompletionWithCost,
+  persistSubmissionWithCost,
   fulfillMissingCost,
   assertNotSuperseded,
 };

@@ -261,6 +261,8 @@ function assignmentRecord(taskId, assignment) {
     ...(assignment.actualHours == null
       ? {}
       : { actualHours: assignment.actualHours }),
+    ...(assignment.submittedAt ? { submittedAt: assignment.submittedAt } : {}),
+    ...(assignment.attemptId ? { attemptId: assignment.attemptId } : {}),
     ...(assignment.supersededByTaskId
       ? {
           supersededByTaskId: assignment.supersededByTaskId,
@@ -321,6 +323,8 @@ function snapshotTask(task, assignments) {
       removed: !!a.removed,
       plannedHours: a.plannedHours == null ? null : a.plannedHours,
       actualHours: a.actualHours == null ? null : a.actualHours,
+      submittedAt: a.submittedAt || null,
+      attemptId: a.attemptId || null,
       supersededByTaskId: a.supersededByTaskId || null,
       supersededAt: a.supersededAt || null,
       supersededReason: a.supersededReason || null,
@@ -504,30 +508,33 @@ async function persistAssignmentsAndTask(task, assignments, options = {}) {
     });
     return merged;
   }
-  const costComplete = options.costComplete || null;
-  const costEmail = costComplete
-    ? escalation.normalizeEmail(costComplete.assignment?.email)
+  const submitCost = options.submitCost || null;
+  const submitEmail = submitCost
+    ? escalation.normalizeEmail(submitCost.assignment?.email)
     : "";
-  const costRow =
-    costComplete && costEmail
+  const submitRow =
+    submitCost && submitEmail
       ? assignments.find(
-          (a) => escalation.normalizeEmail(a.email) === costEmail
+          (a) => escalation.normalizeEmail(a.email) === submitEmail
         )
       : null;
-  if (costRow) {
-    await taskCosting.persistCompletionWithCost({
+  if (submitRow) {
+    const snapshot = await taskCosting.persistSubmissionWithCost({
       ddb,
       tableName: process.env.WORK_TABLE,
-      assignmentItem: assignmentRecord(task.taskId, costRow),
+      assignmentItem: assignmentRecord(task.taskId, submitRow),
       task,
-      assignment: costRow,
-      project: costComplete.project,
-      approvedBy: costComplete.approvedBy,
-      nowIso: costComplete.nowIso,
+      assignment: submitRow,
+      project: submitCost.project,
+      nowIso: submitCost.nowIso,
+      activityItem: submitCost.activityItem || null,
     });
+    if (snapshot?.actualHours != null) submitRow.actualHours = snapshot.actualHours;
+    if (snapshot?.submittedAt) submitRow.submittedAt = snapshot.submittedAt;
+    if (snapshot?.attemptId) submitRow.attemptId = snapshot.attemptId;
   }
   for (const a of assignments) {
-    if (costRow && escalation.normalizeEmail(a.email) === costEmail) continue;
+    if (submitRow && escalation.normalizeEmail(a.email) === submitEmail) continue;
     await writeAssignment(task.taskId, a, options);
   }
   const merged = snapshotTask(task, assignments);
@@ -2342,7 +2349,8 @@ exports.handler = async (event) => {
       let completionTransitioned = false;
       let completedAssignment = null;
       let reviewSubmitted = null;
-      let costAssignment = null;
+      let submitForCost = null;
+      let submissionActivity = null;
       const merged = {
         ...existing,
         ...allowed,
@@ -2648,6 +2656,8 @@ exports.handler = async (event) => {
                 });
               }
               mine.actualHours = parsedActual.value;
+              if (!mine.attemptId) mine.attemptId = randomUUID();
+              if (!mine.submittedAt) mine.submittedAt = nowIso;
               allowed.completionRemark = remark;
               const submitView = escalation.computeAssignmentView(
                 mine,
@@ -2664,23 +2674,65 @@ exports.handler = async (event) => {
               mine.recordedZone = frozenZone;
               mine.highestZone = escalation.maxZone(mine.highestZone, frozenZone);
               if (prev !== "REVIEW") {
-                await appendActivity(
-                  taskId,
-                  "status_changed",
-                  `${mine.email}: ${statusLabel(prev)} → ${statusLabel("REVIEW")}`,
-                  user.email,
-                  { assignmentEmail: mine.email }
-                );
                 reviewSubmitted = {
                   email: mine.email,
                   remark,
                 };
+                submitForCost = mine;
+                const submissionEmail = escalation.normalizeEmail(mine.email);
+                submissionActivity = {
+                  PK: `TASK#${taskId}`,
+                  SK: `ACTIVITY#SUBMISSION#${submissionEmail}`,
+                  activityId: `submission#${submissionEmail}`,
+                  taskId,
+                  action: "status_changed",
+                  detail: `${mine.email}: ${statusLabel(prev)} → ${statusLabel("REVIEW")}`,
+                  actorEmail: user.email,
+                  timestamp: mine.submittedAt || nowIso,
+                  assignmentEmail: submissionEmail,
+                };
               }
             } else if (!mayAdminMutate && nextStatus === "DONE") {
               if (currentStatus === "REVIEW") {
-                return json(400, {
-                  error: "This assignment is already in review",
-                });
+                const existingCost = await taskCosting.getAssignmentCost(
+                  ddb,
+                  process.env.WORK_TABLE,
+                  taskId,
+                  mine.email
+                );
+                const snapshotReady =
+                  existingCost?.status === taskCosting.STATUS_COSTED ||
+                  existingCost?.status === taskCosting.STATUS_MISSING_RATE;
+                if (!snapshotReady) {
+                  return json(400, {
+                    error: "This assignment is already in review",
+                  });
+                }
+                const header = snapshotTask(merged, assignments);
+                header.updatedAt = nowIso;
+                try {
+                  const copies = await putTaskCopies(header);
+                  assertPersistOk(copies, {
+                    op: "repairSubmissionHeader",
+                    taskId,
+                    PK: header.PK,
+                    SK: header.SK,
+                  });
+                } catch (err) {
+                  if (err instanceof PersistConflictError) throw err;
+                  console.error(
+                    "TASK_HEADER_REPAIR_ERROR",
+                    JSON.stringify({ taskId, name: err?.name || "" })
+                  );
+                  return json(500, {
+                    error:
+                      "Unable to save the task cost record. Retry the completion action.",
+                  });
+                }
+                return json(
+                  200,
+                  escalation.decorateTask(header, nowMs, user.email)
+                );
               }
             } else {
               if (nextStatus === "DONE") {
@@ -2703,10 +2755,8 @@ exports.handler = async (event) => {
                     },
                   });
                 }
-                costAssignment = mine;
               }
               await applyStatusToAssignment(mine, allowed.status);
-              if (nextStatus === "DONE") costAssignment = mine;
             }
           }
         } else if (mayAdminMutate && allowed.status === "CANCELLED") {
@@ -2716,6 +2766,8 @@ exports.handler = async (event) => {
         }
       }
 
+      const deferredActivities = [];
+      const deferredNotices = [];
       if (
         mayAdminMutate &&
         (updates.assignees !== undefined || updates.assignee !== undefined)
@@ -2727,13 +2779,11 @@ exports.handler = async (event) => {
           const email = escalation.normalizeEmail(a.email);
           if (!nextSet.has(email) && !a.removed) {
             a.removed = true;
-            await appendActivity(
-              taskId,
-              "task_reassigned",
-              `Removed assignee ${email}`,
-              user.email,
-              { assignmentEmail: email }
-            );
+            deferredActivities.push({
+              action: "task_reassigned",
+              detail: `Removed assignee ${email}`,
+              extra: { assignmentEmail: email },
+            });
           }
         }
         for (const email of emails) {
@@ -2751,32 +2801,15 @@ exports.handler = async (event) => {
                 nowMs
               ),
             });
-            await appendActivity(
-              taskId,
-              "task_assigned",
-              `Assigned to ${email}`,
-              user.email,
-              { assignmentEmail: email }
-            );
-            await notifyTaskEvent(
+            deferredActivities.push({
+              action: "task_assigned",
+              detail: `Assigned to ${email}`,
+              extra: { assignmentEmail: email },
+            });
+            deferredNotices.push({
               email,
-              "TASK_ASSIGNED",
-              `New task assigned: ${merged.title}`,
-              `You have been assigned "${merged.title}".`,
-              `${taskId}#${email}#assigned#${nowIso}`,
-              { taskId },
-              { channel: "inapp" }
-            );
-            if (!merged.__assignmentPlan?.postponementCount) {
-              await notifyAssignedEmployeeEmail(email, merged, {
-                assignedByName:
-                  escalation.pickPersonName(user.name) ||
-                  escalation.displayNameFromEmail(user.email),
-                assignedByEmail: user.email,
-                assignedAt: nowIso,
-                kind: "assigned",
-              });
-            }
+              assignedAt: nowIso,
+            });
           } else if (existingA.removed) {
             existingA.removed = false;
             existingA.assignedAt = nowIso;
@@ -2788,60 +2821,40 @@ exports.handler = async (event) => {
                 nowMs
               );
             }
-            await appendActivity(
-              taskId,
-              "task_assigned",
-              `Assigned to ${email}`,
-              user.email,
-              { assignmentEmail: email }
-            );
-            await notifyTaskEvent(
+            deferredActivities.push({
+              action: "task_assigned",
+              detail: `Assigned to ${email}`,
+              extra: { assignmentEmail: email },
+            });
+            deferredNotices.push({
               email,
-              "TASK_ASSIGNED",
-              `New task assigned: ${merged.title}`,
-              `You have been assigned "${merged.title}".`,
-              `${taskId}#${email}#assigned#${nowIso}`,
-              { taskId },
-              { channel: "inapp" }
-            );
-            if (!merged.__assignmentPlan?.postponementCount) {
-              await notifyAssignedEmployeeEmail(email, merged, {
-                assignedByName:
-                  escalation.pickPersonName(user.name) ||
-                  escalation.displayNameFromEmail(user.email),
-                assignedByEmail: user.email,
-                assignedAt: nowIso,
-                kind: "assigned",
-              });
-            }
+              assignedAt: nowIso,
+            });
           }
         }
         if ([...nextSet].sort().join(",") !== [...current].sort().join(",")) {
-          await appendActivity(
-            taskId,
-            "task_reassigned",
-            emails.length
+          deferredActivities.push({
+            action: "task_reassigned",
+            detail: emails.length
               ? `Assignees: ${emails.join(", ")}`
               : "Task unassigned",
-            user.email
-          );
+          });
         }
       }
+
 
       if (
         mayAdminMutate &&
         allowed.dueDate !== undefined &&
         allowed.dueDate !== existing.dueDate
       ) {
-        await appendActivity(
-          taskId,
-          "deadline_changed",
-          `Deadline changed from ${existing.dueDate || "none"} → ${
+        deferredActivities.push({
+          action: "deadline_changed",
+          detail: `Deadline changed from ${existing.dueDate || "none"} → ${
             allowed.dueDate || "none"
           }`,
-          user.email,
-          { previousDeadline: existing.dueDate || null }
-        );
+          extra: { previousDeadline: existing.dueDate || null },
+        });
         assignments = assignments.map((a) =>
           escalation.resetEscalationForNewDeadline(a, allowed.dueDate, nowMs)
         );
@@ -2850,53 +2863,43 @@ exports.handler = async (event) => {
       }
 
       if (allowed.priority && allowed.priority !== existing.priority) {
-        await appendActivity(
-          taskId,
-          "priority_changed",
-          `Priority changed from ${existing.priority} → ${allowed.priority}`,
-          user.email
-        );
+        deferredActivities.push({
+          action: "priority_changed",
+          detail: `Priority changed from ${existing.priority} → ${allowed.priority}`,
+        });
       }
       if (allowed.archived === true && !existing.archived) {
-        await appendActivity(
-          taskId,
-          "task_archived",
-          "Task archived",
-          user.email
-        );
+        deferredActivities.push({
+          action: "task_archived",
+          detail: "Task archived",
+        });
       }
       if (
         (allowed.title && allowed.title !== existing.title) ||
         (allowed.description !== undefined &&
           allowed.description !== existing.description)
       ) {
-        await appendActivity(
-          taskId,
-          "task_updated",
-          "Task details updated",
-          user.email
-        );
+        deferredActivities.push({
+          action: "task_updated",
+          detail: "Task details updated",
+        });
       }
 
       const assignmentPlan = merged.__assignmentPlan;
       delete merged.__assignmentPlan;
 
       let saved;
-      const shouldCost =
-        costAssignment &&
-        mayAdminMutate &&
-        escalation.isComplete(costAssignment.status);
       try {
-        const project = shouldCost
+        const project = submitForCost
           ? await getProjectItem(merged.projectId)
           : null;
         saved = await persistAssignmentsAndTask(merged, assignments, {
-          costComplete: shouldCost
+          submitCost: submitForCost
             ? {
-                assignment: costAssignment,
+                assignment: submitForCost,
                 project,
-                approvedBy: user.email,
                 nowIso,
+                activityItem: submissionActivity,
               }
             : null,
         });
@@ -2905,7 +2908,7 @@ exports.handler = async (event) => {
         if (err.statusCode === 400) {
           return json(400, { error: err.message, code: err.code });
         }
-        if (shouldCost) {
+        if (submitForCost) {
           console.error(
             "TASK_COST_SNAPSHOT_ERROR",
             JSON.stringify({ taskId, name: err?.name || "" })
@@ -2916,6 +2919,36 @@ exports.handler = async (event) => {
           });
         }
         throw err;
+      }
+      for (const entry of deferredActivities) {
+        await appendActivity(
+          taskId,
+          entry.action,
+          entry.detail,
+          user.email,
+          entry.extra || {}
+        );
+      }
+      for (const notice of deferredNotices) {
+        await notifyTaskEvent(
+          notice.email,
+          "TASK_ASSIGNED",
+          `New task assigned: ${saved.title}`,
+          `You have been assigned "${saved.title}".`,
+          `${taskId}#${notice.email}#assigned#${notice.assignedAt}`,
+          { taskId },
+          { channel: "inapp" }
+        );
+        if (!assignmentPlan?.postponementCount) {
+          await notifyAssignedEmployeeEmail(notice.email, saved, {
+            assignedByName:
+              escalation.pickPersonName(user.name) ||
+              escalation.displayNameFromEmail(user.email),
+            assignedByEmail: user.email,
+            assignedAt: notice.assignedAt,
+            kind: "assigned",
+          });
+        }
       }
       if (assignmentPlan?.postponementCount) {
         await notifyAssignmentPlanPostponement({

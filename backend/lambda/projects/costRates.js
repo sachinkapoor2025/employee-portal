@@ -542,9 +542,8 @@ async function resolveHourlyRatesAt({
     designation = versionAsRateRecord(designationVersion);
     if (designation) {
       designation.designationId = designationId;
-      // Historical costing uses the version that was in force at assignment
-      // time. Later deactivation must not erase that version's rates.
-      designation.status = STATUS_ACTIVE;
+      // Use the version's own status. A later deactivation is a new version
+      // and does not rewrite earlier ones. An inactive version is not a rate.
     }
   }
 

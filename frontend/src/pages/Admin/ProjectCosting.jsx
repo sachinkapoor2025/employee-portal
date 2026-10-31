@@ -42,6 +42,10 @@ function Summary({ summary, truncated }) {
       label: "Missing cost records",
       value: summary?.missingCostRecordCount ?? 0,
     },
+    {
+      label: "Unpriced legacy",
+      value: summary?.unpricedLegacyCount ?? 0,
+    },
   ];
   return (
     <div

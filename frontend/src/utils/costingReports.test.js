@@ -22,6 +22,7 @@ test("formats money and hours without inventing values", () => {
 test("labels missing-rate separately from missing cost records", () => {
   expect(costStatusLabel("MISSING_RATE")).toBe("Missing rate");
   expect(costStatusLabel("MISSING_COST_RECORD")).toBe("Missing cost record");
+  expect(costStatusLabel("UNPRICED_LEGACY")).toBe("Unpriced legacy");
 });
 
 test("default range is 30 IST days inclusive", () => {

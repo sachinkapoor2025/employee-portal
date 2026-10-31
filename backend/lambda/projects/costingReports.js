@@ -8,12 +8,14 @@ const {
   roundUsd,
   reportingDateIst,
   classifyProjectType,
+  diagnoseCostIndexes,
 } = require("./taskCosting");
 
 const STATUS_MISSING_COST_RECORD = "MISSING_COST_RECORD";
 const STATUS_PENDING_REVIEW = "PENDING_REVIEW";
 const STATUS_OPEN = "OPEN";
 const STATUS_SUPERSEDED = "SUPERSEDED";
+const STATUS_UNPRICED_LEGACY = "UNPRICED_LEGACY";
 const MAX_TASKS = 400;
 const MAX_QUERY_PAGES = 40;
 const DEFAULT_LIMIT = 80;
@@ -187,6 +189,8 @@ function emptySummary() {
     pendingReviewHours: 0,
     missingRateCount: 0,
     missingCostRecordCount: 0,
+    unpricedLegacyCount: 0,
+    unpricedLegacyHours: 0,
     currency: "USD",
   };
 }
@@ -199,7 +203,22 @@ function costSk(email) {
   return `COST#${normalizeEmail(email)}`;
 }
 
+function recordedActualHours(assignment) {
+  if (assignment?.actualHours == null || assignment.actualHours === "") return null;
+  const hours = Number(assignment.actualHours);
+  return Number.isFinite(hours) ? hours : null;
+}
+
 function classifyAssignment(assignment, snapshot) {
+  if (snapshot?.status === STATUS_COSTED && snapshot.amountUsd != null) {
+    return { costStatus: STATUS_COSTED, includeInTotals: true };
+  }
+  if (snapshot?.status === STATUS_MISSING_RATE) {
+    return { costStatus: STATUS_MISSING_RATE, includeInTotals: true };
+  }
+  if (recordedActualHours(assignment) != null) {
+    return { costStatus: STATUS_UNPRICED_LEGACY, includeInTotals: false };
+  }
   if (assignment?.supersededByTaskId && !escalation.isComplete(assignment.status)) {
     return { costStatus: STATUS_SUPERSEDED, includeInTotals: false };
   }
@@ -208,12 +227,6 @@ function classifyAssignment(assignment, snapshot) {
   }
   if (!escalation.isComplete(assignment.status)) {
     return { costStatus: STATUS_OPEN, includeInTotals: true };
-  }
-  if (snapshot?.status === STATUS_COSTED && snapshot.amountUsd != null) {
-    return { costStatus: STATUS_COSTED, includeInTotals: true };
-  }
-  if (snapshot?.status === STATUS_MISSING_RATE) {
-    return { costStatus: STATUS_MISSING_RATE, includeInTotals: true };
   }
   return { costStatus: STATUS_MISSING_COST_RECORD, includeInTotals: true };
 }
@@ -232,6 +245,7 @@ function buildRow({
     snapshot?.completedDate ||
     (completedAt ? reportingDateIst(completedAt) : null);
   const costed = classified.costStatus === STATUS_COSTED;
+  const unpricedLegacy = classified.costStatus === STATUS_UNPRICED_LEGACY;
   return {
     taskId: task.taskId,
     projectId: task.projectId || project?.projectId || null,
@@ -243,20 +257,37 @@ function buildRow({
     employeeName: employeeName || "",
     assignmentSk: `ASSIGNMENT#${email}`,
     assignedAt: assignment.assignedAt || task.createdAt || null,
-    submittedAt: assignment.submittedAt || assignment.reviewSubmittedAt || null,
+    submittedAt: unpricedLegacy
+      ? assignment.submittedAt || null
+      : assignment.submittedAt || assignment.reviewSubmittedAt || null,
+    attemptId: assignment.attemptId || null,
     completedAt,
     completedDate,
     assignmentStatus: assignment.status || "TODO",
     costStatus: classified.costStatus,
-    reason: snapshot?.reason || (classified.costStatus === STATUS_MISSING_COST_RECORD
-      ? STATUS_MISSING_COST_RECORD
-      : null),
+    reason: unpricedLegacy
+      ? STATUS_UNPRICED_LEGACY
+      : snapshot?.reason || (classified.costStatus === STATUS_MISSING_COST_RECORD
+        ? STATUS_MISSING_COST_RECORD
+        : null),
     estimatedHours: task.estimatedHours == null ? null : task.estimatedHours,
     plannedHours: assignment.plannedHours == null ? null : assignment.plannedHours,
     actualHours: assignment.actualHours == null ? null : assignment.actualHours,
-    hourlyRateUsd: costed ? snapshot.hourlyRateUsd : snapshot?.hourlyRateUsd ?? null,
-    rateSource: costed ? snapshot.rateSource : snapshot?.rateSource || null,
-    rateVersionId: costed ? snapshot.rateVersionId : snapshot?.rateVersionId || null,
+    hourlyRateUsd: unpricedLegacy
+      ? null
+      : costed
+        ? snapshot.hourlyRateUsd
+        : snapshot?.hourlyRateUsd ?? null,
+    rateSource: unpricedLegacy
+      ? null
+      : costed
+        ? snapshot.rateSource
+        : snapshot?.rateSource || null,
+    rateVersionId: unpricedLegacy
+      ? null
+      : costed
+        ? snapshot.rateVersionId
+        : snapshot?.rateVersionId || null,
     amountUsd: costed ? snapshot.amountUsd : null,
     currency: "USD",
     sourceTaskId: task.sourceTaskId || snapshot?.sourceTaskId || null,
@@ -291,7 +322,8 @@ function inCompletedDateRange(row, from, to) {
   if (
     row.costStatus !== STATUS_COSTED &&
     row.costStatus !== STATUS_MISSING_RATE &&
-    row.costStatus !== STATUS_MISSING_COST_RECORD
+    row.costStatus !== STATUS_MISSING_COST_RECORD &&
+    row.costStatus !== STATUS_UNPRICED_LEGACY
   ) {
     return true;
   }
@@ -307,13 +339,19 @@ function summarizeRows(rows) {
   const taskIds = new Set();
   const completedIds = new Set();
   for (const row of rows) {
-    if (row.includeInTotals || row.costStatus === STATUS_SUPERSEDED) {
+    if (
+      row.includeInTotals ||
+      row.costStatus === STATUS_SUPERSEDED ||
+      row.costStatus === STATUS_UNPRICED_LEGACY
+    ) {
       taskIds.add(row.taskId);
     }
     if (
       row.costStatus === STATUS_COSTED ||
       row.costStatus === STATUS_MISSING_RATE ||
-      row.costStatus === STATUS_MISSING_COST_RECORD
+      row.costStatus === STATUS_MISSING_COST_RECORD ||
+      (row.costStatus === STATUS_UNPRICED_LEGACY &&
+        escalation.isComplete(row.assignmentStatus))
     ) {
       completedIds.add(row.taskId);
     }
@@ -321,6 +359,14 @@ function summarizeRows(rows) {
   summary.taskCount = taskIds.size;
   summary.completedTaskCount = completedIds.size;
   for (const row of rows) {
+    if (row.costStatus === STATUS_UNPRICED_LEGACY) {
+      summary.unpricedLegacyCount += 1;
+      summary.unpricedLegacyHours = addHours(
+        summary.unpricedLegacyHours,
+        row.actualHours
+      );
+      continue;
+    }
     if (!row.includeInTotals) continue;
     if (row.costStatus === STATUS_PENDING_REVIEW) {
       summary.pendingReviewHours = addHours(
@@ -350,6 +396,29 @@ function summarizeRows(rows) {
 function projectBreakdown(rows) {
   const byId = new Map();
   for (const row of rows) {
+    if (row.costStatus === STATUS_UNPRICED_LEGACY) {
+      const id = row.projectId || "unknown";
+      if (!byId.has(id)) {
+        byId.set(id, {
+          projectId: row.projectId,
+          name: row.projectName || "",
+          projectType: row.projectType,
+          completedActualHours: 0,
+          confirmedCostUsd: 0,
+          missingRateCount: 0,
+          missingCostRecordCount: 0,
+          unpricedLegacyCount: 0,
+          unpricedLegacyHours: 0,
+        });
+      }
+      const legacyBucket = byId.get(id);
+      legacyBucket.unpricedLegacyCount += 1;
+      legacyBucket.unpricedLegacyHours = addHours(
+        legacyBucket.unpricedLegacyHours,
+        row.actualHours
+      );
+      continue;
+    }
     if (!row.includeInTotals) continue;
     if (row.costStatus === STATUS_PENDING_REVIEW || row.costStatus === STATUS_OPEN) {
       continue;
@@ -364,6 +433,8 @@ function projectBreakdown(rows) {
         confirmedCostUsd: 0,
         missingRateCount: 0,
         missingCostRecordCount: 0,
+        unpricedLegacyCount: 0,
+        unpricedLegacyHours: 0,
       });
     }
     const bucket = byId.get(id);
@@ -382,6 +453,14 @@ function projectBreakdown(rows) {
     }
   }
   return [...byId.values()];
+}
+
+function isReportRowVisible(row) {
+  return (
+    row.includeInTotals ||
+    row.costStatus === STATUS_SUPERSEDED ||
+    row.costStatus === STATUS_UNPRICED_LEGACY
+  );
 }
 
 function paginateRows(rows, after, limit) {
@@ -582,13 +661,18 @@ async function collectEmployeeRows({
     if (!task || task.archived || isPendingScheduledTask(task)) continue;
     const assignment = await getAssignmentItem(ddb, tableName, taskId, email);
     if (assignment?.removed) continue;
-    const snapshot =
-      (await ddb.send(
-        new GetCommand({
-          TableName: tableName,
-          Key: { PK: `TASK#${taskId}`, SK: costSk(email) },
-        })
-      )).Item || costByTaskId.get(taskId) || null;
+    const taskCost =
+      (
+        await ddb.send(
+          new GetCommand({
+            TableName: tableName,
+            Key: { PK: `TASK#${taskId}`, SK: costSk(email) },
+          })
+        )
+      ).Item || null;
+    const employeeCost = costByTaskId.get(taskId) || null;
+    const snapshot = taskCost || employeeCost || null;
+    const costIndex = diagnoseCostIndexes(taskCost, employeeCost);
     if (!assignment && !snapshot) continue;
     const rowAssignment = assignment || {
       email,
@@ -618,7 +702,11 @@ async function collectEmployeeRows({
         },
         project,
         new Map()
-      )
+      ).map((row) => ({
+        ...row,
+        costIndexDiagnosis: costIndex.status,
+        costIndexRepair: costIndex.repair,
+      }))
     );
   }
   const employeeName = await getProfileName(ddb, profileTable, email);
@@ -655,7 +743,7 @@ async function handleGetProjectCosting({
     profileTable,
     project,
   });
-  const visible = collected.rows.filter((row) => row.includeInTotals || row.costStatus === STATUS_SUPERSEDED);
+  const visible = collected.rows.filter(isReportRowVisible);
   const summary = summarizeRows(collected.rows);
   const page = paginateRows(visible, cursor.after, limit);
   return {
@@ -712,7 +800,7 @@ async function handleGetEmployeeCosting({
   );
   const summary = summarizeRows(filtered);
   const page = paginateRows(
-    filtered.filter((row) => row.includeInTotals || row.costStatus === STATUS_SUPERSEDED),
+    filtered.filter(isReportRowVisible),
     cursor.after,
     limit
   );
@@ -742,6 +830,7 @@ module.exports = {
   STATUS_PENDING_REVIEW,
   STATUS_OPEN,
   STATUS_SUPERSEDED,
+  STATUS_UNPRICED_LEGACY,
   costingProjectPathMatch,
   costingEmployeePathMatch,
   classifyAssignment,

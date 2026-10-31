@@ -6,6 +6,7 @@ const {
 const {
   STATUS_MISSING_COST_RECORD,
   STATUS_PENDING_REVIEW,
+  STATUS_UNPRICED_LEGACY,
   costingProjectPathMatch,
   costingEmployeePathMatch,
   classifyAssignment,
@@ -317,6 +318,25 @@ assert.strictEqual(
   classifyAssignment({ status: "DONE" }).costStatus,
   STATUS_MISSING_COST_RECORD
 );
+assert.strictEqual(
+  classifyAssignment({ status: "DONE", actualHours: 1 }).costStatus,
+  STATUS_UNPRICED_LEGACY
+);
+assert.strictEqual(
+  classifyAssignment({
+    status: "REVIEW",
+    actualHours: 2,
+    supersededByTaskId: "t2",
+  }).costStatus,
+  STATUS_UNPRICED_LEGACY
+);
+assert.strictEqual(
+  classifyAssignment(
+    { status: "REVIEW", actualHours: 7, supersededByTaskId: "t2" },
+    { status: STATUS_COSTED, amountUsd: 70 }
+  ).costStatus,
+  STATUS_COSTED
+);
 
 assert.strictEqual(
   inCompletedDateRange(
@@ -500,20 +520,35 @@ assert.strictEqual(
   assert.strictEqual(project.statusCode, 200);
   assert.strictEqual(project.body.project.projectCode, "INT-001");
   assert.strictEqual(project.body.summary.confirmedCostUsd, 11.25);
-  assert.strictEqual(project.body.summary.completedActualHours, 8);
-  assert.strictEqual(project.body.summary.pendingReviewHours, 4);
+  assert.strictEqual(project.body.summary.completedActualHours, 7);
+  assert.strictEqual(project.body.summary.pendingReviewHours, 0);
   assert.strictEqual(project.body.summary.missingRateCount, 1);
-  assert.strictEqual(project.body.summary.missingCostRecordCount, 1);
+  assert.strictEqual(project.body.summary.missingCostRecordCount, 0);
+  assert.strictEqual(project.body.summary.unpricedLegacyCount, 3);
+  assert.strictEqual(project.body.summary.unpricedLegacyHours, 7);
   assert.strictEqual(project.body.summary.taskCount, 6);
   assert.strictEqual(project.body.summary.completedTaskCount, 4);
   const statuses = project.body.assignments.map((row) => row.costStatus);
   assert.ok(statuses.includes(STATUS_COSTED));
   assert.ok(statuses.includes(STATUS_MISSING_RATE));
-  assert.ok(statuses.includes(STATUS_MISSING_COST_RECORD));
-  assert.ok(statuses.includes(STATUS_PENDING_REVIEW));
-  assert.ok(statuses.includes("SUPERSEDED"));
-  const superseded = project.body.assignments.find((row) => row.taskId === "t-source");
-  assert.strictEqual(superseded.includeInTotals, false);
+  assert.ok(statuses.includes(STATUS_UNPRICED_LEGACY));
+  const legacy = project.body.assignments.find((row) => row.taskId === "t-legacy");
+  assert.strictEqual(legacy.costStatus, STATUS_UNPRICED_LEGACY);
+  assert.strictEqual(legacy.actualHours, 1);
+  assert.strictEqual(legacy.amountUsd, null);
+  assert.strictEqual(legacy.hourlyRateUsd, null);
+  assert.strictEqual(legacy.rateSource, null);
+  assert.strictEqual(legacy.rateVersionId, null);
+  assert.strictEqual(legacy.submittedAt, null);
+  assert.strictEqual(legacy.attemptId, null);
+  assert.strictEqual(legacy.assignmentSk, "ASSIGNMENT#rahul@mydgv.com");
+  assert.strictEqual(legacy.includeInTotals, false);
+  const source = project.body.assignments.find((row) => row.taskId === "t-source");
+  assert.strictEqual(source.costStatus, STATUS_UNPRICED_LEGACY);
+  assert.strictEqual(source.actualHours, 2);
+  assert.strictEqual(source.amountUsd, null);
+  assert.ok(!items[keyOf(WORK, "TASK#t-legacy", "COST#rahul@mydgv.com")]);
+  assert.ok(!items[keyOf(WORK, "TASK#t-source", "COST#rahul@mydgv.com")]);
 
   const paged = await handleGetProjectCosting({
     ...ctx,
@@ -553,7 +588,8 @@ assert.strictEqual(
   assert.strictEqual(employee.statusCode, 200);
   assert.strictEqual(employee.body.employee.name, "Rahul");
   assert.strictEqual(employee.body.summary.confirmedCostUsd, 11.25);
-  assert.strictEqual(employee.body.summary.pendingReviewHours, 4);
+  assert.strictEqual(employee.body.summary.pendingReviewHours, 0);
+  assert.strictEqual(employee.body.summary.unpricedLegacyCount, 3);
   assert.strictEqual(employee.body.summary.taskCount, 6);
   assert.strictEqual(employee.body.summary.completedTaskCount, 4);
   assert.strictEqual(employee.body.truncated, false);
@@ -564,6 +600,14 @@ assert.strictEqual(
     true
   );
   assert.strictEqual(employee.body.assignments.filter((row) => row.taskId === "t-costed").length, 1);
+  assert.strictEqual(
+    employee.body.assignments.find((row) => row.taskId === "t-costed").costIndexDiagnosis,
+    "PAIRED"
+  );
+  assert.strictEqual(
+    employee.body.assignments.find((row) => row.taskId === "t-costed").amountUsd,
+    6.75
+  );
 
   const february = await handleGetEmployeeCosting({
     ...ctx,
@@ -574,8 +618,9 @@ assert.strictEqual(
   assert.strictEqual(february.statusCode, 200);
   assert.strictEqual(february.body.summary.confirmedCostUsd, 11.25);
   assert.strictEqual(february.body.summary.missingCostRecordCount, 0);
-  assert.strictEqual(february.body.summary.pendingReviewHours, 4);
-  assert.strictEqual(february.body.summary.taskCount, 5);
+  assert.strictEqual(february.body.summary.pendingReviewHours, 0);
+  assert.strictEqual(february.body.summary.unpricedLegacyCount, 0);
+  assert.strictEqual(february.body.summary.taskCount, 3);
   assert.strictEqual(february.body.summary.completedTaskCount, 3);
 
   const january = await handleGetEmployeeCosting({
@@ -585,8 +630,10 @@ assert.strictEqual(
     query: { from: "2026-01-01", to: "2026-01-31" },
   });
   assert.strictEqual(january.body.summary.confirmedCostUsd, 0);
-  assert.strictEqual(january.body.summary.missingCostRecordCount, 1);
-  assert.strictEqual(january.body.summary.completedActualHours, 1);
+  assert.strictEqual(january.body.summary.missingCostRecordCount, 0);
+  assert.strictEqual(january.body.summary.unpricedLegacyCount, 1);
+  assert.strictEqual(january.body.summary.unpricedLegacyHours, 1);
+  assert.strictEqual(january.body.summary.completedActualHours, 0);
 
   const empDenied = await handleGetEmployeeCosting({
     ...ctx,
@@ -674,6 +721,145 @@ assert.strictEqual(
   assert.strictEqual(snapReport.body.summary.confirmedCostUsd, 2.25);
   assert.strictEqual(snapReport.body.assignments.length, 1);
   assert.strictEqual(snapReport.body.assignments[0].amountUsd, 2.25);
+
+  const both = seedPeople();
+  both[keyOf(WORK, "ENTITY#PROJECT", "PROJECT#p-both")] = {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#p-both",
+    projectId: "p-both",
+    name: "Both attempts",
+    projectType: "INTERNAL",
+  };
+  seedTask(both, {
+    taskId: "t-attempt-1",
+    projectId: "p-both",
+    title: "Rejected attempt",
+    status: "REVIEW",
+    estimatedHours: 4,
+    assignedAt: "2026-03-01T00:00:00.000Z",
+    assignmentStatus: "REVIEW",
+    actualHours: 7,
+    supersededByTaskId: "t-attempt-2",
+    cost: {
+      status: STATUS_COSTED,
+      amountUsd: 70,
+      hourlyRateUsd: 10,
+      rateSource: "EMPLOYEE",
+      rateVersionId: "v-old",
+      actualHours: 7,
+    },
+  });
+  seedTask(both, {
+    taskId: "t-attempt-2",
+    projectId: "p-both",
+    title: "Second attempt",
+    status: "DONE",
+    estimatedHours: 4,
+    sourceTaskId: "t-attempt-1",
+    assignedAt: "2026-03-02T00:00:00.000Z",
+    assignmentStatus: "DONE",
+    actualHours: 3,
+    completedAt: "2026-03-03T10:00:00.000Z",
+    cost: {
+      status: STATUS_COSTED,
+      amountUsd: 30,
+      hourlyRateUsd: 10,
+      rateSource: "EMPLOYEE",
+      rateVersionId: "v-old",
+      actualHours: 3,
+      completedDate: "2026-03-03",
+    },
+  });
+  seedTask(both, {
+    taskId: "t-unpriced",
+    projectId: "p-both",
+    title: "Legacy hours",
+    status: "DONE",
+    estimatedHours: 4,
+    assignedAt: "2026-03-01T00:00:00.000Z",
+    assignmentStatus: "DONE",
+    actualHours: 5,
+    completedAt: "2026-03-04T10:00:00.000Z",
+  });
+  const bothReport = await handleGetProjectCosting({
+    ddb: memoryDdb(both),
+    tableName: WORK,
+    accessTable: ACCESS,
+    profileTable: PROFILE,
+    user: ADMIN,
+    projectId: "p-both",
+  });
+  assert.strictEqual(bothReport.statusCode, 200);
+  assert.strictEqual(bothReport.body.summary.confirmedCostUsd, 100);
+  assert.strictEqual(bothReport.body.summary.unpricedLegacyCount, 1);
+  assert.strictEqual(bothReport.body.summary.unpricedLegacyHours, 5);
+  const attemptIds = bothReport.body.assignments.map((row) => row.taskId);
+  assert.deepStrictEqual(attemptIds.filter((id) => id === "t-attempt-1"), ["t-attempt-1"]);
+  assert.deepStrictEqual(attemptIds.filter((id) => id === "t-attempt-2"), ["t-attempt-2"]);
+  const unpriced = bothReport.body.assignments.find((row) => row.taskId === "t-unpriced");
+  assert.strictEqual(unpriced.costStatus, STATUS_UNPRICED_LEGACY);
+  assert.strictEqual(unpriced.amountUsd, null);
+  assert.strictEqual(unpriced.submittedAt, null);
+  assert.strictEqual(unpriced.attemptId, null);
+  const employeeBoth = await handleGetEmployeeCosting({
+    ddb: memoryDdb(both),
+    tableName: WORK,
+    accessTable: ACCESS,
+    profileTable: PROFILE,
+    user: ADMIN,
+    email: "rahul@mydgv.com",
+  });
+  assert.strictEqual(employeeBoth.body.summary.confirmedCostUsd, 100);
+  assert.strictEqual(
+    employeeBoth.body.assignments.filter((row) => row.taskId === "t-attempt-1").length,
+    1
+  );
+  assert.ok(!both[keyOf(WORK, "TASK#t-unpriced", "COST#rahul@mydgv.com")]);
+
+  const orphanItems = seedPeople();
+  orphanItems[keyOf(WORK, "ENTITY#PROJECT", "PROJECT#p-orphan")] = {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#p-orphan",
+    projectId: "p-orphan",
+    name: "Orphan",
+    projectType: "INTERNAL",
+  };
+  seedTask(orphanItems, {
+    taskId: "t-orphan",
+    projectId: "p-orphan",
+    title: "Missing task copy",
+    status: "DONE",
+    estimatedHours: 1,
+    assignedAt: "2026-02-01T00:00:00.000Z",
+    assignmentStatus: "DONE",
+    actualHours: 2,
+    completedAt: "2026-02-11T10:00:00.000Z",
+    cost: {
+      status: STATUS_COSTED,
+      amountUsd: 20,
+      hourlyRateUsd: 10,
+      actualHours: 2,
+      completedDate: "2026-02-11",
+    },
+  });
+  delete orphanItems[keyOf(WORK, "TASK#t-orphan", "COST#rahul@mydgv.com")];
+  const orphanReport = await handleGetEmployeeCosting({
+    ddb: memoryDdb(orphanItems),
+    tableName: WORK,
+    accessTable: ACCESS,
+    profileTable: PROFILE,
+    user: ADMIN,
+    email: "rahul@mydgv.com",
+  });
+  const orphanRow = orphanReport.body.assignments.find((row) => row.taskId === "t-orphan");
+  assert.strictEqual(orphanRow.costIndexDiagnosis, "MISSING_TASK_COST_INDEX");
+  assert.match(orphanRow.costIndexRepair, /Do not delete/i);
+  assert.strictEqual(orphanRow.amountUsd, 20);
+  assert.ok(!orphanItems[keyOf(WORK, "TASK#t-orphan", "COST#rahul@mydgv.com")]);
+  assert.strictEqual(
+    orphanItems[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-orphan")].amountUsd,
+    20
+  );
 
   console.log("costingReports tests passed");
 })().catch((err) => {

@@ -13,6 +13,9 @@ const {
   reportingDateIst,
   ensureAssignmentCost,
   persistCompletionWithCost,
+  persistSubmissionWithCost,
+  diagnoseCostIndexes,
+  COST_INDEX_MISSING_TASK,
   getAssignmentCost,
   roundUsd,
 } = require("./taskCosting");
@@ -20,6 +23,8 @@ const {
   handleCreateDesignation,
   handlePatchDesignation,
   handlePutEmployee,
+  handleDesignationStatus,
+  resolveHourlyRatesAt,
 } = require("./costRates");
   const {
     REASON,
@@ -54,6 +59,7 @@ function memoryDdb(seed = {}) {
   const ddb = {
     items,
     transactFails: 0,
+    transacts: [],
     async send(command) {
       if (command instanceof GetCommand) {
         const k = keyOf(
@@ -106,6 +112,7 @@ function memoryDdb(seed = {}) {
         return { Attributes: { ...items[k] } };
       }
       if (command instanceof TransactWriteCommand) {
+        ddb.transacts.push(command.input);
         if (ddb.transactFails > 0) {
           ddb.transactFails -= 1;
           const err = new Error("cancelled");
@@ -599,6 +606,193 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   });
   assert.strictEqual(retryAtomic.status, STATUS_MISSING_RATE);
   assert.strictEqual(retryAtomic.createdAt, atomicOk.createdAt);
+
+  const inactiveDdb = memoryDdb(seedAccess());
+  const inactiveDesignation = await handleCreateDesignation({
+    user: SUPER,
+    ddb: inactiveDdb,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-01-01T00:00:00.000Z",
+    body: { name: "Analyst", internalHourlyRate: 5, externalHourlyRate: 5 },
+  });
+  const inactiveDesignationId = inactiveDesignation.body.designation.designationId;
+  await handlePutEmployee({
+    user: SUPER,
+    email: "rahul@mydgv.com",
+    ddb: inactiveDdb,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-01-01T00:00:00.000Z",
+    body: {
+      designationId: inactiveDesignationId,
+      internalHourlyRate: null,
+      externalHourlyRate: null,
+    },
+  });
+  await handleDesignationStatus({
+    user: SUPER,
+    designationId: inactiveDesignationId,
+    ddb: inactiveDdb,
+    tableName: WORK,
+    accessTable: ACCESS,
+    nowIso: "2026-06-01T00:00:00.000Z",
+    body: { status: "INACTIVE" },
+  });
+  const whileActive = await resolveHourlyRatesAt({
+    ddb: inactiveDdb,
+    tableName: WORK,
+    email: "rahul@mydgv.com",
+    projectType: "INTERNAL",
+    atIso: "2026-03-01T00:00:00.000Z",
+  });
+  assert.strictEqual(whileActive.project.rate, 5);
+  assert.strictEqual(whileActive.project.source, SOURCE_DESIGNATION);
+  const afterInactive = await resolveHourlyRatesAt({
+    ddb: inactiveDdb,
+    tableName: WORK,
+    email: "rahul@mydgv.com",
+    projectType: "INTERNAL",
+    atIso: "2026-07-01T00:00:00.000Z",
+  });
+  assert.strictEqual(afterInactive.project.rate, null);
+  assert.strictEqual(afterInactive.project.reason, REASON.DESIGNATION_INACTIVE);
+
+  /*
+   * Condition checks below use this file's memory store. It rejects a Put
+   * whose ConditionExpression contains attribute_not_exists(PK) when that
+   * key is already present, and it aborts the whole TransactWrite before
+   * applying any item. It is not DynamoDB. Handler tests that store every
+   * Put without reading ConditionExpression do not prove these semantics.
+   */
+  const submitDdb = memoryDdb(seedAccess());
+  const submitAssignment = {
+    PK: "TASK#t-submit",
+    SK: "ASSIGNMENT#rahul@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-submit",
+    email: "rahul@mydgv.com",
+    status: "IN_PROGRESS",
+    assignedAt: "2026-02-01T00:00:00.000Z",
+  };
+  submitDdb.items[keyOf(WORK, submitAssignment.PK, submitAssignment.SK)] = {
+    ...submitAssignment,
+  };
+  const submitActivity = {
+    PK: "TASK#t-submit",
+    SK: "ACTIVITY#SUBMISSION#rahul@mydgv.com",
+    activityId: "submission#rahul@mydgv.com",
+    taskId: "t-submit",
+    action: "status_changed",
+    detail: "rahul@mydgv.com: IN PROGRESS → IN REVIEW",
+    actorEmail: "rahul@mydgv.com",
+    timestamp: "2026-02-02T00:00:00.000Z",
+    assignmentEmail: "rahul@mydgv.com",
+  };
+  const submitArgs = {
+    tableName: WORK,
+    assignmentItem: { ...submitAssignment, status: "REVIEW", actualHours: 7 },
+    task: { taskId: "t-submit", projectId: "p1", createdAt: "2026-02-01T00:00:00.000Z" },
+    assignment: {
+      email: "rahul@mydgv.com",
+      status: "REVIEW",
+      actualHours: 7,
+      assignedAt: "2026-02-01T00:00:00.000Z",
+      submittedAt: "2026-02-02T00:00:00.000Z",
+      attemptId: "attempt-1",
+    },
+    project: { projectType: "INTERNAL" },
+    nowIso: "2026-02-02T00:00:00.000Z",
+    activityItem: submitActivity,
+  };
+  submitDdb.transactFails = 1;
+  let submitErr = null;
+  try {
+    await persistSubmissionWithCost({ ddb: submitDdb, ...submitArgs });
+  } catch (err) {
+    submitErr = err;
+  }
+  assert.strictEqual(submitErr.code, "TASK_COST_SNAPSHOT");
+  assert.strictEqual(
+    submitDdb.items[keyOf(WORK, submitAssignment.PK, submitAssignment.SK)].status,
+    "IN_PROGRESS"
+  );
+  assert.ok(!submitDdb.items[keyOf(WORK, "TASK#t-submit", "COST#rahul@mydgv.com")]);
+  assert.ok(!submitDdb.items[keyOf(WORK, submitActivity.PK, submitActivity.SK)]);
+  const failedTx = submitDdb.transacts[0];
+  const failedKeys = failedTx.TransactItems.map((op) => op.Put.Item.SK);
+  assert.ok(failedKeys.includes("ASSIGNMENT#rahul@mydgv.com"));
+  assert.ok(failedKeys.includes("COST#rahul@mydgv.com"));
+  assert.ok(failedKeys.includes("ASSIGNMENT_COST#t-submit"));
+  assert.ok(failedKeys.includes(submitActivity.SK));
+  assert.ok(
+    failedTx.TransactItems.filter((op) => String(op.Put.Item.SK).startsWith("COST#") || String(op.Put.Item.SK).startsWith("ASSIGNMENT_COST#"))
+      .every((op) => op.Put.ConditionExpression === "attribute_not_exists(PK)")
+  );
+
+  const submitted = await persistSubmissionWithCost({ ddb: submitDdb, ...submitArgs });
+  assert.strictEqual(submitted.status, STATUS_MISSING_RATE);
+  assert.strictEqual(submitted.actualHours, 7);
+  assert.strictEqual(
+    submitDdb.items[keyOf(WORK, submitAssignment.PK, submitAssignment.SK)].status,
+    "REVIEW"
+  );
+  assert.strictEqual(
+    submitDdb.items[keyOf(WORK, submitActivity.PK, submitActivity.SK)].action,
+    "status_changed"
+  );
+  const again = await persistSubmissionWithCost({
+    ddb: submitDdb,
+    ...submitArgs,
+    assignment: { ...submitArgs.assignment, actualHours: 9 },
+  });
+  assert.strictEqual(again.actualHours, 7);
+  assert.strictEqual(again.amountUsd, submitted.amountUsd);
+  const activities = Object.values(submitDdb.items).filter(
+    (item) => item.PK === submitActivity.PK && String(item.SK).startsWith("ACTIVITY#")
+  );
+  assert.strictEqual(activities.length, 1);
+
+  const condDdb = memoryDdb(seedAccess());
+  condDdb.items[keyOf(WORK, submitAssignment.PK, submitAssignment.SK)] = {
+    ...submitAssignment,
+  };
+  condDdb.items[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-submit")] = {
+    PK: "USER#rahul@mydgv.com",
+    SK: "ASSIGNMENT_COST#t-submit",
+    status: STATUS_COSTED,
+    amountUsd: 70,
+    actualHours: 7,
+    email: "rahul@mydgv.com",
+    taskId: "t-submit",
+  };
+  let condErr = null;
+  try {
+    await persistSubmissionWithCost({ ddb: condDdb, ...submitArgs });
+  } catch (err) {
+    condErr = err;
+  }
+  assert.strictEqual(condErr.code, "TASK_COST_SNAPSHOT");
+  assert.strictEqual(
+    condDdb.items[keyOf(WORK, submitAssignment.PK, submitAssignment.SK)].status,
+    "IN_PROGRESS"
+  );
+  assert.strictEqual(
+    condDdb.items[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-submit")].amountUsd,
+    70
+  );
+  assert.ok(!condDdb.items[keyOf(WORK, "TASK#t-submit", "COST#rahul@mydgv.com")]);
+  assert.ok(!condDdb.items[keyOf(WORK, submitActivity.PK, submitActivity.SK)]);
+  const orphan = diagnoseCostIndexes(
+    null,
+    condDdb.items[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-submit")]
+  );
+  assert.strictEqual(orphan.status, COST_INDEX_MISSING_TASK);
+  assert.match(orphan.repair, /Do not delete/i);
+  assert.strictEqual(
+    condDdb.items[keyOf(WORK, "USER#rahul@mydgv.com", "ASSIGNMENT_COST#t-submit")].amountUsd,
+    70
+  );
 
   console.log("taskCosting tests passed");
 })().catch((err) => {

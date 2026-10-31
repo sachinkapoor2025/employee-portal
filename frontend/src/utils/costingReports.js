@@ -17,6 +17,7 @@ export function costStatusLabel(status) {
   if (key === "COSTED") return "Costed";
   if (key === "MISSING_RATE") return "Missing rate";
   if (key === "MISSING_COST_RECORD") return "Missing cost record";
+  if (key === "UNPRICED_LEGACY") return "Unpriced legacy";
   if (key === "PENDING_REVIEW") return "Pending review";
   if (key === "SUPERSEDED") return "Reassigned";
   if (key === "OPEN") return "In progress";

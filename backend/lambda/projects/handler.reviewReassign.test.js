@@ -716,41 +716,54 @@ async function run() {
     assert.strictEqual(blocked.statusCode, 409);
     assert.strictEqual(blocked.body.code, "ASSIGNMENT_SUPERSEDED");
     assert.ok(!costItem(ddb, PRIYA, TASK_ID));
-    const followRow = ddb.items.find(
-      (row) =>
-        row.TableName === WORK &&
-        row.Item.PK === `TASK#${created.body.taskId}` &&
-        row.Item.SK === `ASSIGNMENT#${PRIYA}`
-    );
-    followRow.Item.status = "REVIEW";
-    followRow.Item.actualHours = 3;
-    followRow.Item.completionRemark = "Revised.";
-    for (const row of ddb.items) {
-      if (
-        row.TableName === WORK &&
-        row.Item.taskId === created.body.taskId &&
-        String(row.Item.SK || "").startsWith("TASK#")
-      ) {
-        row.Item.status = "REVIEW";
-      }
-    }
+    const followId = created.body.taskId;
+    const followAssignment = assignmentItem(ddb, PRIYA, followId);
+    ddb.seed(WORK, {
+      PK: `TASK#${followId}`,
+      SK: "ATTACHMENT#follow-proof",
+      attachmentId: "follow-proof",
+      taskId: followId,
+      s3Key: `tasks/${followId}/proof.pdf`,
+      uploadedBy: PRIYA,
+      uploadedAt: followAssignment.assignedAt,
+    });
     const followUp = parse(
       await handler(
+        eventFor(
+          "PUT",
+          {
+            taskId: followId,
+            projectId: PROJECT_ID,
+            status: "DONE",
+            assignmentEmail: PRIYA,
+            completionRemark: "Revised.",
+            actualHours: 3,
+          },
+          PRIYA
+        )
+      )
+    );
+    assert.strictEqual(followUp.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA, followId).status, "REVIEW");
+    const followCost = costItem(ddb, PRIYA, followId);
+    assert.ok(followCost);
+    assert.strictEqual(followCost.status, "COSTED");
+    assert.strictEqual(followCost.hourlyRateUsd, 2.25);
+    assert.strictEqual(followCost.amountUsd, 6.75);
+    assert.strictEqual(followCost.sourceTaskId, TASK_ID);
+    const approved = parse(
+      await handler(
         eventFor("PUT", {
-          taskId: created.body.taskId,
+          taskId: followId,
           projectId: PROJECT_ID,
           status: "DONE",
           assignmentEmail: PRIYA,
         })
       )
     );
-    assert.strictEqual(followUp.statusCode, 200);
-    const followCost = costItem(ddb, PRIYA, created.body.taskId);
-    assert.ok(followCost);
-    assert.strictEqual(followCost.status, "COSTED");
-    assert.strictEqual(followCost.hourlyRateUsd, 2.25);
-    assert.strictEqual(followCost.amountUsd, 6.75);
-    assert.strictEqual(followCost.sourceTaskId, TASK_ID);
+    assert.strictEqual(approved.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA, followId).status, "DONE");
+    assert.strictEqual(costItem(ddb, PRIYA, followId).amountUsd, 6.75);
     assert.ok(!costItem(ddb, PRIYA, TASK_ID));
   });
 

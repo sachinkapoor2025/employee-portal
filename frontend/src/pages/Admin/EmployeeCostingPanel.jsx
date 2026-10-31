@@ -196,7 +196,9 @@ export default function EmployeeCostingPanel({ email }) {
             cost {confirmedCostHeadline(truncated, summary?.confirmedCostUsd)} ·
             Pending review {hoursLabel(summary?.pendingReviewHours)} · Missing
             rate {summary?.missingRateCount ?? 0} · Missing cost records{" "}
-            {summary?.missingCostRecordCount ?? 0}
+            {summary?.missingCostRecordCount ?? 0} · Unpriced legacy{" "}
+            {summary?.unpricedLegacyCount ?? 0} (
+            {hoursLabel(summary?.unpricedLegacyHours)} h)
           </p>
           {truncated ? (
             <p style={{ color: colors.textMuted, fontSize: 13, marginTop: 0 }}>
