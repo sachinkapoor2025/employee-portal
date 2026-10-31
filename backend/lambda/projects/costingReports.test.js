@@ -10,6 +10,7 @@ const {
   costingProjectPathMatch,
   costingEmployeePathMatch,
   classifyAssignment,
+  buildRow,
   summarizeRows,
   inCompletedDateRange,
   handleGetProjectCosting,
@@ -337,6 +338,76 @@ assert.strictEqual(
   ).costStatus,
   STATUS_COSTED
 );
+assert.strictEqual(
+  classifyAssignment(
+    { status: "REVIEW" },
+    { status: "SUBMISSION_BASIS", basisState: "ACTIVE", amountUsd: 6 }
+  ).costStatus,
+  STATUS_PENDING_REVIEW
+);
+assert.strictEqual(
+  classifyAssignment(
+    { status: "DONE" },
+    { status: "SUBMISSION_BASIS", basisState: "ACTIVE", amountUsd: 6 }
+  ).costStatus,
+  STATUS_MISSING_COST_RECORD
+);
+assert.strictEqual(
+  classifyAssignment(
+    { status: "DONE" },
+    { status: "MISSING_RATE", basisState: "RETURNED", amountUsd: null }
+  ).costStatus,
+  STATUS_MISSING_COST_RECORD
+);
+const pendingSummary = summarizeRows([
+  {
+    taskId: "t-review",
+    includeInTotals: true,
+    costStatus: STATUS_PENDING_REVIEW,
+    actualHours: 6,
+    amountUsd: null,
+  },
+  {
+    taskId: "t-done",
+    includeInTotals: true,
+    costStatus: STATUS_COSTED,
+    actualHours: 6,
+    amountUsd: 6,
+  },
+]);
+assert.strictEqual(pendingSummary.pendingReviewHours, 6);
+assert.strictEqual(pendingSummary.confirmedCostUsd, 6);
+assert.strictEqual(pendingSummary.completedActualHours, 6);
+const explained = buildRow({
+  task: { taskId: "t-missing", projectId: "p1", title: "Old" },
+  assignment: { email: "a@mydgv.com", status: "DONE", actualHours: 2 },
+  snapshot: null,
+  project: { projectId: "p1", projectType: "INTERNAL", name: "Portal" },
+  employeeName: "A",
+});
+assert.strictEqual(explained.costStatus, STATUS_UNPRICED_LEGACY);
+assert.strictEqual(explained.amountUsd, null);
+assert.strictEqual(explained.hourlyRateUsd, null);
+assert.strictEqual(explained.reason, STATUS_UNPRICED_LEGACY);
+assert.strictEqual(explained.legacyBaseline, false);
+const basisRow = buildRow({
+  task: { taskId: "t-basis", projectId: "p1", title: "Submitted" },
+  assignment: { email: "a@mydgv.com", status: "DONE", actualHours: 2 },
+  snapshot: {
+    status: "SUBMISSION_BASIS",
+    basisState: "ACTIVE",
+    amountUsd: 6,
+    submissionId: "sub-1",
+    legacyBaseline: false,
+  },
+  project: { projectId: "p1", projectType: "INTERNAL", name: "Portal" },
+  employeeName: "A",
+});
+assert.strictEqual(basisRow.costStatus, STATUS_MISSING_COST_RECORD);
+assert.strictEqual(basisRow.amountUsd, null);
+assert.strictEqual(basisRow.reason, "SUBMISSION_NOT_FINALIZED");
+assert.strictEqual(basisRow.submissionId, "sub-1");
+assert.strictEqual(basisRow.legacyBaseline, false);
 
 assert.strictEqual(
   inCompletedDateRange(

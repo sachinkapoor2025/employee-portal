@@ -1107,6 +1107,12 @@ Resources:
             Path: /admin/costing/employees/{email}
             Method: GET
             RestApiId: !Ref ApiGateway
+        LegacyCostingPreviewGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/costing/legacy-preview
+            Method: GET
+            RestApiId: !Ref ApiGateway
         ProjectsGetApi:
           Type: Api
           Properties:

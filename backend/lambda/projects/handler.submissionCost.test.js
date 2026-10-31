@@ -287,13 +287,14 @@ function setup() {
   assert.ok(firstAssignment.submittedAt);
   assert.ok(firstAssignment.attemptId);
   const firstCost = costItem(ddb, TASK_ID);
-  assert.strictEqual(firstCost.status, "COSTED");
+  assert.strictEqual(firstCost.status, "SUBMISSION_BASIS");
+  assert.strictEqual(firstCost.basisState, "ACTIVE");
   assert.strictEqual(firstCost.actualHours, 7);
   assert.strictEqual(firstCost.hourlyRateUsd, 10);
   assert.strictEqual(firstCost.amountUsd, 70);
   assert.strictEqual(firstCost.rateSource, "EMPLOYEE");
   assert.strictEqual(firstCost.submittedAt, firstAssignment.submittedAt);
-  assert.strictEqual(firstCost.attemptId, firstAssignment.attemptId);
+  assert.ok(firstCost.submissionId);
   assert.strictEqual(firstCost.projectType, "INTERNAL");
 
   const reassigned = parse(
@@ -348,7 +349,8 @@ function setup() {
   assert.strictEqual(secondCost.actualHours, 3);
   assert.strictEqual(secondCost.hourlyRateUsd, 10);
   assert.strictEqual(secondCost.amountUsd, 30);
-  assert.notStrictEqual(secondCost.attemptId, firstCost.attemptId);
+  assert.strictEqual(secondCost.status, "SUBMISSION_BASIS");
+  assert.notStrictEqual(secondCost.submissionId, firstCost.submissionId);
   assert.strictEqual(costItem(ddb, TASK_ID).amountUsd, 70);
   assert.strictEqual(costItem(ddb, TASK_ID).hourlyRateUsd, 10);
 
@@ -364,7 +366,8 @@ function setup() {
       })
     )
   );
-  assert.strictEqual(retry.statusCode, 200);
+  assert.strictEqual(retry.statusCode, 400);
+  assert.strictEqual(retry.body.code, "SUBMISSION_HOURS_LOCKED");
   assert.strictEqual(
     assignmentItem(ddb, followId).completionRemark,
     "Second attempt."
@@ -419,6 +422,8 @@ function setup() {
   );
   assert.strictEqual(approved.statusCode, 200);
   assert.strictEqual(assignmentItem(ddb, followId).status, "DONE");
+  assert.strictEqual(costItem(ddb, followId).status, "COSTED");
+  assert.strictEqual(costItem(ddb, followId).basisState, "FINAL");
   assert.strictEqual(costItem(ddb, followId).amountUsd, 30);
   assert.strictEqual(costItem(ddb, followId).hourlyRateUsd, 10);
 
@@ -432,7 +437,9 @@ function setup() {
     query: {},
   });
   assert.strictEqual(report.statusCode, 200);
-  assert.strictEqual(report.body.summary.confirmedCostUsd, 100);
+  assert.strictEqual(report.body.summary.confirmedCostUsd, 30);
+  assert.strictEqual(costItem(ddb, TASK_ID).amountUsd, 70);
+  assert.notStrictEqual(costItem(ddb, TASK_ID).status, "COSTED");
 
   const bare = createMemoryDdb();
   bare.seed(ACCESS, {
@@ -520,6 +527,7 @@ function setup() {
   assert.strictEqual(missing.statusCode, 200);
   assert.strictEqual(assignmentItem(bare, TASK_ID).status, "REVIEW");
   assert.strictEqual(costItem(bare, TASK_ID).status, "MISSING_RATE");
+  assert.strictEqual(costItem(bare, TASK_ID).basisState, "ACTIVE");
   assert.strictEqual(costItem(bare, TASK_ID).amountUsd, null);
   assert.strictEqual(costItem(bare, TASK_ID).actualHours, 7);
 

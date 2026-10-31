@@ -44,6 +44,41 @@ export function hoursToHhMm(hours) {
   return formatHhMm(h, m);
 }
 
+/**
+ * Apply the same padding the hour field applies on blur.
+ * `2:3` becomes `02:03`. `8:` becomes `08:00`.
+ * Values the blur path does not accept, such as minutes above 59, stay invalid.
+ */
+export function normalizeHhMmInput(raw) {
+  if (raw == null) return "";
+  const text = String(raw).trim();
+  if (!text) return "";
+  if (NEGATIVE_HH_MM_RE.test(text)) return text;
+  const match = text.match(/^(\d{0,4}):(\d{0,2})$/);
+  if (!match) return text;
+  const hoursPart = match[1];
+  const minutesPart = match[2];
+  if (hoursPart === "" && minutesPart === "") return "";
+  const mins = minutesPart === "" ? 0 : Number(minutesPart);
+  const hours = hoursPart === "" ? "00" : padHours(hoursPart);
+  if (!Number.isFinite(mins) || mins > 59) {
+    return `${hours}:${minutesPart || "00"}`;
+  }
+  return `${hours}:${padMinutes(mins)}`;
+}
+
+export function prepareDurationSubmit(raw) {
+  const normalized = normalizeHhMmInput(raw);
+  const parsed = parseHhMmInput(normalized);
+  if (parsed.ok) return { ok: true, normalized, value: parsed.value };
+  return {
+    ok: false,
+    normalized,
+    empty: Boolean(parsed.empty),
+    error: parsed.error,
+  };
+}
+
 export function parseHhMmInput(raw) {
   if (raw == null) return { ok: false, empty: true, error: HH_MM_INVALID };
   const text = String(raw).trim();

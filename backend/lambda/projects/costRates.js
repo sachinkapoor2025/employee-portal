@@ -583,6 +583,55 @@ async function resolveHourlyRatesAt({
   };
 }
 
+/**
+ * Current catalog resolution. Uses the live employee and designation records,
+ * including ACTIVE/INACTIVE. Does not force a historical designation version
+ * back to ACTIVE.
+ */
+async function resolveCurrentHourlyRates({
+  ddb,
+  tableName,
+  email,
+  projectType,
+  atIso,
+} = {}) {
+  const now = atIso || new Date().toISOString();
+  const employeeRates = await getEmployeeRatesItem(ddb, tableName, email);
+  const designationId = String(employeeRates?.designationId || "").trim();
+  const designation = designationId
+    ? await getDesignationItem(ddb, tableName, designationId)
+    : null;
+  const resolved = resolveHourlyRates({ projectType, employeeRates, designation });
+  let rateVersionId = null;
+  const project = resolved.project;
+  if (project?.applies && isValidPositiveRate(project.rate)) {
+    const ownerType =
+      project.source === SOURCE_EMPLOYEE ? OWNER_EMPLOYEE : OWNER_DESIGNATION;
+    const ownerId =
+      ownerType === OWNER_EMPLOYEE ? normalizeEmail(email) : designationId;
+    const versions = ownerId
+      ? await listRateVersions(ddb, tableName, ownerType, ownerId)
+      : [];
+    const chosen = pickEffectiveVersion(versions, now);
+    const field =
+      String(project.projectType || "").toUpperCase() === PROJECT_EXTERNAL
+        ? "externalHourlyRate"
+        : "internalHourlyRate";
+    if (
+      chosen &&
+      String(chosen.status || "").toUpperCase() === STATUS_ACTIVE &&
+      Number(chosen[field]) === Number(project.rate)
+    ) {
+      rateVersionId = chosen.versionId || null;
+    }
+  }
+  return {
+    ...resolved,
+    rateVersionId,
+    designationId: designationId || null,
+  };
+}
+
 function publicEmployeeRates({
   email,
   accessRow,
@@ -1233,6 +1282,7 @@ module.exports = {
   isValidPositiveRate,
   resolveHourlyRates,
   resolveHourlyRatesAt,
+  resolveCurrentHourlyRates,
   publicDesignation,
   publicEmployeeRates,
   handleMalformedPath,

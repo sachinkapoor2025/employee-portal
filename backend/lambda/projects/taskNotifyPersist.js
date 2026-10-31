@@ -99,6 +99,35 @@ function overlayPreservedHours(outgoing, stored) {
   return next;
 }
 
+function keepAuditValue(value) {
+  return value != null && value !== "";
+}
+
+/**
+ * Keep the submission audit fields across unrelated assignment puts.
+ * An explicit null clears the field. A missing field is copied from the stored row.
+ * A new employee submission sets a new submittedAt; that non-empty value is kept.
+ */
+function overlayPreservedSubmission(outgoing, stored) {
+  const next = { ...(outgoing || {}) };
+  if (Object.prototype.hasOwnProperty.call(next, "submittedAt")) {
+    if (!keepAuditValue(next.submittedAt)) delete next.submittedAt;
+  } else if (keepAuditValue(stored?.submittedAt)) {
+    next.submittedAt = stored.submittedAt;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "reviewNotifySubmissionId")) {
+    if (!keepAuditValue(next.reviewNotifySubmissionId)) delete next.reviewNotifySubmissionId;
+  } else if (keepAuditValue(stored?.reviewNotifySubmissionId)) {
+    next.reviewNotifySubmissionId = stored.reviewNotifySubmissionId;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "reviewNotifyPending")) {
+    if (next.reviewNotifyPending !== true) delete next.reviewNotifyPending;
+  } else if (stored?.reviewNotifyPending === true) {
+    next.reviewNotifyPending = true;
+  }
+  return next;
+}
+
 function statusCondition(stored, statusKey, claimedKey) {
   const status = stored?.[statusKey];
   const claimed = stored?.[claimedKey];
@@ -186,6 +215,7 @@ async function putProtectedItem(
     let item = overlayStoredAttrs(outgoing, stored, attrNames);
     item = overlayMissingAttrs(item, stored, preserveAttrs);
     item = overlayPreservedHours(item, stored);
+    item = overlayPreservedSubmission(item, stored);
     const cond = statusCondition(stored, statusKey, claimedKey);
     try {
       await ddb.send(
@@ -464,6 +494,7 @@ async function prepareProtectedAssignmentPut(ddb, tableName, outgoing) {
   let item = overlayStoredAttrs(outgoing, stored, ASSIGNMENT_RED_NOTIFY_ATTRS);
   item = overlayMissingAttrs(item, stored, ASSIGNMENT_BLOCKER_ATTRS);
   item = overlayPreservedHours(item, stored);
+  item = overlayPreservedSubmission(item, stored);
   const cond = statusCondition(
     stored,
     "redAdminNotifyStatus",
@@ -493,6 +524,7 @@ module.exports = {
   overlayStoredAttrs,
   overlayMissingAttrs,
   overlayPreservedHours,
+  overlayPreservedSubmission,
   putCreatedTaskRecords,
   putTaskCopiesSafe,
   putAssignmentSafe,

@@ -209,16 +209,7 @@ function recordedActualHours(assignment) {
   return Number.isFinite(hours) ? hours : null;
 }
 
-function classifyAssignment(assignment, snapshot) {
-  if (snapshot?.status === STATUS_COSTED && snapshot.amountUsd != null) {
-    return { costStatus: STATUS_COSTED, includeInTotals: true };
-  }
-  if (snapshot?.status === STATUS_MISSING_RATE) {
-    return { costStatus: STATUS_MISSING_RATE, includeInTotals: true };
-  }
-  if (recordedActualHours(assignment) != null) {
-    return { costStatus: STATUS_UNPRICED_LEGACY, includeInTotals: false };
-  }
+function unfinishedAssignmentStatus(assignment) {
   if (assignment?.supersededByTaskId && !escalation.isComplete(assignment.status)) {
     return { costStatus: STATUS_SUPERSEDED, includeInTotals: false };
   }
@@ -228,7 +219,37 @@ function classifyAssignment(assignment, snapshot) {
   if (!escalation.isComplete(assignment.status)) {
     return { costStatus: STATUS_OPEN, includeInTotals: true };
   }
-  return { costStatus: STATUS_MISSING_COST_RECORD, includeInTotals: true };
+  return null;
+}
+
+function classifyAssignment(assignment, snapshot) {
+  if (
+    snapshot?.status === STATUS_COSTED &&
+    snapshot.amountUsd != null &&
+    snapshot.basisState !== "RETURNED"
+  ) {
+    return { costStatus: STATUS_COSTED, includeInTotals: true };
+  }
+  if (snapshot?.basisState === "RETURNED" || snapshot?.status === "SUBMISSION_BASIS") {
+    return (
+      unfinishedAssignmentStatus(assignment) || {
+        costStatus: STATUS_MISSING_COST_RECORD,
+        includeInTotals: true,
+      }
+    );
+  }
+  if (snapshot?.status === STATUS_MISSING_RATE) {
+    return { costStatus: STATUS_MISSING_RATE, includeInTotals: true };
+  }
+  if (!snapshot && recordedActualHours(assignment) != null) {
+    return { costStatus: STATUS_UNPRICED_LEGACY, includeInTotals: false };
+  }
+  return (
+    unfinishedAssignmentStatus(assignment) || {
+      costStatus: STATUS_MISSING_COST_RECORD,
+      includeInTotals: true,
+    }
+  );
 }
 
 function buildRow({
@@ -267,9 +288,17 @@ function buildRow({
     costStatus: classified.costStatus,
     reason: unpricedLegacy
       ? STATUS_UNPRICED_LEGACY
-      : snapshot?.reason || (classified.costStatus === STATUS_MISSING_COST_RECORD
-        ? STATUS_MISSING_COST_RECORD
-        : null),
+      : snapshot?.basisState === "RETURNED"
+        ? "SUBMISSION_RETURNED"
+        : snapshot?.status === "SUBMISSION_BASIS"
+          ? "SUBMISSION_NOT_FINALIZED"
+          : snapshot?.reason ||
+            (classified.costStatus === STATUS_MISSING_COST_RECORD
+              ? STATUS_MISSING_COST_RECORD
+              : null),
+    basisState: snapshot?.basisState || null,
+    submissionId: snapshot?.submissionId || null,
+    legacyBaseline: snapshot?.legacyBaseline === true,
     estimatedHours: task.estimatedHours == null ? null : task.estimatedHours,
     plannedHours: assignment.plannedHours == null ? null : assignment.plannedHours,
     actualHours: assignment.actualHours == null ? null : assignment.actualHours,

@@ -7,6 +7,7 @@ import { colors, pageCard, pageSubtitle, pageTitle } from "../../theme";
 import {
   confirmedCostHeadline,
   costStatusLabel,
+  costingBasisNote,
   formatReportDate,
   hoursLabel,
   INCOMPLETE_COSTING_TOTALS,
@@ -227,7 +228,12 @@ export default function ProjectCosting() {
                       </td>
                       <td>{moneyUsd(row.amountUsd)}</td>
                       <td>
-                        {costStatusLabel(row.costStatus)}
+                        <div>{costStatusLabel(row.costStatus)}</div>
+                        {costingBasisNote(row) ? (
+                          <div style={{ fontSize: 12, color: colors.textMuted }}>
+                            {costingBasisNote(row)}
+                          </div>
+                        ) : null}
                         {row.reason ? (
                           <div style={{ fontSize: 12, color: colors.textMuted }}>
                             {row.reason}

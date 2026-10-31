@@ -90,6 +90,42 @@ test("loads employee costing for the selected date range", async () => {
   expect(screen.getByText("Costed")).toBeInTheDocument();
 });
 
+test("shows missing-rate and legacy-baseline notes on employee rows", async () => {
+  fetchEmployeeCosting.mockResolvedValueOnce({
+    summary: { missingRateCount: 1, confirmedCostUsd: 6, completedActualHours: 6 },
+    projects: [],
+    assignments: [
+      {
+        taskId: "t-rate",
+        email: "rahul@mydgv.com",
+        title: "No rate task",
+        costStatus: "MISSING_RATE",
+        actualHours: 6,
+        amountUsd: null,
+      },
+      {
+        taskId: "t-legacy",
+        email: "rahul@mydgv.com",
+        title: "Legacy task",
+        costStatus: "COSTED",
+        legacyBaseline: true,
+        actualHours: 6,
+        amountUsd: 6,
+        hourlyRateUsd: 1,
+      },
+    ],
+    truncated: false,
+  });
+  render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
+  expect(await screen.findByText("No rate task")).toBeInTheDocument();
+  expect(
+    screen.getByText("No applicable rate is stored, so there is no confirmed cost.")
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Current-rate baseline. Not a historically verified rate.")
+  ).toBeInTheDocument();
+});
+
 test("resets the cursor when the date filter changes and on refresh", async () => {
   render(<EmployeeCostingPanel email="rahul@mydgv.com" />);
   expect(await screen.findByText("Banner")).toBeInTheDocument();

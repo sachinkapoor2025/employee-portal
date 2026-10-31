@@ -248,11 +248,53 @@ function seedTask(ddb, extra = {}) {
         return {};
       })(),
     });
+    const status =
+      extra.assignmentStatuses?.[email] || extra.assignmentStatus || "TODO";
+    const seededHours =
+      extra.actualHours === null
+        ? null
+        : extra.actualHours !== undefined
+          ? extra.actualHours
+          : status === "REVIEW" || status === "DONE"
+            ? 2
+            : null;
+    if (
+      extra.seedCostBasis !== false &&
+      (status === "REVIEW" || status === "DONE") &&
+      seededHours != null
+    ) {
+      const basis = {
+        type: "ASSIGNMENT_COST",
+        status: "MISSING_RATE",
+        basisState: "ACTIVE",
+        reason: "UNCLASSIFIED_PROJECT",
+        submissionId: `sub-${email}`,
+        submittedAt: "2026-10-28T04:00:00.000Z",
+        taskId: item.taskId,
+        email,
+        actualHours: seededHours,
+        hourlyRateUsd: null,
+        amountUsd: null,
+        currency: "USD",
+        legacyBaseline: false,
+        createdAt: "2026-10-28T04:00:00.000Z",
+      };
+      ddb.seed(WORK, {
+        ...basis,
+        PK: `TASK#${item.taskId}`,
+        SK: `COST#${email}`,
+      });
+      ddb.seed(WORK, {
+        ...basis,
+        PK: `USER#${email}`,
+        SK: `ASSIGNMENT_COST#${item.taskId}`,
+      });
+    }
   }
   return item;
 }
 
-function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuses, assignmentStatus, proof = false, actualHours } = {}) {
+function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuses, assignmentStatus, proof = false, actualHours, seedCostBasis = true } = {}) {
   const ddb = createMemoryDdb();
   ddb.seed(WORK, {
     PK: "ENTITY#PROJECT",
@@ -284,6 +326,7 @@ function setup({ assignees, startDate, dueDate, title, shifts, assignmentStatuse
     assignmentStatuses,
     assignmentStatus,
     actualHours,
+    seedCostBasis,
   });
   if (proof) seedProof(ddb, TASK_ID, emails[0]);
   setClientsForTests({ ddb });
@@ -1207,11 +1250,129 @@ async function run() {
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 
+  await test("employee retry repairs a stale task header without a second cost record", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    liveAssignment(ddb, PRIYA).completionRemark = "Original review remark.";
+    entityTask(ddb).status = "IN_PROGRESS";
+    const before = costItem(ddb, PRIYA);
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Trying to resubmit.",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.actualHours, 2);
+    assert.strictEqual(mine.completionRemark, "Original review remark.");
+    assert.ok(!mine.completedAt);
+    assert.strictEqual(entityTask(ddb).status, "REVIEW");
+    const after = costItem(ddb, PRIYA);
+    assert.strictEqual(after.submissionId, before.submissionId);
+    assert.strictEqual(after.hourlyRateUsd, before.hourlyRateUsd);
+    assert.strictEqual(
+      ddb.of(WORK).filter((item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`).length,
+      1
+    );
+    assert.ok(!activityItems(ddb).some((item) => item.action === "task_completed"));
+  });
+
+  await test("review without a basis is not approved or given an invented rate", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+      seedCostBasis: false,
+    });
+    liveAssignment(ddb, PRIYA).completionRemark = "Ready for review.";
+    const blocked = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(blocked.statusCode, 400);
+    assert.strictEqual(blocked.body.code, "SUBMISSION_BASIS_REQUIRED");
+    assert.match(blocked.body.error || "", /Do not approve it in place/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 2);
+    assert.ok(!costItem(ddb, PRIYA));
+    const returned = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(returned.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 2);
+    assert.ok(!costItem(ddb, PRIYA));
+    ddb.seed(WORK, {
+      PK: "ENTITY#PROJECT",
+      SK: `PROJECT#${PROJECT_ID}`,
+      projectId: PROJECT_ID,
+      name: "DGV Employee Portal",
+      status: "ACTIVE",
+      projectType: "INTERNAL",
+    });
+    ddb.seed(WORK, {
+      PK: `USER#${PRIYA}`,
+      SK: "COST_RATES",
+      type: "EMPLOYEE_COST_RATES",
+      email: PRIYA,
+      status: "ACTIVE",
+      internalHourlyRate: 1,
+      externalHourlyRate: null,
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    seedProof(ddb);
+    const resubmit = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Submitted after return.",
+          actualHours: 2,
+          proof: true,
+        })
+      )
+    );
+    assert.strictEqual(resubmit.statusCode, 200);
+    const basis = costItem(ddb, PRIYA);
+    assert.ok(basis);
+    assert.strictEqual(basis.basisState, "ACTIVE");
+    assert.strictEqual(basis.actualHours, 2);
+    assert.strictEqual(basis.hourlyRateUsd, 1);
+    assert.strictEqual(basis.amountUsd, 2);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+  });
+
   await test("employee cannot submit DONE while already in REVIEW", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
       assignmentStatus: "REVIEW",
+      seedCostBasis: false,
     });
     liveAssignment(ddb, PRIYA).completionRemark = "Original review remark.";
     const beforeActivities = activityCount(ddb);
@@ -1227,8 +1388,10 @@ async function run() {
       )
     );
     assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.code, "SUBMISSION_BASIS_REQUIRED");
     const mine = assignmentItem(ddb, PRIYA);
     assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.actualHours, 2);
     assert.strictEqual(mine.completionRemark, "Original review remark.");
     assert.ok(!mine.completedAt);
     assert.strictEqual(activityCount(ddb), beforeActivities);
@@ -1646,7 +1809,7 @@ async function run() {
     assert.strictEqual(assignmentItem(second.ddb, PRIYA).actualHours, 24.5);
   });
 
-  await test("employee review submit persists a submission cost snapshot", async () => {
+  await test("employee review submit persists a submission costing basis", async () => {
     const { ddb } = setup({
       startDate: FUTURE_START,
       dueDate: FUTURE_DUE,
@@ -1670,13 +1833,94 @@ async function run() {
     assert.strictEqual(mine.status, "REVIEW");
     assert.ok(mine.submittedAt);
     assert.ok(mine.attemptId);
-    const snap = costItem(ddb, PRIYA);
-    assert.strictEqual(snap.status, "MISSING_RATE");
-    assert.strictEqual(snap.reason, "UNCLASSIFIED_PROJECT");
-    assert.strictEqual(snap.amountUsd, null);
-    assert.strictEqual(snap.actualHours, 6);
-    assert.strictEqual(snap.submittedAt, mine.submittedAt);
-    assert.strictEqual(snap.attemptId, mine.attemptId);
+    const basis = costItem(ddb, PRIYA);
+    assert.ok(basis);
+    assert.strictEqual(basis.basisState, "ACTIVE");
+    assert.strictEqual(basis.status, "MISSING_RATE");
+    assert.strictEqual(basis.actualHours, 6);
+    assert.strictEqual(basis.amountUsd, null);
+    assert.strictEqual(basis.reason, "UNCLASSIFIED_PROJECT");
+    assert.ok(basis.submittedAt);
+    assert.strictEqual(mine.submittedAt, basis.submittedAt);
+    assert.notStrictEqual(mine.reviewNotifyPending, true);
+  });
+
+  await test("submittedAt stays through unrelated edits and return, then changes on resubmit", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const submitted = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Done.",
+          actualHours: 2,
+        })
+      )
+    );
+    assert.strictEqual(submitted.statusCode, 200);
+    const stamp = assignmentItem(ddb, PRIYA).submittedAt;
+    assert.ok(stamp);
+    assert.strictEqual(costItem(ddb, PRIYA).submittedAt, stamp);
+    const renamed = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          title: "Renamed without a new submission",
+        })
+      )
+    );
+    assert.strictEqual(renamed.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).submittedAt, stamp);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+    const returned = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(returned.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 2);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).submittedAt, stamp);
+    const history = ddb
+      .of(WORK)
+      .filter((item) => String(item.SK || "").startsWith("COSTHIST#"));
+    assert.ok(history.some((item) => item.submittedAt === stamp));
+    const again = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Submitted again.",
+          actualHours: 3,
+        })
+      )
+    );
+    assert.strictEqual(again.statusCode, 200);
+    const nextStamp = assignmentItem(ddb, PRIYA).submittedAt;
+    assert.ok(nextStamp);
+    assert.notStrictEqual(nextStamp, stamp);
+    assert.strictEqual(costItem(ddb, PRIYA).submittedAt, nextStamp);
+    assert.strictEqual(costItem(ddb, PRIYA).actualHours, 3);
+    assert.ok(
+      ddb.of(WORK).some(
+        (item) => String(item.SK || "").startsWith("COSTHIST#") && item.submittedAt === stamp
+      )
+    );
   });
 
   await test("admin complete does not create or replace a submission snapshot", async () => {
@@ -1717,6 +1961,61 @@ async function run() {
     const costs = ddb
       .of(WORK)
       .filter((item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`);
+    assert.strictEqual(costs.length, 1);
+  });
+
+  await test("cost snapshot failure leaves the assignment in REVIEW", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    ddb.failCostTransact = 1;
+    const failed = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(failed.statusCode, 500);
+    assert.match(failed.body.error || "", /cost record/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+    assert.strictEqual(costItem(ddb, PRIYA).basisState, "ACTIVE");
+    const afterRefresh = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(afterRefresh.statusCode, 200);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "DONE");
+    const snap = costItem(ddb, PRIYA);
+    assert.ok(snap);
+    assert.strictEqual(snap.status, "MISSING_RATE");
+    const secondRetry = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(secondRetry.statusCode, 200);
+    const costs = ddb
+      .of(WORK)
+      .filter(
+        (item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`
+      );
     assert.strictEqual(costs.length, 1);
   });
 
@@ -1762,7 +2061,7 @@ async function run() {
     const snap = costItem(ddb, PRIYA);
     assert.ok(snap);
     assert.strictEqual(snap.status, "MISSING_RATE");
-    const secondRetry = parse(
+    const locked = parse(
       await handler(
         employeeEvent({
           taskId: TASK_ID,
@@ -1774,20 +2073,18 @@ async function run() {
         })
       )
     );
-    assert.strictEqual(secondRetry.statusCode, 200);
+    assert.strictEqual(locked.statusCode, 400);
+    assert.strictEqual(locked.body.code, "SUBMISSION_HOURS_LOCKED");
     assert.strictEqual(assignmentItem(ddb, PRIYA).completionRemark, "Done.");
-    const costs = ddb
-      .of(WORK)
-      .filter(
-        (item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`
-      );
-    assert.strictEqual(costs.length, 1);
-    assert.strictEqual(costs[0].actualHours, 4);
-    const submissionActivity = activityItems(ddb).filter(
-      (item) => item.action === "status_changed"
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 4);
+    assert.strictEqual(
+      ddb.of(WORK).filter((item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`).length,
+      1
     );
-    assert.strictEqual(submissionActivity.length, 1);
-    assert.strictEqual(submissionActivity[0].SK, `ACTIVITY#SUBMISSION#${PRIYA}`);
+    assert.strictEqual(
+      activityItems(ddb).filter((item) => item.action === "status_changed").length,
+      1
+    );
   });
 
   await test("red-zone submission writes nothing and a reassigned attempt can be submitted", async () => {
@@ -1886,8 +2183,8 @@ async function run() {
     assert.strictEqual(assignmentItem(ddb, PRIYA, followId).actualHours, 3);
     assert.ok(costItem(ddb, PRIYA, followId));
     assert.notStrictEqual(
-      costItem(ddb, PRIYA, followId).attemptId,
-      costItem(ddb, PRIYA, TASK_ID).attemptId
+      costItem(ddb, PRIYA, followId).submissionId,
+      costItem(ddb, PRIYA, TASK_ID).submissionId
     );
     assert.strictEqual(costItem(ddb, PRIYA, TASK_ID).actualHours, 7);
   });
@@ -1919,7 +2216,7 @@ async function run() {
     assert.strictEqual(entityTask(ddb).status, "TODO");
     assert.strictEqual(
       activityItems(ddb).filter((item) => item.action === "status_changed").length,
-      1
+      0
     );
     const repaired = parse(
       await handler(
@@ -1929,7 +2226,7 @@ async function run() {
           status: "DONE",
           assignmentEmail: PRIYA,
           completionRemark: "Retry.",
-          actualHours: 9,
+          actualHours: 4,
         })
       )
     );
@@ -1948,6 +2245,25 @@ async function run() {
     );
     assert.strictEqual(
       activityItems(ddb).filter((item) => item.action === "status_changed").length,
+      1
+    );
+    const locked = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Different hours.",
+          actualHours: 9,
+        })
+      )
+    );
+    assert.strictEqual(locked.statusCode, 400);
+    assert.strictEqual(locked.body.code, "SUBMISSION_HOURS_LOCKED");
+    assert.strictEqual(assignmentItem(ddb, PRIYA).actualHours, 4);
+    assert.strictEqual(
+      ddb.of(WORK).filter((item) => item.PK === `TASK#${TASK_ID}` && item.SK === `COST#${PRIYA}`).length,
       1
     );
   });
@@ -1976,6 +2292,7 @@ async function run() {
       )
     );
     assert.strictEqual(failed.statusCode, 500);
+    assert.match(failed.body.error || "", /cost record/i);
     assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
     assert.ok(assignmentItem(ddb, PRIYA).actualHours == null);
     assert.ok(!costItem(ddb, PRIYA));

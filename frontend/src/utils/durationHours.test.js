@@ -6,7 +6,9 @@ import {
   formatStoredHoursAsHhMm,
   hoursToHhMm,
   minutesToStoredHours,
+  normalizeHhMmInput,
   parseHhMmInput,
+  prepareDurationSubmit,
   parseStoredHours,
   stepDuration,
   storedHoursToMinutes,
@@ -69,6 +71,38 @@ test("steps hours and minutes without a 23-hour cap", () => {
   expect(stepDuration("", "hours", 1)).toBe("01:00");
   expect(stepDuration("23:", "hours", 1)).toBe("24:00");
   expect(HH_MM_PLACEHOLDER).toBe("HH:MM");
+});
+
+test("normalizes unpadded HH:MM the same way blur does, then parses that value", () => {
+  expect(parseHhMmInput("2:3").ok).toBe(false);
+  expect(normalizeHhMmInput("2:3")).toBe("02:03");
+  expect(prepareDurationSubmit("2:3")).toEqual({
+    ok: true,
+    normalized: "02:03",
+    value: 2.05,
+  });
+  expect(normalizeHhMmInput("8:")).toBe("08:00");
+  expect(prepareDurationSubmit("8:")).toEqual({
+    ok: true,
+    normalized: "08:00",
+    value: 8,
+  });
+  expect(prepareDurationSubmit("02:30")).toEqual({
+    ok: true,
+    normalized: "02:30",
+    value: 2.5,
+  });
+});
+
+test("rejects zero negative invalid minutes and malformed values after normalization", () => {
+  expect(prepareDurationSubmit("00:00").ok).toBe(false);
+  expect(prepareDurationSubmit("00:00").error).toBe(HH_MM_POSITIVE);
+  expect(prepareDurationSubmit("-01:00").ok).toBe(false);
+  expect(prepareDurationSubmit("1:60").ok).toBe(false);
+  expect(normalizeHhMmInput("1:60")).toBe("01:60");
+  expect(prepareDurationSubmit("abc").ok).toBe(false);
+  expect(prepareDurationSubmit("").ok).toBe(false);
+  expect(prepareDurationSubmit("").empty).toBe(true);
 });
 
 test("helper text shows HH:MM and duration examples", () => {

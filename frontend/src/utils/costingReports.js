@@ -12,6 +12,27 @@ export function hoursLabel(value) {
   return String(n);
 }
 
+export const LEGACY_BASELINE_NOTE =
+  "Current-rate baseline. Not a historically verified rate.";
+
+export function costingBasisNote(row) {
+  if (!row) return "";
+  if (row.legacyBaseline) return LEGACY_BASELINE_NOTE;
+  if (row.costStatus === "MISSING_RATE") {
+    return "No applicable rate is stored, so there is no confirmed cost.";
+  }
+  if (row.costStatus === "MISSING_COST_RECORD") {
+    if (row.reason === "SUBMISSION_NOT_FINALIZED") {
+      return "Submission is not finalized, so there is no confirmed cost.";
+    }
+    if (row.reason === "SUBMISSION_RETURNED") {
+      return "The earlier submission was returned and is not a confirmed cost.";
+    }
+    return "No confirmed cost record is stored.";
+  }
+  return "";
+}
+
 export function costStatusLabel(status) {
   const key = String(status || "").toUpperCase();
   if (key === "COSTED") return "Costed";
