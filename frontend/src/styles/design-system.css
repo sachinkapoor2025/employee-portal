@@ -3605,7 +3605,7 @@ button:disabled.dgv-btn {
   cursor: pointer;
 }
 
-.dgv-cost-rates-tab[aria-pressed="true"] {
+.dgv-cost-rates-tab[aria-selected="true"] {
   background: var(--dgv-primary);
   border-color: var(--dgv-primary);
   color: #fff;

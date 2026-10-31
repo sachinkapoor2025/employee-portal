@@ -160,12 +160,6 @@ export default function CostRates() {
     setEmpDirty(false);
   };
 
-  const requestCloseEmp = () => {
-    if (savingEmp) return;
-    if (!confirmDiscardIfDirty(empDirty)) return;
-    closeEmpModal();
-  };
-
   const startCreateDes = () => {
     setEditingDesId("");
     setDesForm(EMPTY_DES_FORM);
@@ -418,7 +412,6 @@ export default function CostRates() {
           role="tab"
           className="dgv-cost-rates-tab"
           aria-selected={tab === "designations"}
-          aria-pressed={tab === "designations"}
           onClick={() => setTab("designations")}
         >
           Designations
@@ -428,7 +421,6 @@ export default function CostRates() {
           role="tab"
           className="dgv-cost-rates-tab"
           aria-selected={tab === "employees"}
-          aria-pressed={tab === "employees"}
           onClick={() => setTab("employees")}
         >
           Employees
