@@ -2,6 +2,7 @@ const assert = require("assert");
 const { QueryCommand } = require("@aws-sdk/lib-dynamodb");
 const { handleListProjects } = require("./projectManage");
 const { projectMemberKeys, projectAdminKeys } = require("./projectAccess");
+const { authorizeTaskRead } = require("./taskReadAccess");
 
 const TABLE = "work-table";
 const ACCESS = "access-table";
@@ -86,6 +87,28 @@ function seedBase() {
   ];
 }
 
+function sideItem(side, type, projectId, email, status = "ACTIVE") {
+  return {
+    TableName: TABLE,
+    Item: {
+      ...side,
+      type,
+      status,
+      projectId,
+      email,
+      ...(type === "PROJECT_ADMIN" ? { taskVisibility: "ALL_PROJECT_TASKS" } : {}),
+    },
+  };
+}
+
+function memberCopies(projectId, email, status = "ACTIVE") {
+  const keys = projectMemberKeys(projectId, email);
+  return [
+    sideItem(keys.projectSide, "PROJECT_MEMBER", projectId, email, status),
+    sideItem(keys.userSide, "PROJECT_MEMBER", projectId, email, status),
+  ];
+}
+
 function list(ddb, user, extra = {}) {
   return handleListProjects({
     ddb,
@@ -122,14 +145,10 @@ async function run() {
   }
 
   {
-    const keys = projectMemberKeys(REST_ID, MEMBER.email);
     const ddb = mockDdb([
       ...seedBase(),
       { TableName: ACCESS, Item: accessItem(MEMBER.email, "EMPLOYEE", "ACTIVE") },
-      {
-        TableName: TABLE,
-        Item: { ...keys.userSide, type: "PROJECT_MEMBER", status: "ACTIVE", projectId: REST_ID, email: MEMBER.email },
-      },
+      ...memberCopies(REST_ID, MEMBER.email),
     ]);
     const res = await list(ddb, MEMBER);
     assert.deepStrictEqual(res.body.map((p) => p.projectId), [REST_ID]);
@@ -141,16 +160,8 @@ async function run() {
     const ddb = mockDdb([
       ...seedBase(),
       { TableName: ACCESS, Item: accessItem(ADMIN.email, "ADMIN", "ACTIVE") },
-      {
-        TableName: TABLE,
-        Item: {
-          ...keys.userSide,
-          type: "PROJECT_ADMIN",
-          status: "ACTIVE",
-          projectId: REST_ID,
-          email: "admin@mydgv.com",
-        },
-      },
+      sideItem(keys.projectSide, "PROJECT_ADMIN", REST_ID, "admin@mydgv.com"),
+      sideItem(keys.userSide, "PROJECT_ADMIN", REST_ID, "admin@mydgv.com"),
     ]);
     const res = await list(ddb, ADMIN);
     const ids = res.body.map((p) => p.projectId);
@@ -164,14 +175,10 @@ async function run() {
   }
 
   {
-    const keys = projectMemberKeys(REST_ID, MEMBER.email);
     const ddb = mockDdb([
       ...seedBase(),
       { TableName: ACCESS, Item: accessItem(MEMBER.email, "EMPLOYEE", "ACTIVE") },
-      {
-        TableName: TABLE,
-        Item: { ...keys.userSide, type: "PROJECT_MEMBER", status: "ACTIVE", projectId: REST_ID, email: MEMBER.email },
-      },
+      ...memberCopies(REST_ID, MEMBER.email),
     ]);
     const res = await list(ddb, MEMBER);
     assert.deepStrictEqual(
@@ -329,14 +336,67 @@ async function run() {
     const ddb = mockDdb([
       ...seedBase(),
       { TableName: ACCESS, Item: accessItem(MEMBER.email, "EMPLOYEE", "ACTIVE") },
+      ...memberCopies(REST_ID, MEMBER.email),
     ]);
+    const task = {
+      taskId: "t-side",
+      projectId: REST_ID,
+      assignee: MEMBER.email,
+      assignees: [MEMBER.email],
+    };
+    const readOf = (projectId) =>
+      authorizeTaskRead({
+        ddb,
+        tableName: TABLE,
+        accessTable: ACCESS,
+        user: MEMBER,
+        task: { ...task, projectId },
+      });
+    const active = await list(ddb, MEMBER);
+    assert.deepStrictEqual(active.body.map((p) => p.projectId), [REST_ID]);
+    assert.strictEqual((await readOf(REST_ID)).allowed, true);
+
+    ddb.items.splice(
+      ddb.items.findIndex(
+        (row) => row.Item.PK === `USER#${MEMBER.email}` && row.Item.SK === `PROJECT_MEMBER#${REST_ID}`
+      ),
+      1
+    );
+    const projectSideOnly = await list(ddb, MEMBER);
+    assert.deepStrictEqual(projectSideOnly.body.map((p) => p.projectId), [REST_ID]);
+    assert.strictEqual((await readOf(REST_ID)).allowed, true);
+
+    const userOnlyKeys = projectMemberKeys(REST_OTHER, MEMBER.email);
     ddb.seed(TABLE, {
-      PK: `PROJECT#${REST_ID}`,
-      SK: `MEMBER#${MEMBER.email}`,
+      ...userOnlyKeys.userSide,
+      type: "PROJECT_MEMBER",
       status: "ACTIVE",
+      projectId: REST_OTHER,
+      email: MEMBER.email,
     });
-    const res = await list(ddb, MEMBER);
-    assert.deepStrictEqual(res.body, []);
+    const userSideOnly = await list(ddb, MEMBER);
+    assert.ok(!userSideOnly.body.some((p) => p.projectId === REST_OTHER));
+    assert.strictEqual((await readOf(REST_OTHER)).allowed, false);
+
+    for (const row of ddb.items) {
+      if (row.Item.projectId === REST_ID && String(row.Item.SK).includes("MEMBER#")) {
+        row.Item.status = "REVOKED";
+      }
+    }
+    const revoked = await list(ddb, MEMBER);
+    assert.ok(!revoked.body.some((p) => p.projectId === REST_ID));
+    assert.strictEqual((await readOf(REST_ID)).allowed, false);
+
+    const openOnly = await list(
+      mockDdb([
+        ...seedBase(),
+        { TableName: ACCESS, Item: accessItem(ADMIN.email, "ADMIN", "ACTIVE") },
+      ]),
+      ADMIN
+    );
+    assert.ok(openOnly.body.some((p) => p.projectId === OPEN_ID));
+    assert.ok(openOnly.body.some((p) => p.projectId === LEGACY_ID));
+    assert.ok(!openOnly.body.some((p) => p.accessMode === "RESTRICTED"));
   }
 
   console.log("project catalog authorization tests passed");

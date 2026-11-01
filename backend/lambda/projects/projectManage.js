@@ -8,9 +8,9 @@ const {
 } = require("@aws-sdk/lib-dynamodb");
 const { DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 const { randomUUID } = require("crypto");
-const { isEligibleProjectAdmin, ACCESS_OPEN, ACCESS_RESTRICTED, normalizeEmail, isRestrictedProject, isActiveRegularMemberItem, isActiveProjectAdminItem, isProjectDeleting } = require("./projectAccess");
+const { isEligibleProjectAdmin, ACCESS_OPEN, ACCESS_RESTRICTED, normalizeEmail, isRestrictedProject, isActiveRegularMemberItem, isActiveProjectAdminItem, isProjectDeleting, canAccessRestrictedProject } = require("./projectAccess");
 const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
-const { createRestrictedProject, acquireDeletionLock, releaseDeletionLock, convertLockToDeleting, deleteAllProjectAclRecords, REASON_INVALID_TASK_VISIBILITY, REASON_CONDITION_FAILED, REASON_TX_CONFLICT, REASON_DDB_ERROR, REASON_INVALID_IDENTITY } = require("./projectAccessPersist");
+const { createRestrictedProject, acquireDeletionLock, releaseDeletionLock, convertLockToDeleting, deleteAllProjectAclRecords, getProjectMemberRecord, getProjectAdminRecord, REASON_INVALID_TASK_VISIBILITY, REASON_CONDITION_FAILED, REASON_TX_CONFLICT, REASON_DDB_ERROR, REASON_INVALID_IDENTITY } = require("./projectAccessPersist");
 const {
   parseProjectType,
   resolveProjectCode,
@@ -454,7 +454,12 @@ async function handleListProjects({
   let restrictedAcl = { visibleIds: new Set(), adminIds: new Set() };
   if (accessActive) {
     try {
-      restrictedAcl = await loadRestrictedCallerAcl(ddb, tableName, email);
+      restrictedAcl = await loadRestrictedCallerAcl(
+        ddb,
+        tableName,
+        email,
+        statusFiltered
+      );
     } catch (err) {
       return { statusCode: 500, body: { error: "Internal server error" } };
     }
@@ -481,47 +486,40 @@ async function handleListProjects({
   return { statusCode: 200, body: visible };
 }
 
-function projectIdFromUserAclSk(sk, prefix) {
-  const raw = String(sk || "");
-  if (!raw.startsWith(prefix)) return "";
-  return raw.slice(prefix.length).trim();
-}
-
-async function loadRestrictedCallerAcl(ddb, tableName, email) {
-  const memberItems = await queryAll(ddb, {
-    TableName: tableName,
-    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-    ExpressionAttributeValues: {
-      ":pk": `USER#${email}`,
-      ":sk": "PROJECT_MEMBER#",
-    },
-  });
-  const adminItems = await queryAll(ddb, {
-    TableName: tableName,
-    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-    ExpressionAttributeValues: {
-      ":pk": `USER#${email}`,
-      ":sk": "PROJECT_ADMIN#",
-    },
-  });
+/**
+ * Restricted catalog visibility uses the same project-side records as
+ * task authorization. The user-side copy is an index written with those
+ * records; it does not grant or hide access on its own.
+ */
+async function loadRestrictedCallerAcl(ddb, tableName, email, projects) {
   const visibleIds = new Set();
   const adminIds = new Set();
-  for (const item of memberItems) {
-    const id = String(item.projectId || "").trim() || projectIdFromUserAclSk(item.SK, "PROJECT_MEMBER#");
-    if (isActiveRegularMemberItem(item, id, email)) visibleIds.add(id);
-  }
-  for (const item of adminItems) {
-    const id = String(item.projectId || "").trim() || projectIdFromUserAclSk(item.SK, "PROJECT_ADMIN#");
-    if (isActiveProjectAdminItem(item, id, email)) {
+  for (const project of projects || []) {
+    if (!isRestrictedProject(project) || isProjectDeleting(project)) continue;
+    const id = String(project.projectId || "").trim();
+    if (!id) continue;
+    const member = await getProjectMemberRecord(ddb, tableName, id, email);
+    if (!member.ok) throw new Error("member lookup failed");
+    const admin = await getProjectAdminRecord(ddb, tableName, id, email);
+    if (!admin.ok) throw new Error("admin lookup failed");
+    if (
+      canAccessRestrictedProject({
+        project,
+        email,
+        regularMemberItem: member.item,
+        projectAdminItem: admin.item,
+      })
+    ) {
       visibleIds.add(id);
-      adminIds.add(id);
     }
+    if (isActiveProjectAdminItem(admin.item, id, email)) adminIds.add(id);
   }
   return { visibleIds, adminIds };
 }
 
 async function loadVisibleRestrictedProjectIds(ddb, tableName, email) {
-  const loaded = await loadRestrictedCallerAcl(ddb, tableName, email);
+  const catalog = await listAllProjects(ddb, tableName);
+  const loaded = await loadRestrictedCallerAcl(ddb, tableName, email, catalog);
   return loaded.visibleIds;
 }
 
@@ -542,9 +540,37 @@ function failDelete(code, error) {
 }
 
 /**
+ * Portal-admin role check still applies to OPEN and RESTRICTED.
+ * RESTRICTED also requires an active member or Project Admin record.
+ * Returns a response when the caller must be rejected, otherwise null.
+ */
+async function denyRestrictedWithoutAccess({ ddb, tableName, project, email }) {
+  if (!isRestrictedProject(project)) return null;
+  const member = await getProjectMemberRecord(ddb, tableName, project.projectId, email);
+  if (!member.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  const admin = await getProjectAdminRecord(ddb, tableName, project.projectId, email);
+  if (!admin.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  if (
+    !canAccessRestrictedProject({
+      project,
+      email,
+      regularMemberItem: member.item,
+      projectAdminItem: admin.item,
+    })
+  ) {
+    return { statusCode: 403, body: { error: "Forbidden" } };
+  }
+  return null;
+}
+
+/**
  * DELETE /projects/{id}. Cognito isAdmin is not sufficient.
- * Requires ACTIVE UserAccess ADMIN or SUPER_ADMIN. Project Admin
- * membership is not required. Applies to OPEN and RESTRICTED.
+ * Requires ACTIVE UserAccess ADMIN or SUPER_ADMIN.
+ * RESTRICTED also requires active project membership or Project Admin access.
  */
 async function handleDeleteProject({
   user,
@@ -578,6 +604,13 @@ async function handleDeleteProject({
   if (!project) {
     return { statusCode: 404, body: { error: "Project not found" } };
   }
+  const restrictedDelete = await denyRestrictedWithoutAccess({
+    ddb,
+    tableName,
+    project,
+    email: auth.email,
+  });
+  if (restrictedDelete) return restrictedDelete;
 
   const confirmName = confirmationNameOf(body, query);
   if (!confirmName) {
@@ -963,6 +996,13 @@ async function handlePatchProject({
   if (!project || isProjectDeleting(project)) {
     return { statusCode: 404, body: { error: "Project not found" } };
   }
+  const restrictedPatch = await denyRestrictedWithoutAccess({
+    ddb,
+    tableName,
+    project,
+    email: auth.email,
+  });
+  if (restrictedPatch) return restrictedPatch;
 
   const next = { ...project };
   let changed = false;

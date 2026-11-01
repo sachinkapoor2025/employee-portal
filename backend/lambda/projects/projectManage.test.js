@@ -1407,11 +1407,14 @@ async function run() {
     assert.strictEqual(await getProject(ddb, TABLE, EMPTY_ID), null);
   });
 
-  await test("active SUPER_ADMIN can delete an empty RESTRICTED project", async () => {
+  await test("Project Admin can delete an empty RESTRICTED project", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
     seedRestrictedEmpty(ddb, "secret-empty", "Secret Empty");
+    seedAclPair(ddb, "admin", "secret-empty", SUPER_ADMIN_USER.email, {
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
     const result = await del(ddb, {
       user: SUPER_ADMIN_USER,
       projectId: "secret-empty",
@@ -1421,7 +1424,7 @@ async function run() {
     assert.strictEqual(await getProject(ddb, TABLE, "secret-empty"), null);
   });
 
-  await test("active ADMIN can delete RESTRICTED without Project Admin membership", async () => {
+  await test("non-member ADMIN cannot delete a RESTRICTED project", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedRestrictedEmpty(ddb, "rest-no-pa", "No PA");
@@ -1432,11 +1435,13 @@ async function run() {
       projectId: "rest-no-pa",
       confirmName: "No PA",
     });
-    assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(await getProject(ddb, TABLE, "rest-no-pa"), null);
+    assert.strictEqual(result.statusCode, 403);
+    assert.strictEqual(result.body.error, "Forbidden");
+    assert.ok(!JSON.stringify(result.body).includes("No PA"));
+    assert.strictEqual((await getProject(ddb, TABLE, "rest-no-pa")).name, "No PA");
   });
 
-  await test("active SUPER_ADMIN can delete RESTRICTED without Project Admin membership", async () => {
+  await test("non-member SUPER_ADMIN cannot delete a RESTRICTED project", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
     seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
@@ -1446,8 +1451,111 @@ async function run() {
       projectId: "rest-sa",
       confirmName: "SA Delete",
     });
+    assert.strictEqual(result.statusCode, 403);
+    assert.strictEqual(result.body.error, "Forbidden");
+    assert.ok(!JSON.stringify(result.body).includes("SA Delete"));
+    assert.strictEqual((await getProject(ddb, TABLE, "rest-sa")).name, "SA Delete");
+  });
+
+  await test("non-member ADMIN cannot update RESTRICTED project metadata", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, "rest-patch-admin", "Hidden");
+    seedAclPair(ddb, "admin", "rest-patch-admin", "other-pa@mydgv.com", {
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: "rest-patch-admin",
+      body: { name: "Renamed" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 403);
+    assert.strictEqual(result.body.error, "Forbidden");
+    assert.ok(!JSON.stringify(result.body).includes("Hidden"));
+    assert.strictEqual((await getProject(ddb, TABLE, "rest-patch-admin")).name, "Hidden");
+  });
+
+  await test("non-member SUPER_ADMIN cannot update RESTRICTED project metadata", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
+    seedRestrictedEmpty(ddb, "rest-patch-super", "Hidden Super");
+    const result = await runPatch({
+      user: SUPER_ADMIN_USER,
+      projectId: "rest-patch-super",
+      body: { name: "Renamed" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 403);
+    assert.strictEqual(result.body.error, "Forbidden");
+    assert.ok(!JSON.stringify(result.body).includes("Hidden Super"));
+    assert.strictEqual((await getProject(ddb, TABLE, "rest-patch-super")).name, "Hidden Super");
+  });
+
+  await test("Project Admin can update RESTRICTED project metadata", async () => {
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, "rest-patch-ok", "Visible");
+    seedAclPair(ddb, "admin", "rest-patch-ok", ADMIN.email, {
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
+    const result = await runPatch({
+      user: ADMIN,
+      projectId: "rest-patch-ok",
+      body: { name: "Renamed" },
+      ddb,
+      tableName: TABLE,
+    });
     assert.strictEqual(result.statusCode, 200);
-    assert.strictEqual(await getProject(ddb, TABLE, "rest-sa"), null);
+    assert.strictEqual(result.body.name, "Renamed");
+  });
+
+  await test("regular member Portal Admin can update RESTRICTED project metadata", async () => {
+    const projectId = "rest-member-patch";
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, projectId, "Member Visible");
+    seedAclPair(ddb, "member", projectId, ADMIN.email);
+    assert.ok(
+      !ddb.of(TABLE).some(
+        (item) =>
+          item.PK === `PROJECT#${projectId}` && item.SK === `PROJECT_ADMIN#${ADMIN.email}`
+      )
+    );
+    const result = await runPatch({
+      user: ADMIN,
+      projectId,
+      body: { name: "Renamed By Member" },
+      ddb,
+      tableName: TABLE,
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.name, "Renamed By Member");
+    assert.strictEqual((await getProject(ddb, TABLE, projectId)).name, "Renamed By Member");
+  });
+
+  await test("regular member Portal Admin can delete an empty RESTRICTED project", async () => {
+    const projectId = "rest-member-del";
+    const ddb = createMemoryDdb();
+    seedBase(ddb);
+    seedRestrictedEmpty(ddb, projectId, "Member Delete");
+    seedAclPair(ddb, "member", projectId, ADMIN.email);
+    assert.ok(
+      !ddb.of(TABLE).some(
+        (item) =>
+          item.PK === `PROJECT#${projectId}` && item.SK === `PROJECT_ADMIN#${ADMIN.email}`
+      )
+    );
+    const result = await del(ddb, {
+      projectId,
+      confirmName: "Member Delete",
+    });
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.body.action, ACTION_DELETED);
+    assert.strictEqual(await getProject(ddb, TABLE, projectId), null);
   });
 
   await test("Cognito isAdmin without UserAccess cannot delete", async () => {
@@ -1638,10 +1746,9 @@ async function run() {
   await test("catalog PATCH requires ACTIVE UserAccess ADMIN or SUPER_ADMIN", async () => {
     const ddb = createMemoryDdb();
     seedBase(ddb);
-    seedRestrictedEmpty(ddb, "rest-patch", "Restricted Patch");
     const okAdmin = await runPatch({
       user: ADMIN,
-      projectId: "rest-patch",
+      projectId: EMPTY_ID,
       body: { client: "Acme" },
       ddb,
       tableName: TABLE,
@@ -1650,7 +1757,7 @@ async function run() {
     seedAdminAccess(ddb, { email: SUPER_ADMIN_USER.email, role: "SUPER_ADMIN" });
     const okSuper = await runPatch({
       user: SUPER_ADMIN_USER,
-      projectId: "rest-patch",
+      projectId: EMPTY_ID,
       body: { description: "by super" },
       ddb,
       tableName: TABLE,

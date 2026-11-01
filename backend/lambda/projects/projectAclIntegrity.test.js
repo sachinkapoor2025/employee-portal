@@ -572,8 +572,9 @@ async function run() {
       projectId: REST_ID,
       body: { name: "Secret" },
     });
-    assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(await getProject(ddb, TABLE, REST_ID), null);
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.body.error, "Forbidden");
+    assert.strictEqual((await getProject(ddb, TABLE, REST_ID)).name, "Secret");
   }
 
   {
@@ -586,8 +587,9 @@ async function run() {
       projectId: REST_ID,
       body: { name: "Secret" },
     });
-    assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(await getProject(ddb, TABLE, REST_ID), null);
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.body.error, "Forbidden");
+    assert.strictEqual((await getProject(ddb, TABLE, REST_ID)).name, "Secret");
   }
 
   {
@@ -659,6 +661,7 @@ async function run() {
     const ddb = mockStore([
       { TableName: TABLE, Item: catalog(REST_ID, { accessMode: "RESTRICTED", name: "Secret" }) },
       { TableName: ACCESS, Item: accessRow(ADMIN.email, "ADMIN", "ACTIVE") },
+      ...pair("admin", REST_ID, ADMIN.email, { taskVisibility: "ALL_PROJECT_TASKS" }),
       {
         TableName: TABLE,
         Item: {
