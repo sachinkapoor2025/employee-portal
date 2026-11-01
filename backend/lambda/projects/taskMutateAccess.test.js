@@ -281,6 +281,58 @@ async function run() {
     });
     assert.strictEqual(paUpdate.allowed, true);
     assert.strictEqual(paUpdate.mayAdminMutate, true);
+
+    const assignedOnlyAdmin = adminRow(REST_ID, paUser.email, {
+      taskVisibility: "ASSIGNED_ONLY",
+    });
+    const hiddenUpdate = decideTaskUpdate({
+      user: paUser,
+      task: restTask({ assignee: "rahul@mydgv.com" }),
+      project: restProject,
+      projectAdminItem: assignedOnlyAdmin,
+      accessRow: activeAccess,
+    });
+    assert.strictEqual(hiddenUpdate.allowed, false);
+    assert.strictEqual(hiddenUpdate.mayAdminMutate, false);
+    assert.strictEqual(
+      decideTaskDelete({
+        user: paUser,
+        task: restTask({ assignee: "rahul@mydgv.com" }),
+        project: restProject,
+        projectAdminItem: assignedOnlyAdmin,
+        accessRow: activeAccess,
+      }).allowed,
+      false
+    );
+    const ownUpdate = decideTaskUpdate({
+      user: paUser,
+      task: restTask({ assignee: paUser.email, assignees: [paUser.email] }),
+      project: restProject,
+      projectAdminItem: assignedOnlyAdmin,
+      accessRow: activeAccess,
+    });
+    assert.strictEqual(ownUpdate.allowed, true);
+    assert.strictEqual(ownUpdate.mayAdminMutate, true);
+    assert.strictEqual(
+      decideTaskDelete({
+        user: paUser,
+        task: restTask({ assignee: paUser.email, assignees: [paUser.email] }),
+        project: restProject,
+        projectAdminItem: assignedOnlyAdmin,
+        accessRow: activeAccess,
+      }).allowed,
+      true
+    );
+    assert.strictEqual(
+      decideTaskDelete({
+        user: paUser,
+        task: restTask({ assignee: "rahul@mydgv.com" }),
+        project: restProject,
+        projectAdminItem: paAdminItem,
+        accessRow: activeAccess,
+      }).allowed,
+      true
+    );
   }
 
   {

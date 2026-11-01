@@ -12,9 +12,16 @@ const {
   DynamoDBDocumentClient,
   ScanCommand,
   GetCommand,
+  QueryCommand,
   UpdateCommand,
   DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const {
+  isActiveProjectAdminItem,
+  isProjectDeleting,
+  isRestrictedProject,
+  normalizeEmail,
+} = require("../projects/projectAccess");
 const {
   CognitoIdentityProviderClient,
   AdminDeleteUserCommand,
@@ -88,6 +95,98 @@ async function scanAll(tableName) {
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
   return items;
+}
+
+async function queryAll(tableName, pk, skPrefix) {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues: { ":pk": pk, ":sk": skPrefix },
+        ExclusiveStartKey: lastKey,
+      })
+    );
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+async function accessStatus(tableName, email) {
+  const res = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: email, SK: email },
+    })
+  );
+  return String(res.Item?.status || "").toUpperCase();
+}
+
+/**
+ * Reject deactivation when this user is the only usable Project Admin
+ * on a restricted project. Projects are discovered from the catalog
+ * partition, then counted from project-side PROJECT_ADMIN records.
+ * Usable means an ACTIVE project-side item whose UserAccess status is
+ * ACTIVE. Task assignments are not changed.
+ */
+async function restrictedAdminDeactivationBlock(email) {
+  const workTable = process.env.WORK_TABLE;
+  const accessTable = process.env.USER_ACCESS_TABLE;
+  if (!workTable || !accessTable) {
+    return { error: "Internal server error", statusCode: 500 };
+  }
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  let projects;
+  try {
+    projects = await queryAll(workTable, "ENTITY#PROJECT", "PROJECT#");
+  } catch (err) {
+    console.error("Project catalog lookup failed:", err);
+    return { error: "Internal server error", statusCode: 500 };
+  }
+  for (const project of projects) {
+    if (!isRestrictedProject(project) || isProjectDeleting(project)) continue;
+    const projectId =
+      String(project.projectId || "").trim() ||
+      String(project.SK || "").replace(/^PROJECT#/, "").trim();
+    if (!projectId) continue;
+    let admins;
+    try {
+      admins = await queryAll(workTable, `PROJECT#${projectId}`, "PROJECT_ADMIN#");
+    } catch (err) {
+      console.error("Project admin list failed:", err);
+      return { error: "Internal server error", statusCode: 500 };
+    }
+    let usable = 0;
+    let targetUsable = false;
+    for (const admin of admins) {
+      const adminEmail = normalizeEmail(admin.email);
+      if (!adminEmail || !isActiveProjectAdminItem(admin, projectId, adminEmail)) {
+        continue;
+      }
+      let status;
+      try {
+        status = await accessStatus(accessTable, adminEmail);
+      } catch (err) {
+        console.error("Project admin access lookup failed:", err);
+        return { error: "Internal server error", statusCode: 500 };
+      }
+      if (status !== "ACTIVE") continue;
+      usable += 1;
+      if (adminEmail === normalized) targetUsable = true;
+    }
+    if (targetUsable && usable <= 1) {
+      return {
+        statusCode: 409,
+        error: "Deactivation would leave a restricted project without a Project Admin.",
+        projectId,
+      };
+    }
+  }
+  return null;
 }
 
 async function syncCognitoGroup(email, role) {
@@ -329,6 +428,11 @@ exports.handler = async (event) => {
 
     if (!normalizedEmail || Object.keys(updates).length === 0) {
       return respond(400, { error: "Invalid request" });
+    }
+
+    if (updates.status === "BLOCKED") {
+      const blocked = await restrictedAdminDeactivationBlock(normalizedEmail);
+      if (blocked) return respond(blocked.statusCode, { error: blocked.error });
     }
 
     const setParts = ["updatedAt = :updatedAt"];

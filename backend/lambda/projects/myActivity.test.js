@@ -2,6 +2,7 @@ process.env.COMPANY_TIMEZONE = "Asia/Kolkata";
 process.env.COMPANY_TZ_OFFSET = "+05:30";
 process.env.AWS_REGION = "ap-south-1";
 process.env.WORK_TABLE = "work-table";
+process.env.USER_ACCESS_TABLE = "access-table";
 process.env.ATTENDANCE_TABLE = "attendance-table";
 process.env.USER_PROFILE_TABLE = "profile-table";
 process.env.ACTIVITY_TABLE = "activity-table";
@@ -16,6 +17,7 @@ const {
 } = require("./myActivity");
 
 const WORK = process.env.WORK_TABLE;
+const ACCESS = process.env.USER_ACCESS_TABLE;
 const ATTENDANCE = process.env.ATTENDANCE_TABLE;
 const PROFILE = process.env.USER_PROFILE_TABLE;
 const ACTIVITY = process.env.ACTIVITY_TABLE;
@@ -142,6 +144,15 @@ function seedEntityTask(ddb, extra = {}) {
     pendingAssignees: extra.pendingAssignees || [],
   };
   ddb.seed(WORK, item);
+  const projectId = item.projectId;
+  ddb.seed(WORK, {
+    PK: "ENTITY#PROJECT",
+    SK: `PROJECT#${projectId}`,
+    projectId,
+    name: extra.projectName || projectId,
+    status: "ACTIVE",
+    accessMode: extra.accessMode || "OPEN",
+  });
   return item;
 }
 
@@ -488,6 +499,81 @@ function authEvent(email, query = {}) {
     const viaHandler = parseHandler(await handler(authEvent(CALLER, { date: TODAY })));
     assert.strictEqual(viaHandler.statusCode, 200);
     assert.strictEqual(viaHandler.body.date, TODAY);
+  }
+
+  // 13. revoked or blocked membership omits restricted task details
+  {
+    const secretProject = "proj-secret-activity";
+    const secretTitle = "RESTRICTED-TITLE-XYZ";
+    const secretDetail = "SECRET-ACTIVITY-XYZ";
+    const ddb = createMemoryDdb();
+    seedEntityTask(ddb, {
+      taskId: "task-secret",
+      projectId: secretProject,
+      title: secretTitle,
+      accessMode: "RESTRICTED",
+      assignee: CALLER,
+    });
+    ddb.seed(ACCESS, {
+      PK: CALLER,
+      SK: CALLER,
+      email: CALLER,
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+    });
+    ddb.seed(WORK, {
+      PK: `PROJECT#${secretProject}`,
+      SK: `MEMBER#${CALLER}`,
+      type: "PROJECT_MEMBER",
+      projectId: secretProject,
+      email: CALLER,
+      status: "REVOKED",
+    });
+    seedAssignment(ddb, "task-secret", CALLER);
+    seedTaskActivity(ddb, "task-secret", "2026-09-25T12:00:00+05:30", {
+      id: "secret-act",
+      detail: secretDetail,
+    });
+    const revoked = await getMine(ddb, { date: TODAY });
+    assert.strictEqual(revoked.statusCode, 200);
+    assert.strictEqual(revoked.body.tasks.length, 0);
+    const revokedRaw = JSON.stringify(revoked.body);
+    assert.ok(!revokedRaw.includes(secretTitle));
+    assert.ok(!revokedRaw.includes(secretProject));
+    assert.ok(!revokedRaw.includes(secretDetail));
+    const assignment = ddb.items.find(
+      (row) => row.Item.PK === "TASK#task-secret" && row.Item.SK === `ASSIGNMENT#${CALLER}`
+    );
+    assert.ok(assignment);
+    assert.strictEqual(assignment.Item.removed, false);
+
+    ddb.seed(WORK, {
+      PK: `PROJECT#${secretProject}`,
+      SK: `MEMBER#${CALLER}`,
+      type: "PROJECT_MEMBER",
+      projectId: secretProject,
+      email: CALLER,
+      status: "ACTIVE",
+    });
+    ddb.seed(ACCESS, {
+      PK: CALLER,
+      SK: CALLER,
+      email: CALLER,
+      role: "EMPLOYEE",
+      status: "BLOCKED",
+    });
+    const blocked = await getMine(ddb, { date: TODAY });
+    assert.strictEqual(blocked.statusCode, 200);
+    assert.strictEqual(blocked.body.tasks.length, 0);
+    const blockedRaw = JSON.stringify(blocked.body);
+    assert.ok(!blockedRaw.includes(secretTitle));
+    assert.ok(!blockedRaw.includes(secretProject));
+    assert.ok(!blockedRaw.includes(secretDetail));
+    assert.ok(
+      ddb.items.some(
+        (row) => row.Item.PK === "TASK#task-secret" && row.Item.SK === `ASSIGNMENT#${CALLER}`
+      )
+    );
   }
 
   console.log("myActivity.test.js ok");

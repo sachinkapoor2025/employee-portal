@@ -3,6 +3,7 @@ const { companyDateKey } = require("../common/shiftWindows");
 const { loadCurrentAssignedShift } = require("../attendance/assignedShift");
 const escalation = require("./escalation");
 const { isPendingScheduledTask } = require("./shiftCatalog");
+const taskReadAccess = require("./taskReadAccess");
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TASK_LIMIT = 50;
@@ -281,6 +282,7 @@ async function loadTasks(ddb, workTable, email, dateKey, nowMs) {
     ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
   });
   const out = [];
+  const readCache = taskReadAccess.createCache();
   for (const task of tasks) {
     if (task?.archived) continue;
     if (isPendingScheduledTask(task)) continue;
@@ -291,6 +293,20 @@ async function loadTasks(ddb, workTable, email, dateKey, nowMs) {
       SK: `ASSIGNMENT#${email}`,
     });
     if (!shouldIncludeAssignment(assignment, dateKey)) continue;
+    const readable = await taskReadAccess.authorizeTaskRead({
+      ddb,
+      tableName: workTable,
+      accessTable: process.env.USER_ACCESS_TABLE,
+      user: { email },
+      task: { ...task, assignments: [assignment] },
+      cache: readCache,
+    });
+    if (!readable.ok) {
+      const err = new Error("TASK_READ_FAILED");
+      err.reason = readable.reason;
+      throw err;
+    }
+    if (!readable.allowed) continue;
     const decorated = escalation.decorateTask(
       {
         ...task,

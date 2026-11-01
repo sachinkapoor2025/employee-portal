@@ -85,8 +85,14 @@ function decideTaskCreate({ user, project, projectAdminItem, accessRow } = {}) {
   return { ok: true, allowed: true };
 }
 
-function decideTaskDelete({ user, project, projectAdminItem, accessRow } = {}) {
-  return decideTaskCreate({ user, project, projectAdminItem, accessRow });
+function decideTaskDelete(args = {}) {
+  const created = decideTaskCreate(args);
+  if (!created.ok || !created.allowed) return created;
+  if (!isRestrictedProject(args.project)) return created;
+  const read = decideTaskRead(args);
+  if (!read.ok) return { ok: false, allowed: false };
+  if (!read.allowed) return { ok: true, allowed: false };
+  return created;
 }
 
 function decideTaskUpdate({
@@ -124,6 +130,16 @@ function decideTaskUpdate({
     return { ok: true, allowed: false, mayAdminMutate: false };
   }
   if (gate.projectAdmin) {
+    const read = decideTaskRead({
+      user,
+      task,
+      project,
+      regularMemberItem,
+      projectAdminItem,
+      accessRow,
+    });
+    if (!read.ok) return { ok: false, allowed: false, mayAdminMutate: false };
+    if (!read.allowed) return { ok: true, allowed: false, mayAdminMutate: false };
     return { ok: true, allowed: true, mayAdminMutate: true };
   }
   return { ok: true, allowed: assigned, mayAdminMutate: false };
