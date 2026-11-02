@@ -82,6 +82,27 @@ function AttendanceStatusIcon({ status }) {
   return <Clock3 size={20} aria-hidden="true" />;
 }
 
+export function localTimeGreeting(date) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function msUntilNextGreeting(date) {
+  const next = new Date(date.getTime());
+  const hour = next.getHours();
+  if (hour < 5) next.setHours(5, 0, 0, 0);
+  else if (hour < 12) next.setHours(12, 0, 0, 0);
+  else if (hour < 17) next.setHours(17, 0, 0, 0);
+  else {
+    next.setDate(next.getDate() + 1);
+    next.setHours(5, 0, 0, 0);
+  }
+  const delay = next.getTime() - date.getTime();
+  return delay > 0 ? delay : 1000;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState([]);
@@ -93,6 +114,7 @@ export default function Dashboard() {
   const [attendanceReady, setAttendanceReady] = useState(false);
   const [attendanceError, setAttendanceError] = useState("");
   const [profileName, setProfileName] = useState("");
+  const [greetingNow, setGreetingNow] = useState(() => Date.now());
   const taskRequests = useRef(createRequestGate());
   const employeeName = getLoggedInDisplayName() || profileName;
   const now = Date.now();
@@ -181,6 +203,18 @@ export default function Dashboard() {
     };
   }, [todayKey]);
 
+  useEffect(() => {
+    let timer = 0;
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        setGreetingNow(Date.now());
+        schedule();
+      }, msUntilNextGreeting(new Date(Date.now())));
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const weekCount = tasksReady && !taskError ? assignedCount(tasks, weekStart, weekEnd) : null;
   const todayCount = tasksReady && !taskError ? assignedCount(tasks, todayKey, todayKey) : null;
   const entitlement = Number(weekOffState?.weekOffEntitlement) === 0 ? 0 : 1;
@@ -214,7 +248,11 @@ export default function Dashboard() {
       <div className="dgv-home">
         <header className="dgv-home__header">
           <div>
-            <h1>{employeeName ? `Good morning, ${employeeName}` : "Good morning"}</h1>
+            <h1>
+              {employeeName
+                ? `${localTimeGreeting(new Date(greetingNow))}, ${employeeName}`
+                : localTimeGreeting(new Date(greetingNow))}
+            </h1>
             <p>Here’s your work overview for today and this week.</p>
           </div>
           <div className="dgv-home__dates">

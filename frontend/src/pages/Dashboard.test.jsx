@@ -30,7 +30,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import Dashboard from "./Dashboard";
+import Dashboard, { localTimeGreeting } from "./Dashboard";
 import { getLoggedInDisplayName, getLoggedInEmail } from "../services/auth";
 import {
   fetchAttendance,
@@ -103,7 +103,11 @@ test("week and day counts follow assignment date across Monday and Sunday bounda
   render(<Dashboard />);
   await waitFor(() => expect(statValue("Tasks This Week")).toBe("3"));
   expect(statValue("Assigned Today")).toBe("1");
-  expect(screen.getByRole("heading", { name: "Good morning, Nitin" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", {
+      name: `${localTimeGreeting(new Date(NOW))}, Nitin`,
+    })
+  ).toBeInTheDocument();
   expect(screen.getAllByText("Mon, 02 Nov – Sun, 08 Nov 2026").length).toBe(2);
   expect(screen.getByText(/Today, Mon, 02 Nov 2026/)).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "This Week Overview" })).toBeInTheDocument();
@@ -115,8 +119,43 @@ test("week and day counts follow assignment date across Monday and Sunday bounda
 test("the greeting uses the saved profile name when the session has none", async () => {
   getLoggedInDisplayName.mockReturnValue("");
   render(<Dashboard />);
-  expect(await screen.findByRole("heading", { name: "Good morning, Nitin Sharma" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", {
+      name: `${localTimeGreeting(new Date(NOW))}, Nitin Sharma`,
+    })
+  ).toBeInTheDocument();
   expect(fetchUserProfile).toHaveBeenCalledWith("nitin@mydgv.com");
+});
+
+test("local greeting follows the browser hour across each boundary", () => {
+  const at = (hour, minute) => new Date(2026, 10, 2, hour, minute, 0, 0);
+  expect(localTimeGreeting(at(5, 0))).toBe("Good morning");
+  expect(localTimeGreeting(at(11, 59))).toBe("Good morning");
+  expect(localTimeGreeting(at(12, 0))).toBe("Good afternoon");
+  expect(localTimeGreeting(at(16, 59))).toBe("Good afternoon");
+  expect(localTimeGreeting(at(17, 0))).toBe("Good evening");
+  expect(localTimeGreeting(at(23, 59))).toBe("Good evening");
+  expect(localTimeGreeting(at(0, 0))).toBe("Good evening");
+  expect(localTimeGreeting(at(4, 59))).toBe("Good evening");
+});
+
+test("the open dashboard changes greeting when local time crosses noon", async () => {
+  const morning = new Date(2026, 10, 2, 11, 59, 0, 0).getTime();
+  const afternoon = new Date(2026, 10, 2, 12, 0, 0, 0).getTime();
+  jest.useFakeTimers();
+  jest.setSystemTime(morning);
+  try {
+    render(<Dashboard />);
+    expect(screen.getByRole("heading", { name: "Good morning, Nitin" })).toBeInTheDocument();
+    jest.setSystemTime(afternoon);
+    await act(async () => {
+      jest.advanceTimersByTime(60 * 1000);
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("heading", { name: "Good afternoon, Nitin" })).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("weekly day off shows one remaining until it is used", async () => {
