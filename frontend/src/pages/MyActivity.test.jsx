@@ -204,6 +204,18 @@ test("Present + LATE increments Present and Late", () => {
   expect(summary.onTime).toBe(0);
 });
 
+test("a stored late punch still counts when that day is later this week", () => {
+  const summary = summarizeAttendanceWeek({
+    weekStart: WEEK_START,
+    recordsByDate: { "2026-09-22": workingLate("2026-09-22") },
+    todayKey: WEEK_START,
+  });
+  expect(summary.present).toBe(1);
+  expect(summary.late).toBe(1);
+  expect(summary.onTime).toBe(0);
+  expect(summary.notMarked).toBe(6);
+});
+
 test("Leave increments Leave but not Present or Late", () => {
   const summary = summarizeAttendanceWeek({
     weekStart: WEEK_START,

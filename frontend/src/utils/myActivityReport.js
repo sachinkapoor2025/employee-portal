@@ -105,7 +105,7 @@ export function summarizeAttendanceWeek({
       metrics.present += 1;
       const compliance = attendanceCompliance({
         dateKey,
-        todayKey: today,
+        todayKey: today && dateKey > today ? dateKey : today,
         record,
       });
       if (compliance.status === COMPLIANCE.ON_TIME) metrics.onTime += 1;

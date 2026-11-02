@@ -160,9 +160,13 @@ export default function Work() {
     start: periodStart,
     end: periodEnd,
   });
-  const dated = ready
-    ? tasks.filter((task) => assignmentInPeriod(task, periodRange))
-    : [];
+  const dated = useMemo(
+    () =>
+      ready
+        ? tasks.filter((task) => assignmentInPeriod(task, periodRange))
+        : [],
+    [ready, tasks, periodRange]
+  );
   const counts = employeeStatusCounts(dated);
   const openCount = counts.TODO + counts.IN_PROGRESS + counts.REVIEW;
   const projects = useMemo(() => {
