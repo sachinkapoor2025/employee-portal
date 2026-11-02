@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const { GetCommand, ScanCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
 const { requireSuperAdmin } = require("./portalAdminAuth");
 const { normalizeEmail } = require("./projectAccess");
+const taskReadAccess = require("./taskReadAccess");
 const { isComplete } = require("./escalation");
 const { parseRequiredHours } = require("./taskTime");
 const {
@@ -551,6 +552,79 @@ function legacyPreviewPathMatch(path) {
   return /\/admin\/costing\/legacy-preview$/.test(String(path || ""));
 }
 
+async function taskForLegacyRead(ddb, tableName, row, callerEmail) {
+  const taskId = String(row?.taskId || "").trim();
+  const projectId = String(row?.projectId || "").trim();
+  const task = taskId ? await getItem(ddb, tableName, { PK: "ENTITY#TASK", SK: `TASK#${taskId}` }) : null;
+  const caller = normalizeEmail(callerEmail);
+  const callerAssignment =
+    taskId && caller
+      ? await getItem(ddb, tableName, { PK: `TASK#${taskId}`, SK: `ASSIGNMENT#${caller}` })
+      : null;
+  const assignments = [];
+  if (Array.isArray(task?.assignments)) assignments.push(...task.assignments);
+  if (callerAssignment && !callerAssignment.removed) assignments.push(callerAssignment);
+  return {
+    ...(task || {}),
+    taskId: task?.taskId || taskId || null,
+    projectId: task?.projectId || projectId || null,
+    assignments,
+  };
+}
+
+async function omitUnauthorizedLegacyRows(preview, { user, ddb, tableName, accessTable } = {}) {
+  const cache = taskReadAccess.createCache();
+  async function keep(row) {
+    try {
+      const task = await taskForLegacyRead(ddb, tableName, row, user?.email);
+      return await taskReadAccess.authorizeRestrictedRead({
+        ddb,
+        tableName,
+        accessTable,
+        user,
+        projectId: task.projectId || row?.projectId,
+        task,
+        cache,
+      });
+    } catch (err) {
+      return { ok: false };
+    }
+  }
+  const eligible = [];
+  const skipped = [];
+  const unresolved = [];
+  for (const row of preview?.eligible || []) {
+    const decision = await keep(row);
+    if (!decision.ok) return { ok: false };
+    if (decision.allowed) eligible.push(row);
+  }
+  for (const row of preview?.skipped || []) {
+    const decision = await keep(row);
+    if (!decision.ok) return { ok: false };
+    if (decision.allowed) skipped.push(row);
+  }
+  for (const row of preview?.unresolved || []) {
+    const decision = await keep(row);
+    if (!decision.ok) return { ok: false };
+    if (decision.allowed) unresolved.push(row);
+  }
+  return {
+    ok: true,
+    preview: {
+      ...preview,
+      counts: {
+        eligible: eligible.length,
+        skipped: skipped.length,
+        unresolved: unresolved.length,
+      },
+      eligible,
+      skipped,
+      unresolved,
+      previewDigest: previewDigest(eligible),
+    },
+  };
+}
+
 async function handlePreviewLegacyBaseline({
   user,
   ddb,
@@ -575,7 +649,16 @@ async function handlePreviewLegacyBaseline({
     limit: pageLimit,
     cursor: decoded.cursor,
   });
-  return { statusCode: 200, body: preview };
+  const disclosed = await omitUnauthorizedLegacyRows(preview, {
+    user,
+    ddb,
+    tableName,
+    accessTable,
+  });
+  if (!disclosed.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  return { statusCode: 200, body: disclosed.preview };
 }
 
 module.exports = {

@@ -228,7 +228,12 @@ async function appendActivityAt(taskId, action, detail, actorEmail, timestamp, e
 
 async function loadAssignmentItems(taskId) {
   if (!taskId) return [];
-  return listByPrefix(`TASK#${taskId}`, "ASSIGNMENT#");
+  const items = await listByPrefix(`TASK#${taskId}`, "ASSIGNMENT#");
+  return items.map((item) => ({
+    ...item,
+    expectedStatus: item.status || "TODO",
+    expectedUpdatedAt: item.updatedAt || null,
+  }));
 }
 
 function assignmentRecord(taskId, assignment) {
@@ -280,6 +285,12 @@ function assignmentRecord(taskId, assignment) {
         }
       : {}),
     ...escalation.assignmentBlockerFields(assignment, { omitIfAbsent: true }),
+    ...(assignment.expectedStatus !== undefined
+      ? {
+          expectedStatus: assignment.expectedStatus,
+          expectedUpdatedAt: assignment.expectedUpdatedAt || null,
+        }
+      : {}),
   };
 }
 
@@ -928,15 +939,13 @@ async function persistEscalations(task, nowMs = Date.now(), resolveAdmins) {
   return saved;
 }
 
-async function queryAllTasks() {
+async function queryAllPages(input) {
   const items = [];
   let lastKey;
   do {
     const res = await ddb.send(
       new QueryCommand({
-        TableName: process.env.WORK_TABLE,
-        KeyConditionExpression: "PK = :pk",
-        ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
+        ...input,
         ExclusiveStartKey: lastKey,
       })
     );
@@ -944,6 +953,14 @@ async function queryAllTasks() {
     lastKey = res.LastEvaluatedKey;
   } while (lastKey);
   return items;
+}
+
+async function queryAllTasks() {
+  return queryAllPages({
+    TableName: process.env.WORK_TABLE,
+    KeyConditionExpression: "PK = :pk",
+    ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
+  });
 }
 
 async function scanAccessRows() {
@@ -1442,15 +1459,12 @@ function denyAuthz(user, decision) {
 }
 
 async function listByPrefix(pk, prefix) {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: process.env.WORK_TABLE,
-      KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-      ExpressionAttributeValues: { ":pk": pk, ":sk": prefix },
-      ScanIndexForward: false,
-    })
-  );
-  return res.Items || [];
+  return queryAllPages({
+    TableName: process.env.WORK_TABLE,
+    KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+    ExpressionAttributeValues: { ":pk": pk, ":sk": prefix },
+    ScanIndexForward: false,
+  });
 }
 
 function isRegisteredProof(item) {
@@ -2086,6 +2100,10 @@ exports.handler = async (event) => {
     }
 
     // ── TASKS LIST / CREATE / UPDATE ──
+    // GET /tasks is consumed as a full filtered list by My Tasks, the employee
+    // dashboard, My Activity, admin tasks, employee tracking, blockers, and
+    // attendance activity. DynamoDB pages are followed here. The response
+    // stays { tasks, zoneCounts } and does not expose a continuation cursor.
     if (path.endsWith("/tasks") && method === "GET") {
       if (!escalation.normalizeEmail(user.email)) {
         return json(401, { error: "Unauthorized" });
@@ -2116,26 +2134,16 @@ exports.handler = async (event) => {
       let items = [];
 
       if (projectId) {
-        const res = await ddb.send(
-          new QueryCommand({
-            TableName: process.env.WORK_TABLE,
-            KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues: {
-              ":pk": `PROJECT#${projectId}`,
-              ":sk": "TASK#",
-            },
-          })
-        );
-        items = res.Items || [];
+        items = await queryAllPages({
+          TableName: process.env.WORK_TABLE,
+          KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+          ExpressionAttributeValues: {
+            ":pk": `PROJECT#${projectId}`,
+            ":sk": "TASK#",
+          },
+        });
       } else {
-        const res = await ddb.send(
-          new QueryCommand({
-            TableName: process.env.WORK_TABLE,
-            KeyConditionExpression: "PK = :pk",
-            ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
-          })
-        );
-        items = res.Items || [];
+        items = await queryAllTasks();
       }
 
       items = items.filter((t) => !t.archived);
@@ -2834,6 +2842,30 @@ exports.handler = async (event) => {
                   reviewNotifyPending: mine.reviewNotifyPending === true,
                 };
               }
+            } else if (!mayAdminMutate) {
+              if (escalation.isReview(currentStatus)) {
+                return json(403, {
+                  error:
+                    "Submitted assignments can only be updated by an administrator.",
+                });
+              }
+              if (currentStatus === "IN_PROGRESS" && nextStatus === "TODO") {
+                return json(400, {
+                  error:
+                    "An in-progress assignment cannot be moved back to TODO.",
+                });
+              }
+              return json(400, {
+                error: "This status change is not allowed.",
+              });
+            } else if (
+              escalation.isReview(currentStatus) &&
+              nextStatus === "DONE" &&
+              escalation.normalizeEmail(mine.email) === actorEmail
+            ) {
+              return json(403, {
+                error: "You cannot approve your own submission.",
+              });
             } else {
               if (nextStatus === "DONE") {
                 if (

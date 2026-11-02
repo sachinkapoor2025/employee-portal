@@ -233,39 +233,41 @@ test("employee uses myAssignment.status rather than task.status", async () => {
     })
   );
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  expect(select).toHaveValue("TODO");
+  expect(await screen.findByRole("button", { name: "Start work" })).toBeInTheDocument();
   expect(screen.getAllByText("TODO").length).toBeGreaterThan(0);
+  expect(
+    screen.queryByText("Your task has been submitted for Admin review.")
+  ).not.toBeInTheDocument();
 });
 
 test("employee status control is in the header STATUS area", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  expect(select).toHaveValue("TODO");
+  const action = await screen.findByRole("button", { name: "Start work" });
   const pageTitle = screen.getByRole("heading", { name: "Task Details" });
   const assignment = screen.getByRole("heading", { name: "YOUR ASSIGNMENT" });
   expect(
-    pageTitle.compareDocumentPosition(select) & Node.DOCUMENT_POSITION_FOLLOWING
+    pageTitle.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING
   ).toBeTruthy();
   expect(
-    select.compareDocumentPosition(assignment) & Node.DOCUMENT_POSITION_FOLLOWING
+    action.compareDocumentPosition(assignment) & Node.DOCUMENT_POSITION_FOLLOWING
   ).toBeTruthy();
 });
 
 test("Your Assignment does not contain an editable status select", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await screen.findByLabelText("Update your assignment status");
+  await screen.findByRole("button", { name: "Submit for review" });
   const assignmentHeading = screen.getByRole("heading", { name: "YOUR ASSIGNMENT" });
   const assignmentSection = assignmentHeading.closest("section");
   expect(assignmentSection).toBeTruthy();
-  expect(
-    within(assignmentSection).queryByLabelText("Update your assignment status")
-  ).not.toBeInTheDocument();
-  expect(within(assignmentSection).queryByText("Update status")).not.toBeInTheDocument();
   expect(within(assignmentSection).queryByRole("combobox")).not.toBeInTheDocument();
-  expect(screen.getAllByLabelText("Update your assignment status")).toHaveLength(1);
+  expect(
+    within(assignmentSection).queryByRole("button", { name: "Submit for review" })
+  ).not.toBeInTheDocument();
+  expect(
+    within(assignmentSection).queryByRole("button", { name: "Start work" })
+  ).not.toBeInTheDocument();
 });
 
 test("TODO can select IN_PROGRESS", async () => {
@@ -273,8 +275,7 @@ test("TODO can select IN_PROGRESS", async () => {
     employeeTask({ status: "TODO", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  await userEvent.selectOptions(select, "IN_PROGRESS");
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
       taskId: "t1",
@@ -288,8 +289,7 @@ test("TODO can select IN_PROGRESS", async () => {
 test("employee cannot start a task without planned hours", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  await userEvent.selectOptions(select, "IN_PROGRESS");
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
   expect(
@@ -304,10 +304,7 @@ test("employee can start a task with valid planned hours", async () => {
   );
   render(<TaskDetails />);
   expect(await screen.findByText("Admin estimated hours:")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "IN_PROGRESS"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   expect(within(dialog).getByText(/Admin estimated hours/i)).toBeInTheDocument();
   expect(within(dialog).getByText("HH:MM")).toBeInTheDocument();
@@ -327,27 +324,24 @@ test("employee can start a task with valid planned hours", async () => {
   );
 });
 
-test("employee status options exclude REVIEW", async () => {
+test("in-progress assignment offers submission and not a status dropdown", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  const options = within(select)
-    .getAllByRole("option")
-    .map((option) => option.value);
-  expect(options).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
   expect(
-    within(select).queryByRole("option", { name: /IN REVIEW/i })
-  ).not.toBeInTheDocument();
+    await screen.findByText(
+      /A proof file, a completion remark, and your actual hours are required/
+    )
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Submit for review" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   expect(updateTask).not.toHaveBeenCalled();
 });
 
 test("selecting DONE opens completion UI with proof before remark", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("1. Upload Proof *")).toBeInTheDocument();
   expect(
@@ -380,12 +374,9 @@ test("selecting DONE opens completion UI with proof before remark", async () => 
 });
 
 test("empty proof and remark show both validation errors", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await waitForProofRefresh();
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
@@ -399,12 +390,9 @@ test("empty proof and remark show both validation errors", async () => {
 });
 
 test("whitespace-only remark and missing proof show both errors", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await userEvent.type(screen.getByLabelText("Completion Remark"), "   ");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
@@ -415,12 +403,9 @@ test("whitespace-only remark and missing proof show both errors", async () => {
 });
 
 test("remark without proof does not call updateTask", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
     "Completed without a file."
@@ -434,12 +419,9 @@ test("remark without proof does not call updateTask", async () => {
 });
 
 test("proof without remark does not call updateTask", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await uploadCompletionProof();
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
   expect(
@@ -451,12 +433,9 @@ test("proof without remark does not call updateTask", async () => {
 
 test("existing employee proof allows submit without selecting a new file", async () => {
   fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   await userEvent.type(
@@ -481,12 +460,9 @@ test("existing employee proof allows submit without selecting a new file", async
 
 test("existing multiple employee proofs allow submit without selecting a new file", async () => {
   fetchTaskAttachments.mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   expect(within(dialog).getByText("sheet.pdf")).toBeInTheDocument();
@@ -513,12 +489,9 @@ test("another user's existing attachment does not count as proof", async () => {
   fetchTaskAttachments.mockResolvedValue([
     { ...SAMPLE_ATTACHMENT, uploadedBy: "admin@mydgv.com" },
   ]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   await userEvent.type(
@@ -534,12 +507,9 @@ test("another user's existing attachment does not count as proof", async () => {
 });
 
 test("whitespace-only remark with proof does not call updateTask", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await uploadCompletionProof();
   await userEvent.type(screen.getByLabelText("Completion Remark"), "   ");
   await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
@@ -550,12 +520,9 @@ test("whitespace-only remark with proof does not call updateTask", async () => {
 });
 
 test("valid proof and remark call updateTask with completionRemark", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await uploadCompletionProof();
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
@@ -579,12 +546,9 @@ test("valid proof and remark call updateTask with completionRemark", async () =>
 });
 
 test("Cancel closes the completion UI without updating", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await screen.findByRole("dialog", { name: "Submit Task for Review" });
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await waitFor(() =>
@@ -606,10 +570,7 @@ test("successful submission refreshes into REVIEW", async () => {
   });
   fetchTaskById.mockResolvedValueOnce(initial).mockResolvedValueOnce(reviewed);
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await uploadCompletionProof();
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
@@ -623,9 +584,8 @@ test("successful submission refreshes into REVIEW", async () => {
   ).toBeInTheDocument();
   expect(screen.getByText("Waiting for Admin review.")).toBeInTheDocument();
   expect(screen.getAllByText("IN REVIEW").length).toBeGreaterThan(0);
-  expect(
-    screen.queryByLabelText("Update your assignment status")
-  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Report Blocker" })
   ).not.toBeInTheDocument();
@@ -642,10 +602,7 @@ test("failed review API keeps the completion modal and does not show REVIEW", as
   err.status = 500;
   updateTask.mockRejectedValue(err);
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await uploadCompletionProof();
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
@@ -660,19 +617,67 @@ test("failed review API keeps the completion modal and does not show REVIEW", as
   expect(
     screen.queryByText("Your task has been submitted for Admin review.")
   ).not.toBeInTheDocument();
-  expect(screen.getByLabelText("Update your assignment status")).toHaveValue(
-    "IN_PROGRESS"
-  );
+  expect(screen.getByRole("button", { name: "Submit for review" })).toBeInTheDocument();
+  expect(screen.queryByText("IN REVIEW")).not.toBeInTheDocument();
   expect(fetchTaskById).toHaveBeenCalledTimes(1);
 });
 
-test("CANCELLED is not an employee option", async () => {
+test("a stale submission stays unsaved in the review dialog", async () => {
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
+  const err = new Error("Task could not be saved. Please retry.");
+  err.status = 409;
+  updateTask.mockRejectedValue(err);
+  render(<TaskDetails />);
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
+  await uploadCompletionProof();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed the product upload."
+  );
+  setDurationHours("Total Actual Hours", "02:00");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+    "This assignment was not saved because it changed. Refresh the task and try again."
+  );
+  expect(within(dialog).getByRole("button", { name: "Refresh task" })).toBeInTheDocument();
+  expect(
+    screen.queryByText("Your task has been submitted for Admin review.")
+  ).not.toBeInTheDocument();
+  expect(fetchTaskById).toHaveBeenCalledTimes(1);
+});
+
+test("submission ignores a second click while the request is in flight", async () => {
+  let resolveUpdate;
+  updateTask.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveUpdate = resolve;
+      })
+  );
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
+  render(<TaskDetails />);
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
+  await uploadCompletionProof();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Completed the product upload."
+  );
+  setDurationHours("Total Actual Hours", "02:00");
+  const submit = screen.getByRole("button", { name: "Submit for Review" });
+  fireEvent.click(submit);
+  fireEvent.click(submit);
+  await waitFor(() => expect(updateTask).toHaveBeenCalledTimes(1));
+  resolveUpdate({});
+  await waitFor(() => expect(fetchTaskById.mock.calls.length).toBeGreaterThan(1));
+});
+
+test("TODO does not offer cancel or submission", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
-  await screen.findByLabelText("Update your assignment status");
-  expect(
-    screen.queryByRole("option", { name: /CANCELLED/i })
-  ).not.toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Start work" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /CANCELLED/i })).not.toBeInTheDocument();
 });
 
 test("DONE assignment is read-only", async () => {
@@ -686,9 +691,8 @@ test("DONE assignment is read-only", async () => {
   expect(
     await screen.findByText("Completed assignments cannot be reopened.")
   ).toBeInTheDocument();
-  expect(
-    screen.queryByLabelText("Update your assignment status")
-  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
 });
 
 test("RED open assignment prevents employee status mutation UI", async () => {
@@ -696,11 +700,11 @@ test("RED open assignment prevents employee status mutation UI", async () => {
     employeeTask({ status: "TODO", zone: "RED" })
   );
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  expect(select).toBeDisabled();
   expect(
-    screen.getByText("Red Zone tasks can only be updated by an administrator.")
+    await screen.findByText("Red Zone tasks can only be updated by an administrator.")
   ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
   expect(updateTask).not.toHaveBeenCalled();
   expect(
     screen.queryByRole("dialog", { name: "Submit Task for Review" })
@@ -712,10 +716,7 @@ test("status update calls existing API with assignment context", async () => {
     employeeTask({ status: "TODO", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "IN_PROGRESS"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
       taskId: "t1",
@@ -736,17 +737,13 @@ test("successful update refreshes task details and activity", async () => {
     .mockResolvedValueOnce(initial)
     .mockResolvedValueOnce(refreshed);
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "IN_PROGRESS"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   await waitFor(() => expect(fetchTaskById.mock.calls.length).toBeGreaterThan(1));
   await waitFor(() =>
     expect(fetchTaskActivity.mock.calls.length).toBeGreaterThan(1)
   );
-  expect(await screen.findByLabelText("Update your assignment status")).toHaveValue(
-    "IN_PROGRESS"
-  );
+  expect(await screen.findByRole("button", { name: "Submit for review" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
 });
 
 test("failed update shows error and does not fake success", async () => {
@@ -757,13 +754,51 @@ test("failed update shows error and does not fake success", async () => {
   err.status = 403;
   updateTask.mockRejectedValue(err);
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  await userEvent.selectOptions(select, "IN_PROGRESS");
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   expect(
     await screen.findByText("Red Zone tasks can only be updated by an administrator.")
   ).toBeInTheDocument();
-  expect(select).toHaveValue("TODO");
+  expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
   expect(fetchTaskById).toHaveBeenCalledTimes(1);
+});
+
+test("a stale start tells the employee to refresh and does not show success", async () => {
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "TODO", mine: { plannedHours: 4 } })
+  );
+  const err = new Error("Task could not be saved. Please retry.");
+  err.status = 409;
+  updateTask.mockRejectedValue(err);
+  render(<TaskDetails />);
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This assignment was not saved because it changed. Refresh the task and try again."
+  );
+  expect(screen.getByRole("button", { name: "Refresh task" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
+  expect(fetchTaskById).toHaveBeenCalledTimes(1);
+});
+
+test("start work ignores a second click while the request is in flight", async () => {
+  let resolveUpdate;
+  updateTask.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveUpdate = resolve;
+      })
+  );
+  fetchTaskById.mockResolvedValue(
+    employeeTask({ status: "TODO", mine: { plannedHours: 4 } })
+  );
+  render(<TaskDetails />);
+  const button = await screen.findByRole("button", { name: "Start work" });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  await waitFor(() => expect(updateTask).toHaveBeenCalledTimes(1));
+  resolveUpdate({});
+  await waitFor(() => expect(fetchTaskById.mock.calls.length).toBeGreaterThan(1));
 });
 
 test("description appears before Schedule", async () => {
@@ -858,8 +893,9 @@ test("admin view still renders its existing controls", async () => {
   ).not.toBeInTheDocument();
   expect(screen.queryByText("Employee Submission")).not.toBeInTheDocument();
   expect(screen.queryByText("Review Decision")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
   expect(
-    screen.queryByLabelText("Update your assignment status")
+    screen.queryByRole("button", { name: "Submit for review" })
   ).not.toBeInTheDocument();
   expect(
     await screen.findByRole("heading", { name: "TASK INFORMATION" })
@@ -935,9 +971,7 @@ test("multi-assignee employee status uses myAssignment only", async () => {
   getLoggedInEmail.mockReturnValue("ankit@mydgv.com");
   fetchTaskById.mockResolvedValue(MULTI_TASK);
   render(<TaskDetails />);
-  const select = await screen.findByLabelText("Update your assignment status");
-  expect(select).toHaveValue("TODO");
-  await userEvent.selectOptions(select, "IN_PROGRESS");
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   await waitFor(() =>
     expect(updateTask).toHaveBeenCalledWith({
       taskId: "TASK-B3EEBA05",
@@ -966,7 +1000,7 @@ test("employee IN_PROGRESS shows Report Blocker in the header", async () => {
 test("employee TODO hides Report Blocker", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
-  await screen.findByLabelText("Update your assignment status");
+  await screen.findByRole("button", { name: "Start work" });
   expect(
     screen.queryByRole("button", { name: "Report Blocker" })
   ).not.toBeInTheDocument();
@@ -987,8 +1021,9 @@ test("employee REVIEW shows waiting state without status control", async () => {
   expect(screen.getByText("Waiting for Admin review.")).toBeInTheDocument();
   expect(screen.getAllByText("IN REVIEW").length).toBeGreaterThan(0);
   expect(
-    screen.queryByLabelText("Update your assignment status")
+    screen.queryByRole("button", { name: "Submit for review" })
   ).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Report Blocker" })
   ).not.toBeInTheDocument();
@@ -1067,6 +1102,8 @@ test("RED IN_PROGRESS still shows Report Blocker", async () => {
   expect(
     screen.getByText("Red Zone tasks can only be updated by an administrator.")
   ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Submit for review" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
 });
 
 test("clicking Report Blocker opens modal and Cancel does not call API", async () => {
@@ -1163,9 +1200,7 @@ test("successful report posts trimmed remark and shows active blocker", async ()
   );
   expect(await screen.findAllByText("Blocker Reported")).not.toHaveLength(0);
   expect(screen.getAllByText("IN PROGRESS").length).toBeGreaterThan(0);
-  expect(screen.getByLabelText("Update your assignment status")).toHaveValue(
-    "IN_PROGRESS"
-  );
+  expect(screen.getByRole("button", { name: "Submit for review" })).toBeInTheDocument();
   expect(screen.queryByText("BLOCKED")).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Report Blocker" })
@@ -1594,13 +1629,10 @@ test("upload failure does not register the file", async () => {
 });
 
 test("submit for review requires at least one registered proof file", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
   expect(await screen.findByText("No attachments yet.")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    screen.getByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   await userEvent.type(
     screen.getByLabelText("Completion Remark"),
     "Completed without a file."
@@ -1619,13 +1651,10 @@ test("successful proof upload in the completion modal allows submit", async () =
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   global.fetch = jest.fn().mockResolvedValue({ ok: true });
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("No proof uploaded yet.")).toBeInTheDocument();
   const file = new File(["pdf-bytes"], "brief.pdf", { type: "application/pdf" });
@@ -1657,13 +1686,10 @@ test("existing proof plus a newly selected file still submits", async () => {
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
     .mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   global.fetch = jest.fn().mockResolvedValue({ ok: true });
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   chooseProofFile(new File(["pdf-bytes"], "sheet.pdf", { type: "application/pdf" }));
@@ -1693,13 +1719,10 @@ test("proof uploaded in another tab is detected when the modal opens", async () 
   fetchTaskAttachments
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
   expect(await screen.findByText("No attachments yet.")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    screen.getByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(await within(dialog).findByText("brief.pdf")).toBeInTheDocument();
   await userEvent.type(
@@ -1725,13 +1748,10 @@ test("stale page proof is not accepted after backend no longer has it", async ()
   fetchTaskAttachments
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
     .mockResolvedValueOnce([]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
   expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    screen.getByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(await within(dialog).findByText("No proof uploaded yet.")).toBeInTheDocument();
   await userEvent.type(
@@ -1751,13 +1771,10 @@ test("failed proof refresh blocks submission and can be retried", async () => {
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT])
     .mockRejectedValueOnce(new Error("network"))
     .mockResolvedValueOnce([SAMPLE_ATTACHMENT]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
   expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    screen.getByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(
     await within(dialog).findByText(
@@ -1808,14 +1825,11 @@ test("newly selected modal files are kept if an older refresh returns later", as
         })
     )
     .mockResolvedValue([SAMPLE_ATTACHMENT, COMPLETION_PROOF]);
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   global.fetch = jest.fn().mockResolvedValue({ ok: true });
   render(<TaskDetails />);
   expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
-  await userEvent.selectOptions(
-    screen.getByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText("brief.pdf")).toBeInTheDocument();
   chooseProofFile(new File(["pdf-bytes"], "sheet.pdf", { type: "application/pdf" }));
@@ -1845,7 +1859,7 @@ test("newly selected modal files are kept if an older refresh returns later", as
 });
 
 test("failed proof upload does not submit for review", async () => {
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   getTaskAttachmentUploadUrl.mockResolvedValue({
     uploadUrl: "https://s3.example/put",
     s3Key: "tasks/t1/file.pdf",
@@ -1854,10 +1868,7 @@ test("failed proof upload does not submit for review", async () => {
   });
   global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403 });
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   chooseProofFile(new File(["pdf-bytes"], "brief.pdf", { type: "application/pdf" }));
   expect(
@@ -1887,12 +1898,9 @@ test("submit is blocked while proof upload is in progress", async () => {
       })
   );
   global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403 });
-  fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
+  fetchTaskById.mockResolvedValue(employeeTask({ status: "IN_PROGRESS" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   chooseProofFile(new File(["pdf-bytes"], "brief.pdf", { type: "application/pdf" }));
   expect(await within(dialog).findByText("Uploading…")).toBeInTheDocument();
@@ -1937,10 +1945,7 @@ test("employee cannot submit for review without actual hours", async () => {
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   expect(within(dialog).getByText(/Admin estimate/i)).toBeInTheDocument();
   expect(within(dialog).getByLabelText("Total Actual Hours")).toBeInTheDocument();
@@ -1964,10 +1969,7 @@ test("employee cannot submit invalid non-empty actual hours", async () => {
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   await uploadCompletionProof();
   await userEvent.type(
@@ -1989,10 +1991,7 @@ test("employee cannot submit zero actual hours", async () => {
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   await uploadCompletionProof();
   await userEvent.type(
@@ -2087,10 +2086,7 @@ test("employee can start a task with planned hours longer than 23:59", async () 
     employeeTask({ status: "TODO", extra: { estimatedHours: 8 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "IN_PROGRESS"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   setDurationHours("Planned Hours", "24:30", within(dialog));
   await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
@@ -2104,10 +2100,7 @@ test("employee can start a task with planned hours longer than 23:59", async () 
 test("employee planned hours reject invalid minutes", async () => {
   fetchTaskById.mockResolvedValue(employeeTask({ status: "TODO" }));
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "IN_PROGRESS"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Start work" }));
   const dialog = await screen.findByRole("dialog", { name: "Enter Planned Hours" });
   setDurationHours("Planned Hours", "1:60", within(dialog));
   await userEvent.click(within(dialog).getByRole("button", { name: "Save and start" }));
@@ -2122,10 +2115,7 @@ test("employee can submit 02:30 actual hours", async () => {
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   await uploadCompletionProof();
   await userEvent.type(
@@ -2148,10 +2138,7 @@ test("employee can submit 24:30 actual hours", async () => {
     employeeTask({ status: "IN_PROGRESS", mine: { plannedHours: 4 } })
   );
   render(<TaskDetails />);
-  await userEvent.selectOptions(
-    await screen.findByLabelText("Update your assignment status"),
-    "DONE"
-  );
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
   const dialog = await screen.findByRole("dialog", { name: "Submit Task for Review" });
   await uploadCompletionProof();
   await userEvent.type(

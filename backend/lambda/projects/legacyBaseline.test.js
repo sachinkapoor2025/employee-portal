@@ -3,6 +3,7 @@ const { GetCommand, PutCommand, QueryCommand, ScanCommand } = require("@aws-sdk/
 const { MemoryDynamoDB } = require("../../scripts/memory-ddb");
 const {
   previewLegacyPage,
+  handlePreviewLegacyBaseline,
   applyLegacyBaseline,
   decodeCursor,
   legacyPutCondition,
@@ -481,6 +482,106 @@ async function seedBase(ddb) {
   assert.strictEqual(bounded.truncated, true);
   assert.strictEqual(bounded.counts.eligible, 0);
   assert.strictEqual(bounded.counts.unresolved, 0);
+
+  const access = "UserAccess";
+  const restrictedDdb = new MemoryDynamoDB();
+  await seedBase(restrictedDdb);
+  await put(restrictedDdb, {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#vault",
+    projectId: "vault",
+    name: "Vault Legacy",
+    projectType: "INTERNAL",
+    accessMode: "RESTRICTED",
+    type: "PROJECT",
+  });
+  await put(restrictedDdb, {
+    PK: "ENTITY#PROJECT",
+    SK: "PROJECT#vault-ext",
+    projectId: "vault-ext",
+    name: "Vault External Legacy",
+    projectType: "EXTERNAL",
+    accessMode: "RESTRICTED",
+    type: "PROJECT",
+  });
+  await put(restrictedDdb, task("secret-task", "vault"));
+  await put(restrictedDdb, assignment("secret-task", "ada@mydgv.com", { actualHours: 4 }));
+  await put(restrictedDdb, task("secret-ext", "vault-ext"));
+  await put(restrictedDdb, assignment("secret-ext", "ada@mydgv.com", { actualHours: 3 }));
+  for (const projectId of ["vault", "vault-ext"]) {
+    await put(restrictedDdb, {
+      PK: `PROJECT#${projectId}`,
+      SK: "PROJECT_ADMIN#vault-admin@mydgv.com",
+      type: "PROJECT_ADMIN",
+      status: "ACTIVE",
+      email: "vault-admin@mydgv.com",
+      projectId,
+      taskVisibility: "ALL_PROJECT_TASKS",
+    });
+  }
+  await put(restrictedDdb, {
+    PK: "USER#ada@mydgv.com",
+    SK: "COST_RATES",
+    type: "EMPLOYEE_COST_RATES",
+    email: "ada@mydgv.com",
+    status: "ACTIVE",
+    internalHourlyRate: 1,
+    externalHourlyRate: 2,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  });
+  for (const [email, role] of [
+    ["boss@mydgv.com", "SUPER_ADMIN"],
+    ["vault-admin@mydgv.com", "SUPER_ADMIN"],
+    ["admin@mydgv.com", "ADMIN"],
+  ]) {
+    await restrictedDdb.send(
+      new PutCommand({
+        TableName: access,
+        Item: { PK: email, SK: email, email, role, status: "ACTIVE" },
+      })
+    );
+  }
+
+  const previewCtx = {
+    ddb: restrictedDdb,
+    tableName: TABLE,
+    accessTable: access,
+    nowIso: NOW,
+    limit: 50,
+  };
+  const hiddenPreview = await handlePreviewLegacyBaseline({
+    ...previewCtx,
+    user: { email: "boss@mydgv.com" },
+  });
+  assert.strictEqual(hiddenPreview.statusCode, 200);
+  const hiddenIds = [
+    ...hiddenPreview.body.eligible,
+    ...hiddenPreview.body.skipped,
+    ...hiddenPreview.body.unresolved,
+  ].map((row) => row.taskId);
+  assert.ok(hiddenIds.includes("eligible"));
+  assert.ok(!hiddenIds.includes("secret-task"));
+  assert.ok(!hiddenIds.includes("secret-ext"));
+  const hiddenBody = JSON.stringify(hiddenPreview.body);
+  assert.ok(!hiddenBody.includes("vault"));
+  assert.ok(!hiddenBody.includes("Vault Legacy"));
+  assert.ok(!hiddenBody.includes("Vault External Legacy"));
+
+  const visiblePreview = await handlePreviewLegacyBaseline({
+    ...previewCtx,
+    user: { email: "vault-admin@mydgv.com" },
+  });
+  assert.strictEqual(visiblePreview.statusCode, 200);
+  const visibleIds = visiblePreview.body.eligible.map((row) => row.taskId);
+  assert.ok(visibleIds.includes("secret-task"));
+  assert.ok(visibleIds.includes("secret-ext"));
+  assert.ok(visibleIds.includes("eligible"));
+
+  const adminDenied = await handlePreviewLegacyBaseline({
+    ...previewCtx,
+    user: { email: "admin@mydgv.com" },
+  });
+  assert.strictEqual(adminDenied.statusCode, 403);
 
   console.log("legacyBaseline tests passed");
 })().catch((err) => {

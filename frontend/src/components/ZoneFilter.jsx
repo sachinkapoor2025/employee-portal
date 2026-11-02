@@ -20,10 +20,13 @@ export default function ZoneFilter({
   onChange,
   counts = {},
   includeAll = true,
+  options: optionOverride,
 }) {
-  const options = includeAll
-    ? OPTIONS
-    : OPTIONS.filter((opt) => opt.value !== "ALL");
+  const options = optionOverride
+    ? optionOverride
+    : includeAll
+      ? OPTIONS
+      : OPTIONS.filter((opt) => opt.value !== "ALL");
   const selected = String(
     value || (includeAll ? "ALL" : "GREEN")
   ).toUpperCase();

@@ -68,11 +68,14 @@ import {
 } from "../../utils/taskStatus";
 import ZoneBadge from "../../components/ZoneBadge";
 
-const EMPLOYEE_STATUS_OPTIONS = TASK_STATUSES.filter(
-  (s) => s.value !== "CANCELLED" && s.value !== "REVIEW"
-);
 const RED_ZONE_MESSAGE =
   "Red Zone tasks can only be updated by an administrator.";
+const START_WORK_DETAIL =
+  "Start work to move this assignment to in progress. Planned hours are required before it can start.";
+const SUBMIT_REVIEW_DETAIL =
+  "Submit this assignment for admin review. A proof file, a completion remark, and your actual hours are required. Submitting does not mark the assignment complete.";
+const STALE_ASSIGNMENT_MESSAGE =
+  "This assignment was not saved because it changed. Refresh the task and try again.";
 const COMPLETION_MODAL_TITLE = "Submit Task for Review";
 const COMPLETION_REMARK_HELPER =
   "Add a final remark describing the work you completed. The task will be sent to Admin for review.";
@@ -112,6 +115,11 @@ const BLOCKER_REMARK_HELPER =
 const BLOCKER_REMARK_REQUIRED = "Blocker Remark is required.";
 const BLOCKER_REMARK_PLACEHOLDER =
   "Describe what is preventing you from completing the task...";
+
+function employeeActionFailure(err, fallback) {
+  if (Number(err?.status) === 409) return STALE_ASSIGNMENT_MESSAGE;
+  return err?.message || fallback;
+}
 
 function StatusBadge({ taskOrStatus }) {
   const style = statusBadgeStyle(taskOrStatus);
@@ -177,6 +185,7 @@ export default function TaskDetails() {
   const proofRefreshInFlightRef = useRef(null);
   const attachmentsRef = useRef([]);
   const proofAttachmentsFreshRef = useRef(false);
+  const employeeActionLock = useRef(false);
   const [actualHoursInput, setActualHoursInput] = useState("");
   const [actualHoursError, setActualHoursError] = useState("");
   const [plannedHoursInput, setPlannedHoursInput] = useState("");
@@ -795,6 +804,8 @@ export default function TaskDetails() {
       void refreshProofAttachments();
       return;
     }
+    if (employeeActionLock.current) return;
+    employeeActionLock.current = true;
     setSaving(true);
     setError("");
     try {
@@ -806,8 +817,9 @@ export default function TaskDetails() {
       });
       await load();
     } catch (err) {
-      setError(err.message || "Failed to update task status.");
+      setError(employeeActionFailure(err, "Failed to update task status."));
     } finally {
+      employeeActionLock.current = false;
       setSaving(false);
     }
   };
@@ -873,6 +885,8 @@ export default function TaskDetails() {
         : actual.error;
     setActualHoursError(actualErr);
     if (proofErr || remarkErr || actualErr) return;
+    if (employeeActionLock.current) return;
+    employeeActionLock.current = true;
     setSaving(true);
     setCompleteError("");
     setError("");
@@ -888,8 +902,9 @@ export default function TaskDetails() {
       closeCompletionModal();
       await load();
     } catch (err) {
-      setCompleteError(err.message || "Failed to update task status.");
+      setCompleteError(employeeActionFailure(err, "Failed to update task status."));
     } finally {
+      employeeActionLock.current = false;
       setSaving(false);
     }
   };
@@ -909,6 +924,7 @@ export default function TaskDetails() {
       setPlannedHoursError(parsed.empty ? HH_MM_INVALID : parsed.error);
       return;
     }
+    if (employeeActionLock.current) return;
     const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
     const mine =
       task?.myAssignment ||
@@ -916,6 +932,7 @@ export default function TaskDetails() {
         (a) => String(a.email || "").toLowerCase() === viewer
       ) ||
       null;
+    employeeActionLock.current = true;
     setSaving(true);
     setPlannedHoursError("");
     setError("");
@@ -930,8 +947,9 @@ export default function TaskDetails() {
       closePlannedModal();
       await load();
     } catch (err) {
-      setPlannedHoursError(err.message || "Unable to save planned hours.");
+      setPlannedHoursError(employeeActionFailure(err, "Unable to save planned hours."));
     } finally {
+      employeeActionLock.current = false;
       setSaving(false);
     }
   };
@@ -1021,24 +1039,29 @@ export default function TaskDetails() {
   const headerZone = employeeView ? employeeZone : zone;
   const headerTiming = employeeView ? employeeTiming : timing;
   const headerStatusValue = employeeView ? employeeStatus : task.status;
-  const employeeLocked =
-    !mine ||
-    employeeStatus === "DONE" ||
-    employeeStatus === "REVIEW" ||
-    employeeStatus === "CANCELLED" ||
-    !employeeCanChangeStatus(mine, task.dueDate);
+  const employeeCanAct =
+    !!mine && employeeCanChangeStatus(mine, task.dueDate);
+  const employeeAction = !employeeView || !employeeCanAct
+    ? null
+    : employeeStatus === "TODO" || employeeStatus === "BACKLOG" || !employeeStatus
+      ? {
+          label: "Start work",
+          detail: START_WORK_DETAIL,
+          onClick: () => handleEmployeeStatus("IN_PROGRESS"),
+        }
+      : employeeStatus === "IN_PROGRESS"
+        ? {
+            label: "Submit for review",
+            detail: SUBMIT_REVIEW_DETAIL,
+            onClick: () => handleEmployeeStatus("DONE"),
+          }
+        : null;
   const employeeIsRed =
     !!mine &&
     employeeStatus !== "DONE" &&
     employeeStatus !== "REVIEW" &&
     employeeStatus !== "CANCELLED" &&
     String(employeeZone).toUpperCase() === "RED";
-  const showEmployeeSelect =
-    employeeView &&
-    !!mine &&
-    employeeStatus !== "DONE" &&
-    employeeStatus !== "REVIEW" &&
-    employeeStatus !== "CANCELLED";
   const timeline = [...activity].sort((a, b) => {
     const ta = new Date(a.timestamp || 0).getTime();
     const tb = new Date(b.timestamp || 0).getTime();
@@ -1054,9 +1077,21 @@ export default function TaskDetails() {
         {error ? (
           <div
             className="dgv-alert dgv-alert--error"
+            role="alert"
             style={{ marginBottom: 12 }}
           >
-            {error}
+            <p style={{ margin: 0 }}>{error}</p>
+            {error === STALE_ASSIGNMENT_MESSAGE ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => load()}
+                disabled={saving}
+                style={{ marginTop: 8 }}
+              >
+                Refresh task
+              </Button>
+            ) : null}
           </div>
         ) : null}
 
@@ -1126,27 +1161,28 @@ export default function TaskDetails() {
           </div>
           <Label>STATUS</Label>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {employeeView && showEmployeeSelect ? (
-              <select
-                id="employee-assignment-status"
-                className="dgv-select"
-                aria-label="Update your assignment status"
-                style={{ ...formSelect, maxWidth: 280, marginBottom: 0 }}
-                value={employeeStatus || "TODO"}
-                disabled={saving || employeeLocked}
-                onChange={(e) => handleEmployeeStatus(e.target.value)}
-              >
-                {EMPLOYEE_STATUS_OPTIONS.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <StatusBadge taskOrStatus={headerStatus} />
-            )}
+            <StatusBadge taskOrStatus={headerStatus} />
             <ZoneBadge zone={headerZone} status={headerStatusValue} size="md" />
           </div>
+          {employeeAction ? (
+            <div style={{ marginTop: 10 }}>
+              <p
+                id="employee-action-help"
+                style={{ margin: "0 0 8px", color: colors.textMuted, fontSize: 13 }}
+              >
+                {employeeAction.detail}
+              </p>
+              <Button
+                type="button"
+                onClick={employeeAction.onClick}
+                disabled={saving}
+                loading={saving && !modal}
+                aria-describedby="employee-action-help"
+              >
+                {employeeAction.label}
+              </Button>
+            </div>
+          ) : null}
           {employeeView && employeeStatus === "REVIEW" ? (
             <p style={{ margin: "8px 0 0", color: colors.textMuted, fontSize: 13 }}>
               {REVIEW_WAIT_HEADER}
@@ -1694,6 +1730,19 @@ export default function TaskDetails() {
               {completeError}
             </p>
           ) : null}
+          {completeError === STALE_ASSIGNMENT_MESSAGE ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                closeCompletionModal();
+                void load();
+              }}
+              style={{ marginTop: 8 }}
+            >
+              Refresh task
+            </Button>
+          ) : null}
           <div style={modalActions}>
             <Button
               type="button"
@@ -1735,6 +1784,19 @@ export default function TaskDetails() {
               if (plannedHoursError) setPlannedHoursError("");
             }}
           />
+          {plannedHoursError === STALE_ASSIGNMENT_MESSAGE ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                closePlannedModal();
+                void load();
+              }}
+              style={{ marginTop: 8 }}
+            >
+              Refresh task
+            </Button>
+          ) : null}
           <div style={modalActions}>
             <Button type="button" variant="outline" onClick={closePlannedModal}>
               Cancel

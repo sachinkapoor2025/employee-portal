@@ -128,6 +128,67 @@ function overlayPreservedSubmission(outgoing, stored) {
   return next;
 }
 
+function workflowMatches(stored, guard) {
+  if (!guard) return true;
+  const storedStatus = String(stored?.status || "TODO").toUpperCase();
+  const expectedStatus = String(guard.status || "TODO").toUpperCase();
+  if (storedStatus !== expectedStatus) return false;
+  return (stored?.updatedAt || null) === (guard.updatedAt || null);
+}
+
+function workflowCondition(guard) {
+  if (!guard) return null;
+  const names = { "#workflowStatus": "status" };
+  const values = {
+    ":expectedWorkflowStatus": String(guard.status || "TODO").toUpperCase(),
+  };
+  let expr = "#workflowStatus = :expectedWorkflowStatus";
+  if (guard.updatedAt) {
+    names["#workflowUpdatedAt"] = "updatedAt";
+    values[":expectedWorkflowUpdatedAt"] = guard.updatedAt;
+    expr += " AND #workflowUpdatedAt = :expectedWorkflowUpdatedAt";
+  } else {
+    expr += " AND attribute_not_exists(updatedAt)";
+  }
+  return {
+    ConditionExpression: expr,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  };
+}
+
+function mergeConditions(base, extra) {
+  if (!extra) return base;
+  return {
+    ConditionExpression: `(${base.ConditionExpression}) AND (${extra.ConditionExpression})`,
+    ExpressionAttributeNames: {
+      ...(base.ExpressionAttributeNames || {}),
+      ...(extra.ExpressionAttributeNames || {}),
+    },
+    ExpressionAttributeValues: {
+      ...(base.ExpressionAttributeValues || {}),
+      ...(extra.ExpressionAttributeValues || {}),
+    },
+  };
+}
+
+function takeWorkflowGuard(item) {
+  if (!item || item.expectedStatus === undefined) {
+    return { item, guard: null };
+  }
+  const guard = {
+    status: item.expectedStatus || "TODO",
+    updatedAt: item.expectedUpdatedAt || null,
+  };
+  const next = {
+    ...item,
+    updatedAt: new Date().toISOString(),
+  };
+  delete next.expectedStatus;
+  delete next.expectedUpdatedAt;
+  return { item: next, guard };
+}
+
 function statusCondition(stored, statusKey, claimedKey) {
   const status = stored?.[statusKey];
   const claimed = stored?.[claimedKey];
@@ -183,12 +244,20 @@ async function putProtectedItem(
   attrNames,
   statusKey,
   claimedKey,
-  preserveAttrs
+  preserveAttrs,
+  workflowGuard
 ) {
   const key = { PK: outgoing.PK, SK: outgoing.SK };
   let lastError = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const stored = await getItem(ddb, tableName, key);
+    if (stored && workflowGuard && !workflowMatches(stored, workflowGuard)) {
+      console.error(
+        "TASK_NOTIFY_PERSIST_CONFLICT",
+        JSON.stringify({ PK: key.PK, SK: key.SK, reason: "STALE_ASSIGNMENT" })
+      );
+      return { ok: false, reason: "STALE_ASSIGNMENT", stored };
+    }
     if (!stored) {
       try {
         await ddb.send(
@@ -216,7 +285,10 @@ async function putProtectedItem(
     item = overlayMissingAttrs(item, stored, preserveAttrs);
     item = overlayPreservedHours(item, stored);
     item = overlayPreservedSubmission(item, stored);
-    const cond = statusCondition(stored, statusKey, claimedKey);
+    const cond = mergeConditions(
+      statusCondition(stored, statusKey, claimedKey),
+      workflowCondition(workflowGuard)
+    );
     try {
       await ddb.send(
         new PutCommand({
@@ -445,14 +517,16 @@ async function putAssignmentSafe(ddb, tableName, item) {
   if (!ddb || !tableName || !item || !item.PK || !item.SK) {
     return { ok: false, reason: "INVALID_ITEM" };
   }
+  const guarded = takeWorkflowGuard(item);
   const result = await putProtectedItem(
     ddb,
     tableName,
-    item,
+    guarded.item,
     ASSIGNMENT_RED_NOTIFY_ATTRS,
     "redAdminNotifyStatus",
     "redAdminNotifyClaimedAt",
-    ASSIGNMENT_BLOCKER_ATTRS
+    ASSIGNMENT_BLOCKER_ATTRS,
+    guarded.guard
   );
   if (!result.ok) return result;
   const pointerResult = await putUserAssignmentPointer(
@@ -474,31 +548,34 @@ async function prepareProtectedAssignmentPut(ddb, tableName, outgoing) {
   if (!ddb || !tableName || !outgoing || !outgoing.PK || !outgoing.SK) {
     return { ok: false, reason: "INVALID_ITEM" };
   }
+  const guarded = takeWorkflowGuard(outgoing);
   const stored = await getItem(ddb, tableName, {
     PK: outgoing.PK,
     SK: outgoing.SK,
   });
+  if (stored && guarded.guard && !workflowMatches(stored, guarded.guard)) {
+    return { ok: false, reason: "STALE_ASSIGNMENT", stored };
+  }
   if (!stored) {
     return {
       ok: true,
-      item: outgoing,
+      item: guarded.item,
       put: {
         Put: {
           TableName: tableName,
-          Item: outgoing,
+          Item: guarded.item,
           ConditionExpression: "attribute_not_exists(PK)",
         },
       },
     };
   }
-  let item = overlayStoredAttrs(outgoing, stored, ASSIGNMENT_RED_NOTIFY_ATTRS);
+  let item = overlayStoredAttrs(guarded.item, stored, ASSIGNMENT_RED_NOTIFY_ATTRS);
   item = overlayMissingAttrs(item, stored, ASSIGNMENT_BLOCKER_ATTRS);
   item = overlayPreservedHours(item, stored);
   item = overlayPreservedSubmission(item, stored);
-  const cond = statusCondition(
-    stored,
-    "redAdminNotifyStatus",
-    "redAdminNotifyClaimedAt"
+  const cond = mergeConditions(
+    statusCondition(stored, "redAdminNotifyStatus", "redAdminNotifyClaimedAt"),
+    workflowCondition(guarded.guard)
   );
   return {
     ok: true,

@@ -160,6 +160,103 @@ async function loadProjectAclContext({
   };
 }
 
+/**
+ * Project-level restricted read. OPEN and missing projects are not decided
+ * here. Deleting restricted projects fail closed. Visibility is not applied;
+ * task reads still go through decideTaskRead.
+ */
+function callerMayReadRestrictedProject({
+  user,
+  project,
+  regularMemberItem,
+  projectAdminItem,
+  accessRow,
+} = {}) {
+  const email = normalizeEmail(user?.email);
+  if (!email || !project || !isRestrictedProject(project)) return false;
+  if (isProjectDeleting(project)) return false;
+  if (String(accessRow?.status || "").toUpperCase() !== "ACTIVE") return false;
+  return canAccessRestrictedProject({
+    project,
+    email,
+    regularMemberItem,
+    projectAdminItem,
+  });
+}
+
+async function readRawProject(ddb, tableName, projectId, cache) {
+  const store = cache || createCache();
+  if (!store.rawProjects) store.rawProjects = Object.create(null);
+  const id = String(projectId || "").trim();
+  if (!id) return { ok: true, project: null, cache: store };
+  if (!Object.prototype.hasOwnProperty.call(store.rawProjects, id)) {
+    if (!ddb || !tableName) return { ok: false, reason: REASON_DDB_ERROR };
+    try {
+      store.rawProjects[id] = (await getProject(ddb, tableName, id)) || null;
+    } catch (err) {
+      return { ok: false, reason: REASON_DDB_ERROR };
+    }
+  }
+  return { ok: true, project: store.rawProjects[id], cache: store };
+}
+
+/**
+ * Disclosure gate for reports that are not task routes.
+ * Missing or OPEN projects stay allowed so existing report behavior holds.
+ * RESTRICTED projects require the same membership and, when `task` is set,
+ * the same task visibility as authorizeTaskRead.
+ */
+async function authorizeRestrictedRead({
+  ddb,
+  tableName,
+  accessTable,
+  user,
+  projectId,
+  task,
+  cache,
+} = {}) {
+  const id = String(projectId || task?.projectId || "").trim();
+  const raw = await readRawProject(ddb, tableName, id, cache);
+  if (!raw.ok) return raw;
+  const store = raw.cache;
+  if (!raw.project || !isRestrictedProject(raw.project)) {
+    return { ok: true, allowed: true };
+  }
+  if (isProjectDeleting(raw.project)) return { ok: true, allowed: false };
+  if (task) {
+    const decision = await authorizeTaskRead({
+      ddb,
+      tableName,
+      accessTable,
+      user,
+      task: { ...task, projectId: task.projectId || id },
+      cache: store,
+    });
+    if (!decision.ok) return decision;
+    return { ok: true, allowed: Boolean(decision.allowed) };
+  }
+  const email = normalizeEmail(user?.email);
+  const loaded = await loadProjectAclContext({
+    ddb,
+    tableName,
+    accessTable,
+    email,
+    projectId: id,
+    cache: store,
+  });
+  if (!loaded.ok) return loaded;
+  return {
+    ok: true,
+    allowed: callerMayReadRestrictedProject({
+      user,
+      project: loaded.project,
+      regularMemberItem: loaded.regularMemberItem,
+      projectAdminItem: loaded.projectAdminItem,
+      accessRow: loaded.accessRow,
+    }),
+  };
+}
+
 async function authorizeTaskRead({
   ddb,
   tableName,
@@ -274,6 +371,8 @@ module.exports = {
   decideTaskRead,
   loadProjectAclContext,
   authorizeTaskRead,
+  authorizeRestrictedRead,
+  callerMayReadRestrictedProject,
   filterVisibleTasks,
   authorizeAttachmentDownload,
   isOwnProfileObjectKey,

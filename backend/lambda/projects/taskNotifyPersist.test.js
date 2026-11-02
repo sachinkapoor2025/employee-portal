@@ -154,6 +154,19 @@ function createMemoryDdb() {
         } else if (expr.includes("attribute_not_exists(PK)") && existing) {
           throw conditionalFail();
         }
+        if (expr.includes("#workflowStatus")) {
+          const expected = input.ExpressionAttributeValues[":expectedWorkflowStatus"];
+          if (String(existing?.status || "TODO").toUpperCase() !== expected) {
+            throw conditionalFail();
+          }
+          if (expr.includes("attribute_not_exists(updatedAt)") && existing?.updatedAt) {
+            throw conditionalFail();
+          }
+          if (expr.includes("#workflowUpdatedAt")) {
+            const expectedAt = input.ExpressionAttributeValues[":expectedWorkflowUpdatedAt"];
+            if ((existing?.updatedAt || null) !== expectedAt) throw conditionalFail();
+          }
+        }
         if (expr.includes("#notifyStatus = :notifyStatus")) {
           const expected = input.ExpressionAttributeValues[":notifyStatus"];
           const statusName = input.ExpressionAttributeNames["#notifyStatus"];
@@ -722,6 +735,89 @@ async function run() {
   assert.strictEqual(assignStored.status, "TODO");
   assert.strictEqual(assignStored.redAdminNotifyStatus, "SENDING");
   assert.strictEqual(assignStored.redAdminNotifyRecipients["admin@mydgv.com"].messageId, "keep");
+
+  const guardDdb = createMemoryDdb();
+  guardDdb.items.set("TASK#t-guard|ASSIGNMENT#a@mydgv.com", {
+    PK: "TASK#t-guard",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-guard",
+    email: "a@mydgv.com",
+    status: "TODO",
+  });
+  const firstWrite = await putAssignmentSafe(guardDdb, tableName, {
+    PK: "TASK#t-guard",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-guard",
+    email: "a@mydgv.com",
+    status: "IN_PROGRESS",
+    expectedStatus: "TODO",
+    expectedUpdatedAt: null,
+  });
+  assert.strictEqual(firstWrite.ok, true);
+  const progressed = guardDdb.items.get("TASK#t-guard|ASSIGNMENT#a@mydgv.com");
+  assert.strictEqual(progressed.status, "IN_PROGRESS");
+  assert.ok(progressed.updatedAt);
+  assert.ok(progressed.expectedStatus === undefined);
+  const staleWrite = await putAssignmentSafe(guardDdb, tableName, {
+    PK: "TASK#t-guard",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-guard",
+    email: "a@mydgv.com",
+    status: "DONE",
+    expectedStatus: "TODO",
+    expectedUpdatedAt: null,
+  });
+  assert.strictEqual(staleWrite.ok, false);
+  assert.strictEqual(staleWrite.reason, "STALE_ASSIGNMENT");
+  assert.strictEqual(
+    guardDdb.items.get("TASK#t-guard|ASSIGNMENT#a@mydgv.com").status,
+    "IN_PROGRESS"
+  );
+  const currentWrite = await putAssignmentSafe(guardDdb, tableName, {
+    PK: "TASK#t-guard",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-guard",
+    email: "a@mydgv.com",
+    status: "REVIEW",
+    expectedStatus: "IN_PROGRESS",
+    expectedUpdatedAt: progressed.updatedAt,
+  });
+  assert.strictEqual(currentWrite.ok, true);
+  assert.strictEqual(
+    guardDdb.items.get("TASK#t-guard|ASSIGNMENT#a@mydgv.com").status,
+    "REVIEW"
+  );
+
+  const forcedConflictDdb = createMemoryDdb();
+  forcedConflictDdb.items.set("TASK#t-conflict|ASSIGNMENT#a@mydgv.com", {
+    PK: "TASK#t-conflict",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-conflict",
+    email: "a@mydgv.com",
+    status: "TODO",
+  });
+  forcedConflictDdb.failNextPuts(2);
+  const forcedConflict = await putAssignmentSafe(forcedConflictDdb, tableName, {
+    PK: "TASK#t-conflict",
+    SK: "ASSIGNMENT#a@mydgv.com",
+    type: "ASSIGNMENT",
+    taskId: "t-conflict",
+    email: "a@mydgv.com",
+    status: "IN_PROGRESS",
+    expectedStatus: "TODO",
+    expectedUpdatedAt: null,
+  });
+  assert.strictEqual(forcedConflict.ok, false);
+  assert.strictEqual(forcedConflict.reason, "UPDATE_CONFLICT");
+  assert.strictEqual(
+    forcedConflictDdb.items.get("TASK#t-conflict|ASSIGNMENT#a@mydgv.com").status,
+    "TODO"
+  );
 
   console.log("task notify persist tests passed");
 }

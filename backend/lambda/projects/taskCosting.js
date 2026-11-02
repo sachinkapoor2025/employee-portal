@@ -635,7 +635,11 @@ async function persistSubmissionBasis({
     tableName,
     lockedItem
   );
-  if (!prepared.ok) throw snapshotError(new Error(prepared.reason || "ASSIGNMENT_PREPARE"));
+  throwIfAssignmentPrepareFailed(prepared, {
+    op: "prepareAssignment",
+    taskId: task.taskId,
+    email,
+  });
   const costCondition = submissionCostCondition(existing);
   const pointer = userAssignmentPointerItem(lockedItem);
   try {
@@ -698,7 +702,11 @@ async function retireSubmissionBasis({
     tableName,
     assignmentItem
   );
-  if (!prepared.ok) throw snapshotError(new Error(prepared.reason || "ASSIGNMENT_PREPARE"));
+  throwIfAssignmentPrepareFailed(prepared, {
+    op: "prepareAssignment",
+    taskId: task.taskId,
+    email,
+  });
   if (!existing || existing.basisState === BASIS_RETURNED) {
     const written = await putAssignmentSafe(ddb, tableName, assignmentItem);
     assertPersistOk(written, {
@@ -777,6 +785,14 @@ function snapshotError(cause) {
   return err;
 }
 
+function throwIfAssignmentPrepareFailed(prepared, extra) {
+  if (prepared?.ok) return;
+  if (prepared?.reason === "STALE_ASSIGNMENT") {
+    assertPersistOk(prepared, extra);
+  }
+  throw snapshotError(new Error(prepared?.reason || "ASSIGNMENT_PREPARE"));
+}
+
 /**
  * Finalize the employee's active submission basis in the same TransactWrite as
  * the completing ASSIGNMENT row. The captured rate and hours are not resolved
@@ -843,9 +859,11 @@ async function persistCompletionWithCost({
     tableName,
     lockedAssignment
   );
-  if (!prepared.ok) {
-    throw snapshotError(new Error(prepared.reason || "ASSIGNMENT_PREPARE"));
-  }
+  throwIfAssignmentPrepareFailed(prepared, {
+    op: "prepareAssignment",
+    taskId: task.taskId,
+    email,
+  });
   const finalCondition = activeBasisCondition();
   const pointer = userAssignmentPointerItem(lockedAssignment);
   try {
@@ -991,9 +1009,11 @@ async function persistSubmissionWithCost({
     attemptId,
     status: "REVIEW",
   });
-  if (!prepared.ok) {
-    throw snapshotError(new Error(prepared.reason || "ASSIGNMENT_PREPARE"));
-  }
+  throwIfAssignmentPrepareFailed(prepared, {
+    op: "prepareAssignment",
+    taskId: task.taskId,
+    email,
+  });
   const pointer = userAssignmentPointerItem(prepared.item || assignmentItem);
   const activityPut = activityItem ? submissionActivityPut(tableName, activityItem) : null;
   try {

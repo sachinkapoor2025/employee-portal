@@ -45,15 +45,36 @@ function createMemoryDdb() {
         return { Item: found ? { ...found.Item } : undefined };
       }
       if (command instanceof QueryCommand) {
-        const { TableName, ExpressionAttributeValues = {} } = command.input;
+        const { TableName, ExpressionAttributeValues = {}, ExclusiveStartKey } =
+          command.input;
         const pk = ExpressionAttributeValues[":pk"];
         const skPrefix = ExpressionAttributeValues[":sk"];
-        const found = items
+        let found = items
           .filter((row) => row.TableName === TableName && row.Item.PK === pk)
           .filter((row) =>
             skPrefix ? String(row.Item.SK).startsWith(skPrefix) : true
           )
-          .map((row) => ({ ...row.Item }));
+          .map((row) => ({ ...row.Item }))
+          .sort((left, right) => String(left.SK).localeCompare(String(right.SK)));
+        if (ExclusiveStartKey) {
+          const start = found.findIndex(
+            (item) =>
+              item.PK === ExclusiveStartKey.PK && item.SK === ExclusiveStartKey.SK
+          );
+          found = start >= 0 ? found.slice(start + 1) : found;
+        }
+        const pagesTaskQuery =
+          this.pageSize &&
+          (pk === "ENTITY#TASK" ||
+            (String(pk).startsWith("PROJECT#") && skPrefix === "TASK#"));
+        if (pagesTaskQuery && found.length > this.pageSize) {
+          const page = found.slice(0, this.pageSize);
+          const last = page[page.length - 1];
+          return {
+            Items: page,
+            LastEvaluatedKey: { PK: last.PK, SK: last.SK },
+          };
+        }
         return { Items: found };
       }
       throw new Error(`unexpected command ${command.constructor.name}`);
@@ -95,9 +116,9 @@ function seedAssignedTask(ddb, extra = {}) {
     status: "TODO",
     priority: "MEDIUM",
     startDate: START,
-    dueDate: DUE,
-    assignee: PRIYA,
-    assignees: [PRIYA],
+    dueDate: extra.dueDate || DUE,
+    assignee: extra.assignee || PRIYA,
+    assignees: [extra.assignee || PRIYA],
     assignmentMode: "IMMEDIATE",
     assignmentState: "ASSIGNED",
     archived: false,
@@ -115,7 +136,7 @@ function seedAssignedTask(ddb, extra = {}) {
     SK: `ASSIGNMENT#${PRIYA}`,
     type: "ASSIGNMENT",
     taskId,
-    email: PRIYA,
+    email: extra.assignee || PRIYA,
     status: "TODO",
     assignedAt: item.createdAt,
     assignedBy: ADMIN,
@@ -225,6 +246,90 @@ async function run() {
     assert.strictEqual(res.body.tasks.length, 1);
     assert.strictEqual(res.body.tasks[0].projectName, "");
     assert.notStrictEqual(res.body.tasks[0].projectName, UNKNOWN_PROJECT);
+  });
+
+  await test("GET /tasks follows every DynamoDB page and keeps filters", async () => {
+    const ddb = setup();
+    ddb.pageSize = 1;
+    seedAccess(ddb, "rahul@mydgv.com");
+    seedProject(ddb, PROJECT_A, "Alpha Project");
+    seedAssignedTask(ddb, {
+      taskId: "task-other",
+      projectId: PROJECT_A,
+      title: "Someone else",
+      assignee: "rahul@mydgv.com",
+      createdAt: "2026-09-01T10:00:00.000Z",
+    });
+    seedAssignedTask(ddb, {
+      taskId: "task-green",
+      projectId: PROJECT_A,
+      title: "Still open",
+      dueDate: "2099-12-31T18:00:00+05:30",
+      createdAt: "2026-09-02T10:00:00.000Z",
+    });
+    seedAssignedTask(ddb, {
+      taskId: "task-red",
+      projectId: PROJECT_A,
+      title: "Past due",
+      dueDate: "2020-01-01T18:00:00+05:30",
+      createdAt: "2026-09-03T10:00:00.000Z",
+    });
+    const mine = parse(
+      await handler(eventFor(PRIYA, [], { mine: "true", zone: "GREEN" }))
+    );
+    assert.strictEqual(mine.statusCode, 200);
+    assert.deepStrictEqual(
+      mine.body.tasks.map((task) => task.taskId),
+      ["task-green"]
+    );
+    assert.strictEqual(mine.body.zoneCounts.GREEN, 1);
+    assert.strictEqual(mine.body.zoneCounts.RED, 1);
+    assert.ok(!Object.prototype.hasOwnProperty.call(mine.body, "LastEvaluatedKey"));
+    const red = parse(
+      await handler(eventFor(PRIYA, [], { mine: "true", zone: "RED" }))
+    );
+    assert.deepStrictEqual(
+      red.body.tasks.map((task) => task.taskId),
+      ["task-red"]
+    );
+    const admin = parse(await handler(eventFor(ADMIN, ["Admin"], {})));
+    assert.strictEqual(admin.statusCode, 200);
+    assert.deepStrictEqual(
+      admin.body.tasks.map((task) => task.taskId).sort(),
+      ["task-green", "task-other", "task-red"]
+    );
+  });
+
+  await test("GET /tasks project query reads a single page when no continuation exists", async () => {
+    const ddb = setup();
+    seedProject(ddb, PROJECT_A, "Alpha Project");
+    seedAssignedTask(ddb, {
+      taskId: "task-only",
+      projectId: PROJECT_A,
+      title: "Only task",
+    });
+    let taskPages = 0;
+    const original = ddb.send.bind(ddb);
+    ddb.send = async (command) => {
+      if (
+        command instanceof QueryCommand &&
+        command.input.ExpressionAttributeValues?.[":pk"] === `PROJECT#${PROJECT_A}`
+      ) {
+        taskPages += 1;
+        assert.strictEqual(command.input.ExclusiveStartKey, undefined);
+      }
+      return original(command);
+    };
+    const res = parse(
+      await handler(eventFor(PRIYA, [], { mine: "true", projectId: PROJECT_A }))
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.body.tasks.map((task) => task.taskId),
+      ["task-only"]
+    );
+    assert.strictEqual(taskPages, 1);
+    assert.ok(!Object.prototype.hasOwnProperty.call(res.body, "nextToken"));
   });
 
   await test("GET /tasks zone filter still returns only matching tasks", async () => {

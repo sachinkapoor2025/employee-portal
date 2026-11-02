@@ -4,6 +4,7 @@ const path = require("path");
 const {
   GetCommand,
   QueryCommand,
+  ScanCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const {
   STATUS_MISSING_COST_RECORD,
@@ -18,6 +19,7 @@ const {
   inCompletedDateRange,
   handleGetProjectCosting,
   handleGetEmployeeCosting,
+  handleGetCostingRoster,
   buildEmployeeRosterEntry,
   includeRosterEntry,
   setCostingCapsForTest,
@@ -48,7 +50,6 @@ function memoryDdb(seed = {}) {
         return items[k] ? { Item: { ...items[k] } } : {};
       }
       if (command instanceof QueryCommand) {
-        const table = command.input.TableName;
         const pk = command.input.ExpressionAttributeValues[":pk"];
         const skPrefix = command.input.ExpressionAttributeValues[":sk"];
         const found = Object.values(items).filter((item) => {
@@ -57,6 +58,13 @@ function memoryDdb(seed = {}) {
           return String(item.SK || "").startsWith(skPrefix);
         });
         return { Items: found.map((item) => ({ ...item })) };
+      }
+      if (command instanceof ScanCommand) {
+        const table = command.input.TableName;
+        const found = Object.entries(items)
+          .filter(([key]) => key.startsWith(`${table}\0`))
+          .map(([, item]) => ({ ...item }));
+        return { Items: found };
       }
       throw new Error(command.constructor.name);
     },
@@ -1049,6 +1057,309 @@ assert.strictEqual(
   );
 
   console.log("costingReports tests passed");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+
+function accessRow(email, role) {
+  return {
+    PK: email,
+    SK: email,
+    email,
+    role,
+    status: "ACTIVE",
+  };
+}
+
+function projectAdminItem(projectId, email, taskVisibility) {
+  return {
+    PK: `PROJECT#${projectId}`,
+    SK: `PROJECT_ADMIN#${email}`,
+    type: "PROJECT_ADMIN",
+    status: "ACTIVE",
+    email,
+    projectId,
+    taskVisibility,
+  };
+}
+
+function projectMemberItem(projectId, email) {
+  return {
+    PK: `PROJECT#${projectId}`,
+    SK: `MEMBER#${email}`,
+    type: "PROJECT_MEMBER",
+    status: "ACTIVE",
+    email,
+    projectId,
+  };
+}
+
+function secretText(value) {
+  return JSON.stringify(value);
+}
+
+(async () => {
+  const items = seedPeople();
+  items[keyOf(ACCESS, "member@mydgv.com", "member@mydgv.com")] = accessRow(
+    "member@mydgv.com",
+    "ADMIN"
+  );
+  items[keyOf(PROFILE, "USER#member@mydgv.com", "PROFILE")] = {
+    PK: "USER#member@mydgv.com",
+    SK: "PROFILE",
+    email: "member@mydgv.com",
+    name: "Member Admin",
+  };
+  const projects = [
+    ["p-open", "Portal Open", "INTERNAL", null],
+    ["proj-vault", "Vault Internal", "INTERNAL", "RESTRICTED"],
+    ["proj-ext", "Vault External", "EXTERNAL", "RESTRICTED"],
+  ];
+  for (const [projectId, name, projectType, accessMode] of projects) {
+    items[keyOf(WORK, "ENTITY#PROJECT", `PROJECT#${projectId}`)] = {
+      PK: "ENTITY#PROJECT",
+      SK: `PROJECT#${projectId}`,
+      projectId,
+      name,
+      projectType,
+      projectCode: projectId,
+      status: "ACTIVE",
+      ...(accessMode ? { accessMode } : {}),
+    };
+  }
+  const cost = (amount) => ({
+    status: STATUS_COSTED,
+    amountUsd: amount,
+    hourlyRateUsd: amount,
+    rateSource: "EMPLOYEE",
+    rateVersionId: "v1",
+    completedDate: "2026-02-11",
+  });
+  seedTask(items, {
+    taskId: "t-open",
+    projectId: "p-open",
+    title: "Open task",
+    status: "DONE",
+    assignmentStatus: "DONE",
+    actualHours: 1,
+    completedAt: "2026-02-10T18:40:00.000Z",
+    completedDate: "2026-02-11",
+    cost: cost(111),
+  });
+  seedTask(items, {
+    taskId: "t-vault",
+    projectId: "proj-vault",
+    title: "Vault ledger",
+    status: "DONE",
+    assignmentStatus: "DONE",
+    actualHours: 4,
+    completedAt: "2026-02-10T18:40:00.000Z",
+    completedDate: "2026-02-11",
+    cost: cost(999),
+  });
+  seedTask(items, {
+    taskId: "t-member",
+    projectId: "proj-vault",
+    title: "Member slice",
+    email: "member@mydgv.com",
+    status: "DONE",
+    assignmentStatus: "DONE",
+    actualHours: 1,
+    completedAt: "2026-02-10T18:40:00.000Z",
+    completedDate: "2026-02-11",
+    cost: cost(15),
+  });
+  seedTask(items, {
+    taskId: "t-ext",
+    projectId: "proj-ext",
+    title: "External ledger",
+    status: "DONE",
+    assignmentStatus: "DONE",
+    actualHours: 2,
+    completedAt: "2026-02-10T18:40:00.000Z",
+    completedDate: "2026-02-11",
+    cost: cost(777),
+  });
+  for (const projectId of ["proj-vault", "proj-ext"]) {
+    const admin = projectAdminItem(projectId, "admin@mydgv.com", "ALL_PROJECT_TASKS");
+    items[keyOf(WORK, admin.PK, admin.SK)] = admin;
+  }
+  const narrow = projectAdminItem(
+    "proj-vault",
+    "boss@mydgv.com",
+    "ASSIGNED_ONLY"
+  );
+  items[keyOf(WORK, narrow.PK, narrow.SK)] = narrow;
+  for (const email of ["member@mydgv.com", "rahul@mydgv.com"]) {
+    const member = projectMemberItem("proj-vault", email);
+    items[keyOf(WORK, member.PK, member.SK)] = member;
+  }
+  const extMember = projectMemberItem("proj-ext", "rahul@mydgv.com");
+  items[keyOf(WORK, extMember.PK, extMember.SK)] = extMember;
+  const outsider = { email: "outsider@mydgv.com", isAdmin: true };
+  items[keyOf(ACCESS, outsider.email, outsider.email)] = accessRow(outsider.email, "ADMIN");
+  const superOutsider = { email: "super-out@mydgv.com", isAdmin: true };
+  items[keyOf(ACCESS, superOutsider.email, superOutsider.email)] = accessRow(
+    superOutsider.email,
+    "SUPER_ADMIN"
+  );
+
+  const ddb = memoryDdb(items);
+  const range = { from: "2026-02-01", to: "2026-02-28" };
+  const ctx = {
+    ddb,
+    tableName: WORK,
+    accessTable: ACCESS,
+    profileTable: PROFILE,
+    query: range,
+  };
+  const hidden = ["Vault Internal", "Vault External", "Vault ledger", "External ledger", "proj-vault", "proj-ext"];
+
+  function deniesHidden(body) {
+    const text = secretText(body);
+    for (const marker of hidden) assert.ok(!text.includes(marker), marker);
+  }
+
+  for (const user of [outsider, superOutsider]) {
+    for (const projectId of ["proj-vault", "proj-ext"]) {
+      const denied = await handleGetProjectCosting({ ...ctx, user, projectId });
+      assert.strictEqual(denied.statusCode, 403);
+      assert.strictEqual(denied.body.error, "Forbidden");
+      deniesHidden(denied.body);
+    }
+    const employee = await handleGetEmployeeCosting({
+      ...ctx,
+      user,
+      email: "rahul@mydgv.com",
+    });
+    assert.strictEqual(employee.statusCode, 200);
+    assert.strictEqual(employee.body.summary.confirmedCostUsd, 111);
+    assert.deepStrictEqual(
+      employee.body.projects.map((project) => project.projectId),
+      ["p-open"]
+    );
+    deniesHidden(employee.body);
+    const roster = await handleGetCostingRoster({ ...ctx, user });
+    assert.strictEqual(roster.statusCode, 200);
+    deniesHidden(roster.body);
+    const rahul = roster.body.employees.find((row) => row.email === "rahul@mydgv.com");
+    assert.strictEqual(rahul.confirmedCostUsd, 111);
+    assert.deepStrictEqual(rahul.projects.map((project) => project.name), ["Portal Open"]);
+  }
+
+  const open = await handleGetProjectCosting({
+    ...ctx,
+    user: outsider,
+    projectId: "p-open",
+  });
+  assert.strictEqual(open.statusCode, 200);
+  assert.strictEqual(open.body.project.name, "Portal Open");
+  assert.strictEqual(open.body.summary.confirmedCostUsd, 111);
+
+  const adminVault = await handleGetProjectCosting({
+    ...ctx,
+    user: ADMIN,
+    projectId: "proj-vault",
+  });
+  assert.strictEqual(adminVault.statusCode, 200);
+  assert.strictEqual(adminVault.body.project.name, "Vault Internal");
+  assert.strictEqual(adminVault.body.project.projectType, "INTERNAL");
+  assert.strictEqual(adminVault.body.summary.confirmedCostUsd, 1014);
+  const vaultTitles = adminVault.body.assignments.map((row) => row.title).sort();
+  assert.deepStrictEqual(vaultTitles, ["Member slice", "Vault ledger"]);
+
+  const adminExternal = await handleGetProjectCosting({
+    ...ctx,
+    user: ADMIN,
+    projectId: "proj-ext",
+  });
+  assert.strictEqual(adminExternal.statusCode, 200);
+  assert.strictEqual(adminExternal.body.project.name, "Vault External");
+  assert.strictEqual(adminExternal.body.project.projectType, "EXTERNAL");
+  assert.strictEqual(adminExternal.body.summary.confirmedCostUsd, 777);
+  assert.strictEqual(adminExternal.body.assignments[0].title, "External ledger");
+
+  const adminEmployee = await handleGetEmployeeCosting({
+    ...ctx,
+    user: ADMIN,
+    email: "rahul@mydgv.com",
+  });
+  assert.strictEqual(adminEmployee.statusCode, 200);
+  assert.strictEqual(adminEmployee.body.summary.confirmedCostUsd, 111 + 999 + 777);
+  const adminProjects = adminEmployee.body.projects.map((project) => project.projectId).sort();
+  assert.deepStrictEqual(adminProjects, ["p-open", "proj-ext", "proj-vault"]);
+
+  const memberUser = { email: "member@mydgv.com", isAdmin: true };
+  const memberVault = await handleGetProjectCosting({
+    ...ctx,
+    user: memberUser,
+    projectId: "proj-vault",
+  });
+  assert.strictEqual(memberVault.statusCode, 200);
+  assert.strictEqual(memberVault.body.project.name, "Vault Internal");
+  assert.strictEqual(memberVault.body.summary.confirmedCostUsd, 15);
+  assert.deepStrictEqual(
+    memberVault.body.assignments.map((row) => row.title),
+    ["Member slice"]
+  );
+  assert.ok(!secretText(memberVault.body).includes("Vault ledger"));
+  assert.ok(!secretText(memberVault.body).includes("rahul@mydgv.com"));
+
+  const memberExternal = await handleGetProjectCosting({
+    ...ctx,
+    user: memberUser,
+    projectId: "proj-ext",
+  });
+  assert.strictEqual(memberExternal.statusCode, 403);
+  deniesHidden(memberExternal.body);
+
+  const memberViewRahul = await handleGetEmployeeCosting({
+    ...ctx,
+    user: memberUser,
+    email: "rahul@mydgv.com",
+  });
+  assert.strictEqual(memberViewRahul.statusCode, 200);
+  assert.strictEqual(memberViewRahul.body.summary.confirmedCostUsd, 111);
+  deniesHidden(memberViewRahul.body);
+
+  const memberSelf = await handleGetEmployeeCosting({
+    ...ctx,
+    user: memberUser,
+    email: "member@mydgv.com",
+  });
+  assert.strictEqual(memberSelf.statusCode, 200);
+  assert.strictEqual(memberSelf.body.summary.confirmedCostUsd, 15);
+  assert.deepStrictEqual(
+    memberSelf.body.projects.map((project) => project.name),
+    ["Vault Internal"]
+  );
+  assert.ok(!secretText(memberSelf.body).includes("Vault ledger"));
+
+  const employeeMember = await handleGetProjectCosting({
+    ...ctx,
+    user: EMP,
+    projectId: "proj-vault",
+  });
+  assert.strictEqual(employeeMember.statusCode, 403);
+  assert.strictEqual(employeeMember.body.error, "Admin required");
+  deniesHidden(employeeMember.body);
+  const employeeRoster = await handleGetCostingRoster({ ...ctx, user: EMP });
+  assert.strictEqual(employeeRoster.statusCode, 403);
+  deniesHidden(employeeRoster.body);
+
+  const assignedOnly = await handleGetProjectCosting({
+    ...ctx,
+    user: SUPER,
+    projectId: "proj-vault",
+  });
+  assert.strictEqual(assignedOnly.statusCode, 200);
+  assert.strictEqual(assignedOnly.body.summary.confirmedCostUsd, 0);
+  assert.deepStrictEqual(assignedOnly.body.assignments, []);
+  assert.ok(!secretText(assignedOnly.body).includes("Vault ledger"));
+  assert.ok(!secretText(assignedOnly.body).includes("Member slice"));
+
+  console.log("restricted costing tests passed");
 })().catch((err) => {
   console.error(err);
   process.exit(1);

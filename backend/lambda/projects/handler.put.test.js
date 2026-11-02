@@ -108,6 +108,15 @@ function createMemoryDdb() {
       if (command instanceof PutCommand) {
         const item = command.input.Item;
         if (
+          this.failAssignmentPuts > 0 &&
+          String(item?.SK || "").startsWith("ASSIGNMENT#")
+        ) {
+          this.failAssignmentPuts -= 1;
+          const err = new Error("The conditional request failed");
+          err.name = "ConditionalCheckFailedException";
+          throw err;
+        }
+        if (
           this.failHeaderPuts > 0 &&
           item?.PK === "ENTITY#TASK" &&
           String(item?.SK || "").startsWith("TASK#")
@@ -118,6 +127,14 @@ function createMemoryDdb() {
           throw err;
         }
         this.seed(command.input.TableName, command.input.Item);
+        if (
+          typeof this.afterAssignmentPut === "function" &&
+          String(item?.SK || "").startsWith("ASSIGNMENT#")
+        ) {
+          const hook = this.afterAssignmentPut;
+          this.afterAssignmentPut = null;
+          hook(item);
+        }
         return {};
       }
       if (command instanceof QueryCommand) {
@@ -1466,6 +1483,223 @@ async function run() {
     );
     assert.ok(res.statusCode === 200 || res.statusCode === 400 || res.statusCode === 403);
     assert.strictEqual(assignmentItem(ddb, PRIYA).status, "TODO");
+  });
+
+  await test("stale assignment write returns 409 and keeps the stored status", async () => {
+    const { ddb } = setup({ startDate: FUTURE_START, dueDate: FUTURE_DUE });
+    ddb.failAssignmentPuts = 5;
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+          plannedHours: "2",
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 409);
+    assert.match(res.body.error || "", /retry/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "TODO");
+    assert.ok(assignmentItem(ddb, PRIYA).plannedHours == null);
+  });
+
+  await test("multi-assignment persist keeps an earlier assignment when a later one conflicts", async () => {
+    const { ddb } = setup({
+      assignees: [PRIYA, RAHUL],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+    });
+    ddb.afterAssignmentPut = (item) => {
+      if (item.email !== PRIYA) return;
+      const rahul = ddb.items.find(
+        (row) =>
+          row.TableName === WORK &&
+          row.Item.PK === `TASK#${TASK_ID}` &&
+          row.Item.SK === `ASSIGNMENT#${RAHUL}`
+      );
+      rahul.Item.status = "DONE";
+      rahul.Item.updatedAt = "2099-01-01T00:00:00.000Z";
+    };
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 409);
+    assert.match(res.body.error || "", /retry/i);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "IN_PROGRESS");
+    assert.strictEqual(assignmentItem(ddb, RAHUL).status, "DONE");
+    assert.strictEqual(
+      assignmentItem(ddb, RAHUL).updatedAt,
+      "2099-01-01T00:00:00.000Z"
+    );
+  });
+
+  await test("employee cannot move IN_PROGRESS back to TODO", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+    });
+    liveAssignment(ddb, PRIYA).plannedHours = 2;
+    const before = snapshot(ddb);
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "TODO",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(res.body.error || "", /cannot be moved back to TODO/i);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "IN_PROGRESS");
+    assert.strictEqual(mine.plannedHours, 2);
+    assert.strictEqual(snapshot(ddb).activities, before.activities);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "status_changed"));
+  });
+
+  await test("employee cannot change status or submission data after REVIEW", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    const stored = liveAssignment(ddb, PRIYA);
+    stored.completionRemark = "Original review remark.";
+    stored.actualHours = 2;
+    stored.plannedHours = 3;
+    const before = snapshot(ddb);
+    const backToWork = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "IN_PROGRESS",
+          assignmentEmail: PRIYA,
+          completionRemark: "Changed after submit.",
+          actualHours: 9,
+          plannedHours: 8,
+        })
+      )
+    );
+    assert.strictEqual(backToWork.statusCode, 403);
+    assert.match(backToWork.body.error || "", /administrator/i);
+    const toTodo = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "TODO",
+          assignmentEmail: PRIYA,
+        })
+      )
+    );
+    assert.strictEqual(toTodo.statusCode, 403);
+    const mine = assignmentItem(ddb, PRIYA);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.completionRemark, "Original review remark.");
+    assert.strictEqual(mine.actualHours, 2);
+    assert.strictEqual(mine.plannedHours, 3);
+    assert.ok(!mine.completedAt);
+    assert.strictEqual(snapshot(ddb).activities, before.activities);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+    assert.strictEqual(costItem(ddb, PRIYA).basisState, "ACTIVE");
+  });
+
+  await test("outsider cannot approve another employee's REVIEW assignment", async () => {
+    const { ddb } = setup({
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    liveAssignment(ddb, PRIYA).completionRemark = "Ready for review.";
+    const res = parse(
+      await handler(
+        employeeEvent(
+          {
+            taskId: TASK_ID,
+            projectId: PROJECT_ID,
+            status: "DONE",
+            assignmentEmail: PRIYA,
+          },
+          OUTSIDER
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(assignmentItem(ddb, PRIYA).status, "REVIEW");
+    assert.ok(!assignmentItem(ddb, PRIYA).completedAt);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("dual-role assignee cannot approve their own REVIEW assignment", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    liveAssignment(ddb, ADMIN).completionRemark = "Ready for review.";
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: ADMIN,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 403);
+    assert.match(res.body.error || "", /cannot approve your own submission/i);
+    const mine = assignmentItem(ddb, ADMIN);
+    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.completionRemark, "Ready for review.");
+    assert.ok(!mine.completedAt);
+    assert.ok(!mine.completedZone);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+    assert.notStrictEqual(costItem(ddb, ADMIN).status, "COSTED");
+  });
+
+  await test("another admin can approve a dual-role assignee REVIEW", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+    });
+    seedAccess(ddb, RAHUL, "ADMIN");
+    liveAssignment(ddb, ADMIN).completionRemark = "Ready for review.";
+    const res = parse(
+      await handler(
+        adminEvent(
+          {
+            taskId: TASK_ID,
+            projectId: PROJECT_ID,
+            status: "DONE",
+            assignmentEmail: ADMIN,
+          },
+          RAHUL
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const mine = assignmentItem(ddb, ADMIN);
+    assert.strictEqual(mine.status, "DONE");
+    assert.ok(mine.completedAt);
+    assert.strictEqual(mine.completionRemark, "Ready for review.");
+    assert.ok(activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 
   await test("multi-assignee completion remark stays on one assignment", async () => {

@@ -1,6 +1,7 @@
 const { GetCommand, QueryCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
 const { normalizeEmail } = require("./projectAccess");
+const taskReadAccess = require("./taskReadAccess");
 const escalation = require("./escalation");
 const {
   STATUS_COSTED,
@@ -534,6 +535,67 @@ function paginateRows(rows, after, limit) {
   };
 }
 
+function taskForCostingRead(task, row) {
+  const projectId = String(task?.projectId || row?.projectId || "").trim();
+  const taskId = String(task?.taskId || row?.taskId || "").trim();
+  const emails = new Set();
+  for (const raw of [
+    task?.assignee,
+    ...(Array.isArray(task?.assignees) ? task.assignees : []),
+    row?.email,
+  ]) {
+    const email = normalizeEmail(raw);
+    if (email) emails.add(email);
+  }
+  for (const assignment of Array.isArray(task?.assignments) ? task.assignments : []) {
+    const email = normalizeEmail(assignment?.email);
+    if (email && !assignment.removed) emails.add(email);
+  }
+  return {
+    ...(task || {}),
+    taskId,
+    projectId,
+    assignee: task?.assignee || [...emails][0] || row?.email || null,
+    assignees: [...emails],
+    assignments: [...emails].map((email) => ({ email, removed: false })),
+  };
+}
+
+async function applyRestrictedCostingVisibility({
+  rows,
+  tasks,
+  user,
+  ddb,
+  tableName,
+  accessTable,
+  cache,
+} = {}) {
+  const store = cache || taskReadAccess.createCache();
+  const tasksById = new Map();
+  for (const task of tasks || []) {
+    const taskId = String(task?.taskId || "").trim();
+    if (taskId && !tasksById.has(taskId)) tasksById.set(taskId, task);
+  }
+  const visible = [];
+  for (const row of rows || []) {
+    const task = taskForCostingRead(tasksById.get(String(row.taskId || "").trim()), row);
+    const decision = await taskReadAccess.authorizeRestrictedRead({
+      ddb,
+      tableName,
+      accessTable,
+      user,
+      projectId: task.projectId,
+      task,
+      cache: store,
+    });
+    if (!decision.ok) {
+      return { ok: false, statusCode: 500, body: { error: "Internal server error" } };
+    }
+    if (decision.allowed) visible.push(row);
+  }
+  return { ok: true, rows: visible, cache: store };
+}
+
 async function getProjectItem(ddb, tableName, projectId) {
   const res = await ddb.send(
     new GetCommand({
@@ -795,14 +857,39 @@ async function handleGetProjectCosting({
   if (limit == null) return { statusCode: 400, body: { error: "Invalid limit." } };
   const cursor = parseCursor(query?.cursor);
   if (!cursor.ok) return { statusCode: 400, body: { error: "Invalid cursor." } };
+  const cache = taskReadAccess.createCache();
+  const projectGate = await taskReadAccess.authorizeRestrictedRead({
+    ddb,
+    tableName,
+    accessTable,
+    user,
+    projectId: id,
+    cache,
+  });
+  if (!projectGate.ok) {
+    return { statusCode: 500, body: { error: "Internal server error" } };
+  }
+  if (!projectGate.allowed) {
+    return { statusCode: 403, body: { error: "Forbidden" } };
+  }
   const collected = await collectProjectRows({
     ddb,
     tableName,
     profileTable,
     project,
   });
-  const visible = collected.rows.filter(isReportRowVisible);
-  const summary = summarizeRows(collected.rows);
+  const disclosed = await applyRestrictedCostingVisibility({
+    rows: collected.rows,
+    tasks: collected.tasks,
+    user,
+    ddb,
+    tableName,
+    accessTable,
+    cache,
+  });
+  if (!disclosed.ok) return { statusCode: disclosed.statusCode, body: disclosed.body };
+  const visible = disclosed.rows.filter(isReportRowVisible);
+  const summary = summarizeRows(disclosed.rows);
   const page = paginateRows(visible, cursor.after, limit);
   return {
     statusCode: 200,
@@ -871,6 +958,7 @@ async function handleGetCostingRoster({
   const listed = await scanAccessEmails(ddb, accessTable);
   const employees = [];
   let truncated = listed.truncated;
+  const cache = taskReadAccess.createCache();
   for (const email of listed.emails) {
     const collected = await collectEmployeeRows({
       ddb,
@@ -879,7 +967,17 @@ async function handleGetCostingRoster({
       email,
     });
     if (collected.truncated) truncated = true;
-    const filtered = collected.rows.filter((row) =>
+    const disclosed = await applyRestrictedCostingVisibility({
+      rows: collected.rows,
+      tasks: collected.tasks,
+      user,
+      ddb,
+      tableName,
+      accessTable,
+      cache,
+    });
+    if (!disclosed.ok) return { statusCode: disclosed.statusCode, body: disclosed.body };
+    const filtered = disclosed.rows.filter((row) =>
       inCompletedDateRange(row, from.value, to.value)
     );
     const entry = buildEmployeeRosterEntry({
@@ -934,7 +1032,16 @@ async function handleGetEmployeeCosting({
     profileTable,
     email: target,
   });
-  const filtered = collected.rows.filter((row) =>
+  const disclosed = await applyRestrictedCostingVisibility({
+    rows: collected.rows,
+    tasks: collected.tasks,
+    user,
+    ddb,
+    tableName,
+    accessTable,
+  });
+  if (!disclosed.ok) return { statusCode: disclosed.statusCode, body: disclosed.body };
+  const filtered = disclosed.rows.filter((row) =>
     inCompletedDateRange(row, from.value, to.value)
   );
   const summary = summarizeRows(filtered);

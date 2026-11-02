@@ -358,7 +358,7 @@ test("Blockers nav item sits under Work Management near Tasks", () => {
     "utf8"
   );
   expect(src).toMatch(
-    /title: "Work Management"[\s\S]*label: "Tasks"[\s\S]*label: "🚧 Blockers"/
+    /title: "Work Management"[\s\S]*label: "Tasks"[\s\S]*label: "Blockers"/
   );
   expect(src).toMatch(/path: "\/admin\/blockers"/);
 });
