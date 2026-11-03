@@ -1068,66 +1068,6 @@ Resources:
             Path: /employees/{email}/shift
             Method: PUT
             RestApiId: !Ref ApiGateway
-        DepartmentsGetApi:
-          Type: Api
-          Properties:
-            Path: /departments
-            Method: GET
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentsGetApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments
-            Method: GET
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentsPostApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments
-            Method: POST
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentPatchApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}
-            Method: PATCH
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentStatusApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}/status
-            Method: POST
-            RestApiId: !Ref ApiGateway
-        DepartmentDesignationsGetApi:
-          Type: Api
-          Properties:
-            Path: /departments/{departmentId}/designations
-            Method: GET
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentDesignationsGetApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}/designations
-            Method: GET
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentDesignationsPostApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}/designations
-            Method: POST
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentDesignationPatchApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}/designations/{designationId}
-            Method: PATCH
-            RestApiId: !Ref ApiGateway
-        AdminDepartmentDesignationStatusApi:
-          Type: Api
-          Properties:
-            Path: /admin/departments/{departmentId}/designations/{designationId}/status
-            Method: POST
-            RestApiId: !Ref ApiGateway
         CostRateDesignationsGetApi:
           Type: Api
           Properties:
@@ -1364,6 +1304,87 @@ Resources:
             Enabled: true
             Schedule: rate(5 minutes)
             Input: '{"taskEscalation":true,"source":"task-escalation"}'
+
+  DepartmentCatalogFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-DepartmentCatalogFunction"
+      Handler: lambda/projects/departmentCatalogHandler.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          WORK_TABLE: !Ref WorkTasksTable
+          USER_ACCESS_TABLE: !Ref UserAccessTable
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserAccessTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Events:
+        DepartmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /departments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentPatchApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/status
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DepartmentDesignationsGetApi:
+          Type: Api
+          Properties:
+            Path: /departments/{departmentId}/designations
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationPatchApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations/{designationId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations/{designationId}/status
+            Method: POST
+            RestApiId: !Ref ApiGateway
 
   LeaveFunction:
     Type: AWS::Serverless::Function
