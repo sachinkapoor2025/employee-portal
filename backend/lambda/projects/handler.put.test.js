@@ -1643,7 +1643,7 @@ async function run() {
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 
-  await test("dual-role assignee cannot approve their own REVIEW assignment", async () => {
+  await test("admin approves their own REVIEW assignment and finalizes the saved cost", async () => {
     const { ddb } = setup({
       assignees: [ADMIN],
       startDate: FUTURE_START,
@@ -1651,6 +1651,17 @@ async function run() {
       assignmentStatus: "REVIEW",
     });
     liveAssignment(ddb, ADMIN).completionRemark = "Ready for review.";
+    const saved = ddb.items.find(
+      (entry) =>
+        entry.TableName === WORK &&
+        entry.Item.PK === `TASK#${TASK_ID}` &&
+        entry.Item.SK === `COST#${ADMIN}`
+    ).Item;
+    saved.status = "SUBMISSION_BASIS";
+    saved.basisState = "ACTIVE";
+    saved.hourlyRateUsd = 10;
+    saved.amountUsd = 99;
+    saved.actualHours = 2;
     const res = parse(
       await handler(
         adminEvent({
@@ -1661,15 +1672,46 @@ async function run() {
         })
       )
     );
-    assert.strictEqual(res.statusCode, 403);
-    assert.match(res.body.error || "", /cannot approve your own submission/i);
+    assert.strictEqual(res.statusCode, 200);
     const mine = assignmentItem(ddb, ADMIN);
-    assert.strictEqual(mine.status, "REVIEW");
+    assert.strictEqual(mine.status, "DONE");
+    assert.ok(mine.completedAt);
     assert.strictEqual(mine.completionRemark, "Ready for review.");
-    assert.ok(!mine.completedAt);
-    assert.ok(!mine.completedZone);
-    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
-    assert.notStrictEqual(costItem(ddb, ADMIN).status, "COSTED");
+    assert.strictEqual(mine.actualHours, 2);
+    assert.ok(activityItems(ddb).some((a) => a.action === "task_completed"));
+    const cost = costItem(ddb, ADMIN);
+    assert.strictEqual(cost.status, "COSTED");
+    assert.strictEqual(cost.basisState, "FINAL");
+    assert.strictEqual(cost.amountUsd, 99);
+    assert.strictEqual(cost.hourlyRateUsd, 10);
+    assert.strictEqual(cost.approvedBy, ADMIN);
+  });
+
+  await test("admin cannot approve their own REVIEW assignment without stored hours", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "REVIEW",
+      actualHours: null,
+    });
+    liveAssignment(ddb, ADMIN).completionRemark = "Ready for review.";
+    delete liveAssignment(ddb, ADMIN).actualHours;
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: ADMIN,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(assignmentItem(ddb, ADMIN).status, "REVIEW");
+    assert.ok(!assignmentItem(ddb, ADMIN).completedAt);
+    assert.notStrictEqual(costItem(ddb, ADMIN)?.status, "COSTED");
+    assert.notStrictEqual(costItem(ddb, ADMIN)?.basisState, "FINAL");
   });
 
   await test("another admin can approve a dual-role assignee REVIEW", async () => {
@@ -1880,6 +1922,108 @@ async function run() {
     assert.strictEqual(mine.status, "REVIEW");
     assert.notStrictEqual(mine.status, "DONE");
     assert.ok(!mine.completedAt);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("admin submits another employee's IN_PROGRESS assignment for review", async () => {
+    const { ddb } = setup({
+      assignees: [ADMIN, PRIYA],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatuses: {
+        [ADMIN]: "TODO",
+        [PRIYA]: "IN_PROGRESS",
+      },
+    });
+    seedProof(ddb, TASK_ID, PRIYA);
+    const res = parse(
+      await handler(
+        adminEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: PRIYA,
+          completionRemark: "Submitted Priya's assignment for review.",
+          actualHours: 3,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const priya = assignmentItem(ddb, PRIYA);
+    const admin = assignmentItem(ddb, ADMIN);
+    assert.strictEqual(priya.status, "REVIEW");
+    assert.strictEqual(priya.completionRemark, "Submitted Priya's assignment for review.");
+    assert.ok(!priya.completedAt);
+    assert.strictEqual(admin.status, "TODO");
+    assert.ok(!admin.completedAt);
+    assert.notStrictEqual(entityTask(ddb).status, "DONE");
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+    assert.notStrictEqual(costItem(ddb, PRIYA)?.status, "COSTED");
+  });
+
+  await test("employee DONE for another assignee submits the caller's assignment only", async () => {
+    const { ddb } = setup({
+      assignees: [PRIYA, RAHUL],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatuses: {
+        [PRIYA]: "IN_PROGRESS",
+        [RAHUL]: "IN_PROGRESS",
+      },
+      proof: true,
+    });
+    const res = parse(
+      await handler(
+        employeeEvent({
+          taskId: TASK_ID,
+          projectId: PROJECT_ID,
+          status: "DONE",
+          assignmentEmail: RAHUL,
+          completionRemark: "Priya submitted her own work.",
+          actualHours: 2,
+        })
+      )
+    );
+    assert.strictEqual(res.statusCode, 200);
+    const priya = assignmentItem(ddb, PRIYA);
+    const rahul = assignmentItem(ddb, RAHUL);
+    assert.strictEqual(priya.status, "REVIEW");
+    assert.strictEqual(priya.completionRemark, "Priya submitted her own work.");
+    assert.ok(!priya.completedAt);
+    assert.strictEqual(rahul.status, "IN_PROGRESS");
+    assert.ok(!rahul.completionRemark);
+    assert.ok(!rahul.completedAt);
+    assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
+  });
+
+  await test("employee who is not assigned cannot submit another employee's assignment", async () => {
+    const { ddb } = setup({
+      assignees: [RAHUL],
+      startDate: FUTURE_START,
+      dueDate: FUTURE_DUE,
+      assignmentStatus: "IN_PROGRESS",
+      proof: true,
+    });
+    const res = parse(
+      await handler(
+        employeeEvent(
+          {
+            taskId: TASK_ID,
+            projectId: PROJECT_ID,
+            status: "DONE",
+            assignmentEmail: RAHUL,
+            completionRemark: "Trying to finish Rahul's task.",
+            actualHours: 2,
+          },
+          PRIYA
+        )
+      )
+    );
+    assert.strictEqual(res.statusCode, 403);
+    const rahul = assignmentItem(ddb, RAHUL);
+    assert.strictEqual(rahul.status, "IN_PROGRESS");
+    assert.ok(!rahul.completedAt);
+    assert.ok(!rahul.completionRemark);
     assert.ok(!activityItems(ddb).some((a) => a.action === "task_completed"));
   });
 

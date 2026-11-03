@@ -893,7 +893,7 @@ test("admin view still renders its existing controls", async () => {
   ).not.toBeInTheDocument();
   expect(screen.queryByText("Employee Submission")).not.toBeInTheDocument();
   expect(screen.queryByText("Review Decision")).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Submit for review" })
   ).not.toBeInTheDocument();
@@ -940,6 +940,84 @@ test("admin view still renders its existing controls", async () => {
   expect(
     within(statusDialog).getByRole("option", { name: /CANCELLED/ })
   ).toBeInTheDocument();
+});
+
+test("admin submits their own in-progress assignment for review", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  getLoggedInEmail.mockReturnValue("admin@mydgv.com");
+  fetchTaskAttachments.mockResolvedValue([
+    {
+      ...SAMPLE_ATTACHMENT,
+      uploadedBy: "admin@mydgv.com",
+    },
+  ]);
+  fetchTaskById.mockResolvedValue({
+    ...ASSIGNED_TASK,
+    status: "IN_PROGRESS",
+    assignee: "admin@mydgv.com",
+    assignees: ["admin@mydgv.com"],
+    assigneeProfile: { email: "admin@mydgv.com", name: "Admin User" },
+    myAssignment: {
+      email: "admin@mydgv.com",
+      status: "IN_PROGRESS",
+      zone: "GREEN",
+    },
+    assignments: [
+      {
+        email: "admin@mydgv.com",
+        status: "IN_PROGRESS",
+        zone: "GREEN",
+      },
+    ],
+  });
+  updateTask.mockResolvedValue({ status: "REVIEW" });
+  render(<TaskDetails />);
+  expect(
+    screen.queryByRole("radio", { name: "Approve & Complete" })
+  ).not.toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("button", { name: "Submit for review" }));
+  await waitForProofRefresh();
+  await userEvent.type(
+    screen.getByLabelText("Completion Remark"),
+    "Admin finished the assigned work."
+  );
+  setDurationHours("Total Actual Hours", "01:00");
+  await userEvent.click(screen.getByRole("button", { name: "Submit for Review" }));
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith({
+      taskId: "t1",
+      projectId: "p1",
+      status: "DONE",
+      assignmentEmail: "admin@mydgv.com",
+      completionRemark: "Admin finished the assigned work.",
+      actualHours: 1,
+    })
+  );
+});
+
+test("admin task page does not submit another employee's assignment", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  getLoggedInEmail.mockReturnValue("admin@mydgv.com");
+  fetchTaskById.mockResolvedValue({
+    ...ASSIGNED_TASK,
+    status: "IN_PROGRESS",
+    assignee: "priya@mydgv.com",
+    assignees: ["priya@mydgv.com"],
+    myAssignment: null,
+    assignments: [
+      {
+        email: "priya@mydgv.com",
+        status: "IN_PROGRESS",
+        zone: "GREEN",
+      },
+    ],
+  });
+  render(<TaskDetails />);
+  await screen.findByRole("button", { name: "Change Status" });
+  expect(
+    screen.queryByRole("button", { name: "Submit for review" })
+  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
 });
 
 test("admin non-REVIEW task shows Created Date and admin task information", async () => {
@@ -1290,6 +1368,83 @@ function adminReviewSection() {
   return screen.getByRole("heading", { name: "Review Task" }).closest("section");
 }
 
+test("admin review panel lists the admin and every other REVIEW assignment", async () => {
+  mockLocation.pathname = "/admin/tasks/t1";
+  getLoggedInEmail.mockReturnValue("admin@mydgv.com");
+  fetchUsers.mockResolvedValue([
+    { email: "admin@mydgv.com", name: "Admin User", status: "ACTIVE" },
+    { email: "priya@mydgv.com", name: "Priya", status: "ACTIVE" },
+  ]);
+  fetchTaskById.mockResolvedValue({
+    ...ASSIGNED_TASK,
+    status: "REVIEW",
+    assignee: "admin@mydgv.com",
+    assignees: ["admin@mydgv.com", "priya@mydgv.com", "rahul@mydgv.com"],
+    assignments: [
+      {
+        email: "admin@mydgv.com",
+        status: "REVIEW",
+        completionRemark: "Admin submission.",
+      },
+      {
+        email: "priya@mydgv.com",
+        status: "REVIEW",
+        completionRemark: "Priya submission.",
+      },
+      {
+        email: "rahul@mydgv.com",
+        status: "IN_PROGRESS",
+      },
+    ],
+    myAssignment: {
+      email: "admin@mydgv.com",
+      status: "REVIEW",
+      completionRemark: "Admin submission.",
+    },
+  });
+  updateTask.mockResolvedValue({ status: "DONE" });
+  render(<TaskDetails />);
+  const headings = await screen.findAllByRole("heading", { name: "Review Task" });
+  expect(headings).toHaveLength(2);
+  const adminSection = headings[0].closest("section");
+  const priyaSection = headings[1].closest("section");
+  expect(within(adminSection).getByText("Admin submission.")).toBeInTheDocument();
+  expect(within(adminSection).getByText("admin@mydgv.com")).toBeInTheDocument();
+  expect(within(priyaSection).getByText("Priya submission.")).toBeInTheDocument();
+  expect(within(priyaSection).getByText("priya@mydgv.com")).toBeInTheDocument();
+  await userEvent.click(
+    within(priyaSection).getByRole("radio", { name: "Approve & Complete" })
+  );
+  await userEvent.click(
+    within(priyaSection).getByRole("button", { name: "Approve & Complete" })
+  );
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "t1",
+        status: "DONE",
+        assignmentEmail: "priya@mydgv.com",
+      })
+    )
+  );
+  updateTask.mockClear();
+  await userEvent.click(
+    within(adminSection).getByRole("radio", { name: "Approve & Complete" })
+  );
+  await userEvent.click(
+    within(adminSection).getByRole("button", { name: "Approve & Complete" })
+  );
+  await waitFor(() =>
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "t1",
+        status: "DONE",
+        assignmentEmail: "admin@mydgv.com",
+      })
+    )
+  );
+});
+
 test("admin REVIEW shows employee submission and review decisions", async () => {
   mockLocation.pathname = "/admin/tasks/t1";
   fetchUsers.mockResolvedValue([
@@ -1315,6 +1470,9 @@ test("admin REVIEW shows employee submission and review decisions", async () => 
   expect(
     within(section).getByRole("radio", { name: "Approve & Complete" })
   ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Submit for review" })
+  ).not.toBeInTheDocument();
   expect(
     within(section).getByRole("radio", { name: "Reassign / Changes Required" })
   ).toBeInTheDocument();

@@ -2858,14 +2858,6 @@ exports.handler = async (event) => {
               return json(400, {
                 error: "This status change is not allowed.",
               });
-            } else if (
-              escalation.isReview(currentStatus) &&
-              nextStatus === "DONE" &&
-              escalation.normalizeEmail(mine.email) === actorEmail
-            ) {
-              return json(403, {
-                error: "You cannot approve your own submission.",
-              });
             } else {
               if (nextStatus === "DONE") {
                 if (

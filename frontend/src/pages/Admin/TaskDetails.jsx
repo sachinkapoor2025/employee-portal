@@ -192,18 +192,6 @@ export default function TaskDetails() {
   const [plannedHoursError, setPlannedHoursError] = useState("");
   const [blockerRemark, setBlockerRemark] = useState("");
   const [blockerError, setBlockerError] = useState("");
-  const [reviewDecision, setReviewDecision] = useState("");
-  const [reviewReason, setReviewReason] = useState("");
-  const [reviewRemark, setReviewRemark] = useState("");
-  const [reviewAssignMode, setReviewAssignMode] = useState("SAME");
-  const [reviewOtherEmail, setReviewOtherEmail] = useState("");
-  const [reviewDescription, setReviewDescription] = useState("");
-  const [reviewStartDate, setReviewStartDate] = useState("");
-  const [reviewStartTime, setReviewStartTime] = useState("");
-  const [reviewEndDate, setReviewEndDate] = useState("");
-  const [reviewEndTime, setReviewEndTime] = useState("");
-  const [reviewError, setReviewError] = useState("");
-  const reviewFormTaskIdRef = useRef(null);
   const [editForm, setEditForm] = useState({
     title: "",
     description: "",
@@ -344,28 +332,6 @@ export default function TaskDetails() {
   useEffect(() => {
     load();
   }, [load]);
-
-  useEffect(() => {
-    if (!task) {
-      reviewFormTaskIdRef.current = null;
-      return;
-    }
-    if (reviewFormTaskIdRef.current === task.taskId) return;
-    reviewFormTaskIdRef.current = task.taskId;
-    const start = splitDueParts(task.startDate);
-    const due = splitDueParts(task.dueDate);
-    setReviewDescription(task.description || "");
-    setReviewStartDate(start.date);
-    setReviewStartTime(start.time);
-    setReviewEndDate(due.date);
-    setReviewEndTime(due.time);
-    setReviewDecision("");
-    setReviewReason("");
-    setReviewRemark("");
-    setReviewAssignMode("SAME");
-    setReviewOtherEmail("");
-    setReviewError("");
-  }, [task]);
 
   const patchTask = async (updates) => {
     const updated = await updateTask({
@@ -623,6 +589,22 @@ export default function TaskDetails() {
 
   const handleChangeStatus = async () => {
     if (editForm.status === "DONE") {
+      const viewer = String(getLoggedInEmail() || "").trim().toLowerCase();
+      const target = String(editForm.assignmentEmail || "").trim().toLowerCase();
+      const row =
+        getTaskAssignees(task).find(
+          (a) => String(a.email || "").toLowerCase() === (target || viewer)
+        ) || null;
+      const current = String(row?.status || "").toUpperCase();
+      const own = row && String(row.email || "").toLowerCase() === viewer;
+      if (
+        own &&
+        (current === "TODO" || current === "IN_PROGRESS" || current === "BACKLOG")
+      ) {
+        setModal(null);
+        await handleEmployeeStatus("DONE");
+        return;
+      }
       const ok = window.confirm(
         "Mark this assignment as completed? Completed work will not move to Orange or Red."
       );
@@ -657,24 +639,15 @@ export default function TaskDetails() {
     }
   };
 
-  const reviewedAssignment = task
-    ? getTaskAssignees(task).find(
+  const reviewedAssignments = task
+    ? getTaskAssignees(task).filter(
         (a) => String(a.status || "").toUpperCase() === "REVIEW"
-      ) || null
-    : null;
+      )
+    : [];
 
-  const resetReviewForm = () => {
-    setReviewDecision("");
-    setReviewReason("");
-    setReviewRemark("");
-    setReviewAssignMode("SAME");
-    setReviewOtherEmail("");
-    setReviewError("");
-  };
-
-  const handleApproveReview = async () => {
-    if (!reviewedAssignment?.email) {
-      setReviewError("Reviewed assignment not found.");
+  const handleApproveReview = async (assignment, reportError) => {
+    if (!assignment?.email) {
+      reportError("Reviewed assignment not found.");
       return;
     }
     const ok = window.confirm(
@@ -682,76 +655,75 @@ export default function TaskDetails() {
     );
     if (!ok) return;
     setSaving(true);
-    setReviewError("");
+    reportError("");
     setError("");
     try {
       await patchTask({
         status: "DONE",
-        assignmentEmail: reviewedAssignment.email,
+        assignmentEmail: assignment.email,
       });
-      resetReviewForm();
     } catch (err) {
-      setReviewError(err.message || "Failed to approve task.");
+      reportError(err.message || "Failed to approve task.");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleReviewReassign = async () => {
-    if (!reviewedAssignment?.email) {
-      setReviewError("Reviewed assignment not found.");
+  const handleReviewReassign = async (assignment, form, reportError) => {
+    if (!assignment?.email) {
+      reportError("Reviewed assignment not found.");
       return;
     }
     if (
-      reviewReason !== "CHANGES_REQUIRED" &&
-      reviewReason !== "REJECTED"
+      form.reason !== "CHANGES_REQUIRED" &&
+      form.reason !== "REJECTED"
     ) {
-      setReviewError("Select Changes Required or Rejected.");
+      reportError("Select Changes Required or Rejected.");
       return;
     }
-    const remark = String(reviewRemark || "").trim();
+    const remark = String(form.remark || "").trim();
     if (!remark) {
-      setReviewError("Admin remark is required.");
+      reportError("Admin remark is required.");
       return;
     }
     const targetEmail =
-      reviewAssignMode === "OTHER"
-        ? String(reviewOtherEmail || "").trim().toLowerCase()
-        : String(reviewedAssignment.email || "").trim().toLowerCase();
+      form.assignMode === "OTHER"
+        ? String(form.otherEmail || "").trim().toLowerCase()
+        : String(assignment.email || "").trim().toLowerCase();
     if (!targetEmail) {
-      setReviewError("Please select an employee.");
+      reportError("Please select an employee.");
       return;
     }
-    if (!reviewStartDate || !reviewStartTime || !reviewEndDate || !reviewEndTime) {
-      setReviewError("Start and end date/time are required.");
+    if (!form.startDate || !form.startTime || !form.endDate || !form.endTime) {
+      reportError("Start and end date/time are required.");
       return;
     }
-    if (!isQuarterHourTime(reviewStartTime) || !isQuarterHourTime(reviewEndTime)) {
-      setReviewError(
+    if (!isQuarterHourTime(form.startTime) || !isQuarterHourTime(form.endTime)) {
+      reportError(
         "Start and end times must be in 15-minute intervals (00, 15, 30, or 45)."
       );
       return;
     }
-    const startIso = joinDueParts(reviewStartDate, reviewStartTime);
-    const dueIso = joinDueParts(reviewEndDate, reviewEndTime);
+    const startIso = joinDueParts(form.startDate, form.startTime);
+    const dueIso = joinDueParts(form.endDate, form.endTime);
     if (startIso && dueIso && new Date(dueIso).getTime() < new Date(startIso).getTime()) {
-      setReviewError("End must be after the start date and time.");
+      reportError("End must be after the start date and time.");
       return;
     }
     setSaving(true);
-    setReviewError("");
+    reportError("");
     setError("");
     try {
       const created = await createTask({
         sourceTaskId: task.taskId || taskId,
-        assignmentEmail: reviewedAssignment.email,
-        reassignmentReason: reviewReason,
+        assignmentEmail: assignment.email,
+        reassignmentReason: form.reason,
         reassignmentRemark: remark,
         assignees: [targetEmail],
         assignee: targetEmail,
         startDate: startIso,
         dueDate: dueIso,
-        description: reviewDescription,
+        description: form.description,
       });
       const nextId = created?.taskId;
       if (nextId) {
@@ -760,7 +732,7 @@ export default function TaskDetails() {
       }
       await load();
     } catch (err) {
-      setReviewError(err.message || "Failed to reassign task.");
+      reportError(err.message || "Failed to reassign task.");
     } finally {
       setSaving(false);
     }
@@ -777,7 +749,7 @@ export default function TaskDetails() {
     const current = String(mine?.status || "").toUpperCase();
     const wanted = String(nextStatus || "").toUpperCase();
     if (!wanted || wanted === current || wanted === "CANCELLED" || wanted === "REVIEW") return;
-    if (!employeeCanChangeStatus(mine || task, task.dueDate)) {
+    if (employeeView && !employeeCanChangeStatus(mine || task, task.dueDate)) {
       setError(RED_ZONE_MESSAGE);
       return;
     }
@@ -846,7 +818,7 @@ export default function TaskDetails() {
         (a) => String(a.email || "").toLowerCase() === viewer
       ) ||
       null;
-    if (!employeeCanChangeStatus(mine || task, task.dueDate)) {
+    if (employeeView && !employeeCanChangeStatus(mine || task, task.dueDate)) {
       setCompleteError(RED_ZONE_MESSAGE);
       return;
     }
@@ -1039,9 +1011,16 @@ export default function TaskDetails() {
   const headerZone = employeeView ? employeeZone : zone;
   const headerTiming = employeeView ? employeeTiming : timing;
   const headerStatusValue = employeeView ? employeeStatus : task.status;
-  const employeeCanAct =
-    !!mine && employeeCanChangeStatus(mine, task.dueDate);
-  const employeeAction = !employeeView || !employeeCanAct
+  const ownAssignmentOpen =
+    !!mine &&
+    (employeeStatus === "TODO" ||
+      employeeStatus === "BACKLOG" ||
+      employeeStatus === "IN_PROGRESS" ||
+      !employeeStatus);
+  const employeeCanAct = employeeView
+    ? !!mine && employeeCanChangeStatus(mine, task.dueDate)
+    : ownAssignmentOpen;
+  const employeeAction = !employeeCanAct
     ? null
     : employeeStatus === "TODO" || employeeStatus === "BACKLOG" || !employeeStatus
       ? {
@@ -1225,44 +1204,21 @@ export default function TaskDetails() {
           />
         ) : (
         <>
-          {reviewedAssignment ? (
-          <AdminReviewPanel
-            assignment={reviewedAssignment}
+          {reviewedAssignments.map((assignment) => (
+          <AdminReviewCard
+            key={assignment.email}
+            assignment={assignment}
+            task={task}
             users={users}
-            projectName={task.projectName || task.projectId || ""}
-            taskDescription={task.description}
             attachments={attachments}
             attachmentError={attachmentError}
             downloadingId={downloadingAttachmentId}
             onDownload={handleAttachmentDownload}
-            decision={reviewDecision}
-            onDecision={setReviewDecision}
-            reason={reviewReason}
-            onReason={setReviewReason}
-            remark={reviewRemark}
-            onRemark={setReviewRemark}
-            assignMode={reviewAssignMode}
-            onAssignMode={setReviewAssignMode}
-            otherEmail={reviewOtherEmail}
-            onOtherEmail={setReviewOtherEmail}
-            description={reviewDescription}
-            onDescription={setReviewDescription}
-            startDate={reviewStartDate}
-            onStartDate={setReviewStartDate}
-            startTime={reviewStartTime}
-            onStartTime={setReviewStartTime}
-            endDate={reviewEndDate}
-            onEndDate={setReviewEndDate}
-            endTime={reviewEndTime}
-            onEndTime={setReviewEndTime}
-            error={reviewError}
             saving={saving}
-            onCancel={resetReviewForm}
             onApprove={handleApproveReview}
             onReassign={handleReviewReassign}
-            estimatedHours={task.estimatedHours}
           />
-          ) : null}
+          ))}
         <section style={{ ...sectionBox, marginTop: 14 }}>
           <h3 style={sectionTitle}>TASK INFORMATION</h3>
           <InfoRow label="Task ID" value={displayTaskId(task.taskId)} />
@@ -1870,6 +1826,96 @@ function radioRow(style) {
   };
 }
 
+function AdminReviewCard({
+  assignment,
+  task,
+  users,
+  attachments,
+  attachmentError,
+  downloadingId,
+  onDownload,
+  saving,
+  onApprove,
+  onReassign,
+}) {
+  const start = splitDueParts(task.startDate);
+  const due = splitDueParts(task.dueDate);
+  const [decision, setDecision] = useState("");
+  const [reason, setReason] = useState("");
+  const [remark, setRemark] = useState("");
+  const [assignMode, setAssignMode] = useState("SAME");
+  const [otherEmail, setOtherEmail] = useState("");
+  const [description, setDescription] = useState(task.description || "");
+  const [startDate, setStartDate] = useState(start.date);
+  const [startTime, setStartTime] = useState(start.time);
+  const [endDate, setEndDate] = useState(due.date);
+  const [endTime, setEndTime] = useState(due.time);
+  const [error, setError] = useState("");
+  const reset = () => {
+    setDecision("");
+    setReason("");
+    setRemark("");
+    setAssignMode("SAME");
+    setOtherEmail("");
+    setError("");
+  };
+  return (
+    <AdminReviewPanel
+      assignment={assignment}
+      users={users}
+      projectName={task.projectName || task.projectId || ""}
+      taskDescription={task.description}
+      attachments={attachments}
+      attachmentError={attachmentError}
+      downloadingId={downloadingId}
+      onDownload={onDownload}
+      decision={decision}
+      onDecision={setDecision}
+      reason={reason}
+      onReason={setReason}
+      remark={remark}
+      onRemark={setRemark}
+      assignMode={assignMode}
+      onAssignMode={setAssignMode}
+      otherEmail={otherEmail}
+      onOtherEmail={setOtherEmail}
+      description={description}
+      onDescription={setDescription}
+      startDate={startDate}
+      onStartDate={setStartDate}
+      startTime={startTime}
+      onStartTime={setStartTime}
+      endDate={endDate}
+      onEndDate={setEndDate}
+      endTime={endTime}
+      onEndTime={setEndTime}
+      error={error}
+      saving={saving}
+      onCancel={reset}
+      onApprove={() => onApprove(assignment, setError)}
+      onReassign={() =>
+        onReassign(
+          assignment,
+          {
+            reason,
+            remark,
+            assignMode,
+            otherEmail,
+            description,
+            startDate,
+            startTime,
+            endDate,
+            endTime,
+          },
+          setError
+        )
+      }
+      estimatedHours={task.estimatedHours}
+      fieldKey={assignment.email}
+    />
+  );
+}
+
 function AdminReviewPanel({
   assignment,
   users,
@@ -1905,7 +1951,9 @@ function AdminReviewPanel({
   onApprove,
   onReassign,
   estimatedHours,
+  fieldKey = "",
 }) {
+  const field = String(fieldKey || assignment.email || "review");
   const employee = personLabel(users, assignment.email);
   const employeeName = employee.name || assignment.email;
   const proofItems = Array.isArray(attachments) ? attachments : [];
@@ -2056,7 +2104,7 @@ function AdminReviewPanel({
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             type="radio"
-            name="review-decision"
+            name={`review-decision-${field}`}
             value="APPROVE"
             checked={decision === "APPROVE"}
             onChange={() => onDecision("APPROVE")}
@@ -2066,7 +2114,7 @@ function AdminReviewPanel({
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             type="radio"
-            name="review-decision"
+            name={`review-decision-${field}`}
             value="REASSIGN"
             checked={decision === "REASSIGN"}
             onChange={() => onDecision("REASSIGN")}
@@ -2082,7 +2130,7 @@ function AdminReviewPanel({
             <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="radio"
-                name="review-reason"
+                name={`review-reason-${field}`}
                 value="CHANGES_REQUIRED"
                 checked={reason === "CHANGES_REQUIRED"}
                 onChange={() => onReason("CHANGES_REQUIRED")}
@@ -2092,7 +2140,7 @@ function AdminReviewPanel({
             <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="radio"
-                name="review-reason"
+                name={`review-reason-${field}`}
                 value="REJECTED"
                 checked={reason === "REJECTED"}
                 onChange={() => onReason("REJECTED")}
@@ -2100,11 +2148,11 @@ function AdminReviewPanel({
               Rejected
             </label>
           </div>
-          <label style={formLabel} htmlFor="admin-review-remark">
+          <label style={formLabel} htmlFor={`admin-review-remark-${field}`}>
             Admin Remark *
           </label>
           <textarea
-            id="admin-review-remark"
+            id={`admin-review-remark-${field}`}
             aria-label="Admin Remark"
             style={{ ...formInput, minHeight: 90 }}
             value={remark}
@@ -2115,7 +2163,7 @@ function AdminReviewPanel({
             <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="radio"
-                name="review-assign-to"
+                name={`review-assign-to-${field}`}
                 value="SAME"
                 checked={assignMode === "SAME"}
                 onChange={() => onAssignMode("SAME")}
@@ -2125,7 +2173,7 @@ function AdminReviewPanel({
             <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="radio"
-                name="review-assign-to"
+                name={`review-assign-to-${field}`}
                 value="OTHER"
                 checked={assignMode === "OTHER"}
                 onChange={() => onAssignMode("OTHER")}
@@ -2135,11 +2183,11 @@ function AdminReviewPanel({
           </div>
           {assignMode === "OTHER" ? (
             <>
-              <label style={formLabel} htmlFor="review-other-employee">
+              <label style={formLabel} htmlFor={`review-other-employee-${field}`}>
                 Select Employee
               </label>
               <select
-                id="review-other-employee"
+                id={`review-other-employee-${field}`}
                 aria-label="Select Employee"
                 style={formSelect}
                 value={otherEmail}
@@ -2164,33 +2212,33 @@ function AdminReviewPanel({
             Copied from original task: name, project, category, and priority.
             Description and schedule can be overridden below.
           </p>
-          <label style={formLabel} htmlFor="review-description">
+          <label style={formLabel} htmlFor={`review-description-${field}`}>
             Description
           </label>
           <textarea
-            id="review-description"
+            id={`review-description-${field}`}
             aria-label="Description"
             style={{ ...formInput, minHeight: 80 }}
             value={description}
             onChange={(e) => onDescription(e.target.value)}
           />
           <Label>NEW SCHEDULE</Label>
-          <label style={formLabel} htmlFor="review-start-date">
+          <label style={formLabel} htmlFor={`review-start-date-${field}`}>
             Start Date
           </label>
           <input
-            id="review-start-date"
+            id={`review-start-date-${field}`}
             aria-label="Start Date"
             type="date"
             style={formInput}
             value={startDate}
             onChange={(e) => onStartDate(e.target.value)}
           />
-          <label style={formLabel} htmlFor="review-start-time">
+          <label style={formLabel} htmlFor={`review-start-time-${field}`}>
             Start Time
           </label>
           <input
-            id="review-start-time"
+            id={`review-start-time-${field}`}
             aria-label="Start Time"
             type="time"
             step={900}
@@ -2198,22 +2246,22 @@ function AdminReviewPanel({
             value={startTime}
             onChange={(e) => onStartTime(e.target.value)}
           />
-          <label style={formLabel} htmlFor="review-end-date">
+          <label style={formLabel} htmlFor={`review-end-date-${field}`}>
             End Date
           </label>
           <input
-            id="review-end-date"
+            id={`review-end-date-${field}`}
             aria-label="End Date"
             type="date"
             style={formInput}
             value={endDate}
             onChange={(e) => onEndDate(e.target.value)}
           />
-          <label style={formLabel} htmlFor="review-end-time">
+          <label style={formLabel} htmlFor={`review-end-time-${field}`}>
             End Time
           </label>
           <input
-            id="review-end-time"
+            id={`review-end-time-${field}`}
             aria-label="End Time"
             type="time"
             step={900}
