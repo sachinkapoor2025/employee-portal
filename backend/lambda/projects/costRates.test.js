@@ -15,7 +15,10 @@ const {
   NAME_DUPLICATE,
   NAME_POINTER_CONFLICT,
   PATH_INVALID,
+  CREATED_ON_DEPARTMENT_PAGE,
   RATE_INVALID,
+  RATES_FOR_ACTIVE,
+  RETIRED_ON_DEPARTMENT_PAGE,
   REASON,
   SOURCE_DESIGNATION,
   SOURCE_EMPLOYEE,
@@ -254,6 +257,14 @@ function seedAccess(extra = {}) {
       name: "Rahul",
       empId: "E1",
       designation: "Free text SEO",
+      departmentIds: ["seo-digital-marketing"],
+      primaryDepartmentId: "seo-digital-marketing",
+      departmentDesignations: [
+        {
+          departmentId: "seo-digital-marketing",
+          designationId: "seo-specialist",
+        },
+      ],
     },
     ...extra,
   };
@@ -498,13 +509,9 @@ assert.strictEqual(classified.project.rate, 2.25);
     ...ctx(SUPER),
     body: { name: "  SEO Executive  ", internalHourlyRate: "2.00", externalHourlyRate: "" },
   });
-  assert.strictEqual(created.statusCode, 201);
-  assert.strictEqual(created.body.designation.name, "SEO Executive");
-  assert.strictEqual(created.body.designation.internalHourlyRate, 2);
-  assert.strictEqual(created.body.designation.externalHourlyRate, null);
-  assert.strictEqual(created.body.designation.hasConfiguredRate, true);
-  assert.strictEqual(created.body.designation.currency, "USD");
-  const designationId = created.body.designation.designationId;
+  assert.strictEqual(created.statusCode, 400);
+  assert.strictEqual(created.body.error, CREATED_ON_DEPARTMENT_PAGE);
+  const designationId = "seo-specialist";
 
   const dupCase = await handleCreateDesignation({
     ...ctx(SUPER, {
@@ -516,8 +523,8 @@ assert.strictEqual(classified.project.rate, 2.25);
     }),
     body: { name: "SEO EXECUTIVE" },
   });
-  assert.strictEqual(dupCase.statusCode, 409);
-  assert.strictEqual(dupCase.body.error, NAME_DUPLICATE);
+  assert.strictEqual(dupCase.statusCode, 400);
+  assert.strictEqual(dupCase.body.error, CREATED_ON_DEPARTMENT_PAGE);
 
   const dupSpace = await handleCreateDesignation({
     ...ctx(SUPER, {
@@ -529,14 +536,14 @@ assert.strictEqual(classified.project.rate, 2.25);
     }),
     body: { name: "seo   executive" },
   });
-  assert.strictEqual(dupSpace.statusCode, 409);
+  assert.strictEqual(dupSpace.statusCode, 400);
 
   const badRate = await handleCreateDesignation({
     ...ctx(SUPER),
     body: { name: "QA", internalHourlyRate: "1.234" },
   });
   assert.strictEqual(badRate.statusCode, 400);
-  assert.strictEqual(badRate.body.error, RATE_INVALID);
+  assert.strictEqual(badRate.body.error, CREATED_ON_DEPARTMENT_PAGE);
 
   const zeroRate = await handleCreateDesignation({
     ...ctx(SUPER),
@@ -584,13 +591,17 @@ assert.strictEqual(classified.project.rate, 2.25);
   assert.strictEqual(listDenied.statusCode, 403);
 
   const seedDes = {
-    [keyOf(WORK, DESIGNATION_ENTITY_PK, `DESIGNATION#${designationId}`)]: {
-      PK: DESIGNATION_ENTITY_PK,
+    [keyOf(WORK, "ENTITY#ORG_DESIGNATION", `DESIGNATION#${designationId}`)]: {
+      PK: "ENTITY#ORG_DESIGNATION",
       SK: `DESIGNATION#${designationId}`,
-      type: "DESIGNATION",
+      type: "ORG_DESIGNATION",
       designationId,
-      name: "SEO Executive",
-      nameKey: "seo executive",
+      departmentId: "seo-digital-marketing",
+      track: "SEO",
+      trackSort: 1,
+      sortOrder: 3,
+      name: "SEO Specialist",
+      nameKey: "seo specialist",
       internalHourlyRate: 2,
       externalHourlyRate: 3,
       status: "ACTIVE",
@@ -599,11 +610,16 @@ assert.strictEqual(classified.project.rate, 2.25);
       updatedAt: NOW,
       updatedBy: "boss@mydgv.com",
     },
-    [keyOf(WORK, DESIGNATION_NAME_PK, "NAME#seo executive")]: {
-      PK: DESIGNATION_NAME_PK,
-      SK: "NAME#seo executive",
-      designationId,
+    [keyOf(WORK, DESIGNATION_ENTITY_PK, "DESIGNATION#legacy-seo")]: {
+      PK: DESIGNATION_ENTITY_PK,
+      SK: "DESIGNATION#legacy-seo",
+      type: "DESIGNATION",
+      designationId: "legacy-seo",
+      name: "SEO Executive",
       nameKey: "seo executive",
+      internalHourlyRate: 4,
+      externalHourlyRate: 5,
+      status: "ACTIVE",
     },
   };
 
@@ -612,17 +628,28 @@ assert.strictEqual(classified.project.rate, 2.25);
   });
   assert.strictEqual(listed.statusCode, 200);
   assert.strictEqual(listed.body.designations.length, 1);
+  assert.strictEqual(listed.body.designations[0].designationId, designationId);
+  assert.strictEqual(listed.body.legacyReport.unmatched.length, 1);
+  assert.strictEqual(listed.body.legacyReport.unmatched[0].name, "SEO Executive");
 
   const patched = await handlePatchDesignation({
     ...ctx(SUPER, seedDes),
     designationId,
-    body: { name: "SEO Lead", internalHourlyRate: "", externalHourlyRate: 3.5 },
+    body: { internalHourlyRate: "", externalHourlyRate: 3.5 },
   });
   assert.strictEqual(patched.statusCode, 200);
-  assert.strictEqual(patched.body.designation.name, "SEO Lead");
+  assert.strictEqual(patched.body.designation.name, "SEO Specialist");
+  assert.strictEqual(patched.body.designation.designationId, designationId);
   assert.strictEqual(patched.body.designation.internalHourlyRate, null);
   assert.strictEqual(patched.body.designation.externalHourlyRate, 3.5);
   assert.strictEqual(patched.body.designation.status, "ACTIVE");
+
+  const renameBlocked = await handlePatchDesignation({
+    ...ctx(SUPER, seedDes),
+    designationId,
+    body: { name: "SEO Lead" },
+  });
+  assert.strictEqual(renameBlocked.statusCode, 400);
 
   const patchStatusBlocked = await handlePatchDesignation({
     ...ctx(SUPER, seedDes),
@@ -636,8 +663,8 @@ assert.strictEqual(classified.project.rate, 2.25);
     designationId,
     body: { status: "INACTIVE" },
   });
-  assert.strictEqual(deactivated.statusCode, 200);
-  assert.strictEqual(deactivated.body.designation.status, "INACTIVE");
+  assert.strictEqual(deactivated.statusCode, 400);
+  assert.strictEqual(deactivated.body.error, RETIRED_ON_DEPARTMENT_PAGE);
 
   const missingEmp = await handlePutEmployee({
     ...ctx(SUPER, seedDes),
@@ -651,7 +678,11 @@ assert.strictEqual(classified.project.rate, 2.25);
     email: "rahul@mydgv.com",
     body: { designationId: "missing" },
   });
-  assert.strictEqual(missingDesRef.statusCode, 404);
+  assert.strictEqual(missingDesRef.statusCode, 400);
+  assert.strictEqual(
+    missingDesRef.body.error,
+    "Costing designation must be an active designation assigned to this employee."
+  );
 
   const createdEmp = await handlePutEmployee({
     ...ctx(SUPER, seedDes),
@@ -823,97 +854,54 @@ assert.strictEqual(classified.project.rate, 2.25);
   }
 
   const renameEnv = ctx(SUPER, seedDes);
+  const beforeRename = snapshotWork(renameEnv.ddb.items);
   const renamedOk = await handlePatchDesignation({
     ...renameEnv,
     designationId,
-    body: { name: "SEO Lead" },
+    body: { name: "SEO Lead", internalHourlyRate: 2 },
   });
-  assert.strictEqual(renamedOk.statusCode, 200);
-  assert.strictEqual(renamedOk.body.designation.name, "SEO Lead");
-  assert.ok(
-    !renameEnv.ddb.items[keyOf(WORK, DESIGNATION_NAME_PK, "NAME#seo executive")]
-  );
-  assert.strictEqual(
-    renameEnv.ddb.items[keyOf(WORK, DESIGNATION_NAME_PK, "NAME#seo lead")]
-      .designationId,
-    designationId
-  );
-  assert.strictEqual(
-    renameEnv.ddb.items[
-      keyOf(WORK, DESIGNATION_ENTITY_PK, `DESIGNATION#${designationId}`)
-    ].nameKey,
-    "seo lead"
-  );
+  assert.strictEqual(renamedOk.statusCode, 400);
+  assert.strictEqual(snapshotWork(renameEnv.ddb.items), beforeRename);
 
-  const otherId = "other-des";
-  const conflictEnv = ctx(SUPER, {
+  const inactiveDes = {
     ...seedDes,
-    [keyOf(WORK, DESIGNATION_ENTITY_PK, "DESIGNATION#other-des")]: {
-      PK: DESIGNATION_ENTITY_PK,
-      SK: "DESIGNATION#other-des",
-      type: "DESIGNATION",
-      designationId: otherId,
-      name: "QA",
-      nameKey: "qa",
-      status: "ACTIVE",
+    [keyOf(WORK, "ENTITY#ORG_DESIGNATION", `DESIGNATION#${designationId}`)]: {
+      ...seedDes[keyOf(WORK, "ENTITY#ORG_DESIGNATION", `DESIGNATION#${designationId}`)],
+      status: "INACTIVE",
     },
-    [keyOf(WORK, DESIGNATION_NAME_PK, "NAME#qa")]: {
-      PK: DESIGNATION_NAME_PK,
-      SK: "NAME#qa",
-      designationId: otherId,
-      nameKey: "qa",
-    },
-  });
-  const beforeTaken = snapshotWork(conflictEnv.ddb.items);
-  const taken = await handlePatchDesignation({
-    ...conflictEnv,
+  };
+  const inactiveRate = await handlePatchDesignation({
+    ...ctx(SUPER, inactiveDes),
     designationId,
-    body: { name: "QA" },
+    body: { internalHourlyRate: 9 },
   });
-  assert.strictEqual(taken.statusCode, 409);
-  assert.strictEqual(taken.body.error, NAME_DUPLICATE);
-  assert.strictEqual(snapshotWork(conflictEnv.ddb.items), beforeTaken);
-  assert.strictEqual(
-    conflictEnv.ddb.items[keyOf(WORK, DESIGNATION_NAME_PK, "NAME#qa")]
-      .designationId,
-    otherId
-  );
+  assert.strictEqual(inactiveRate.statusCode, 400);
+  assert.strictEqual(inactiveRate.body.error, RATES_FOR_ACTIVE);
+  const newInactive = await handlePutEmployee({
+    ...ctx(SUPER, inactiveDes),
+    email: "rahul@mydgv.com",
+    body: { designationId },
+  });
+  assert.strictEqual(newInactive.statusCode, 400);
 
-  const staleEnv = ctx(SUPER, {
-    ...seedDes,
-    [keyOf(WORK, DESIGNATION_ENTITY_PK, "DESIGNATION#other-des")]: {
-      PK: DESIGNATION_ENTITY_PK,
-      SK: "DESIGNATION#other-des",
-      type: "DESIGNATION",
-      designationId: otherId,
-      name: "SEO Executive",
-      nameKey: "seo executive",
-      status: "ACTIVE",
-    },
-    [keyOf(WORK, DESIGNATION_NAME_PK, "NAME#seo executive")]: {
-      PK: DESIGNATION_NAME_PK,
-      SK: "NAME#seo executive",
-      designationId: otherId,
-      nameKey: "seo executive",
-    },
+  const legacyRates = await handleGetEmployee({
+    ...ctx(SUPER, {
+      ...seedDes,
+      [keyOf(WORK, "USER#rahul@mydgv.com", COST_RATES_SK)]: {
+        PK: "USER#rahul@mydgv.com",
+        SK: COST_RATES_SK,
+        type: TYPE_EMPLOYEE_COST_RATES,
+        email: "rahul@mydgv.com",
+        designationId: "legacy-seo",
+        internalHourlyRate: null,
+        externalHourlyRate: null,
+        status: "ACTIVE",
+      },
+    }),
+    email: "rahul@mydgv.com",
   });
-  const beforeStale = snapshotWork(staleEnv.ddb.items);
-  const stale = await handlePatchDesignation({
-    ...staleEnv,
-    designationId,
-    body: { name: "Content Writer" },
-  });
-  assert.strictEqual(stale.statusCode, 409);
-  assert.strictEqual(stale.body.error, NAME_POINTER_CONFLICT);
-  assert.strictEqual(snapshotWork(staleEnv.ddb.items), beforeStale);
-  assert.strictEqual(
-    staleEnv.ddb.items[keyOf(WORK, DESIGNATION_NAME_PK, "NAME#seo executive")]
-      .designationId,
-    otherId
-  );
-  assert.ok(
-    !staleEnv.ddb.items[keyOf(WORK, DESIGNATION_NAME_PK, "NAME#content writer")]
-  );
+  assert.strictEqual(legacyRates.body.employee.resolved.internal.rate, 4);
+  assert.strictEqual(legacyRates.body.employee.designationName, "SEO Executive");
 
   const createDupEnv = ctx(SUPER, seedDes);
   const beforeCreateDup = snapshotWork(createDupEnv.ddb.items);
@@ -921,8 +909,8 @@ assert.strictEqual(classified.project.rate, 2.25);
     ...createDupEnv,
     body: { name: "SEO Executive" },
   });
-  assert.strictEqual(createDup.statusCode, 409);
-  assert.strictEqual(createDup.body.error, NAME_DUPLICATE);
+  assert.strictEqual(createDup.statusCode, 400);
+  assert.strictEqual(createDup.body.error, CREATED_ON_DEPARTMENT_PAGE);
   assert.strictEqual(snapshotWork(createDupEnv.ddb.items), beforeCreateDup);
 
   const txConflictEnv = ctx(SUPER, seedDes);
@@ -944,11 +932,150 @@ assert.strictEqual(classified.project.rate, 2.25);
   const txConflict = await handlePatchDesignation({
     ...txConflictEnv,
     designationId,
-    body: { name: "Night Shift Role" },
+    body: { internalHourlyRate: 6 },
   });
   assert.strictEqual(txConflict.statusCode, 500);
   assert.notStrictEqual(txConflict.body.error, NAME_DUPLICATE);
   assert.strictEqual(snapshotWork(txConflictEnv.ddb.items), beforeTxConflict);
+
+  const defaulted = await handlePutEmployee({
+    ...ctx(SUPER, seedDes),
+    email: "rahul@mydgv.com",
+    body: { internalHourlyRate: 1.5, externalHourlyRate: 2.5 },
+  });
+  assert.strictEqual(defaulted.statusCode, 201);
+  assert.strictEqual(defaulted.body.employee.designationId, designationId);
+  assert.strictEqual(defaulted.body.employee.internalHourlyRate, 1.5);
+
+  const secondId = "seo-lead";
+  const twoPairs = {
+    ...seedDes,
+    [keyOf(WORK, "ENTITY#ORG_DESIGNATION", `DESIGNATION#${secondId}`)]: {
+      PK: "ENTITY#ORG_DESIGNATION",
+      SK: `DESIGNATION#${secondId}`,
+      type: "ORG_DESIGNATION",
+      designationId: secondId,
+      departmentId: "seo-digital-marketing",
+      track: "SEO",
+      name: "SEO Lead",
+      status: "ACTIVE",
+      internalHourlyRate: 7,
+      externalHourlyRate: 9,
+    },
+    [keyOf(PROFILE, "USER#rahul@mydgv.com", "PROFILE")]: {
+      ...seedAccess()[keyOf(PROFILE, "USER#rahul@mydgv.com", "PROFILE")],
+      departmentDesignations: [
+        { departmentId: "seo-digital-marketing", designationId },
+        { departmentId: "seo-digital-marketing", designationId: secondId },
+      ],
+    },
+  };
+  const ambiguous = await handlePutEmployee({
+    ...ctx(SUPER, twoPairs),
+    email: "rahul@mydgv.com",
+    body: { internalHourlyRate: 3 },
+  });
+  assert.strictEqual(ambiguous.statusCode, 201);
+  assert.strictEqual(ambiguous.body.employee.designationId, null);
+  assert.strictEqual(ambiguous.body.employee.internalHourlyRate, 3);
+
+  const staleEnv = ctx(SUPER, {
+    ...twoPairs,
+    [keyOf(WORK, "USER#rahul@mydgv.com", COST_RATES_SK)]: {
+      PK: "USER#rahul@mydgv.com",
+      SK: COST_RATES_SK,
+      type: TYPE_EMPLOYEE_COST_RATES,
+      email: "rahul@mydgv.com",
+      designationId: "legacy-seo",
+      internalHourlyRate: 3,
+      externalHourlyRate: 4,
+      status: "ACTIVE",
+    },
+  });
+  const stale = await handlePutEmployee({
+    ...staleEnv,
+    email: "rahul@mydgv.com",
+    body: { internalHourlyRate: 3.5 },
+  });
+  assert.strictEqual(stale.statusCode, 400);
+  assert.ok(stale.body.error.includes("Choose an assigned costing designation"));
+  assert.strictEqual(
+    staleEnv.ddb.items[keyOf(WORK, "USER#rahul@mydgv.com", COST_RATES_SK)].internalHourlyRate,
+    3
+  );
+
+  const chosen = await handlePutEmployee({
+    ...ctx(SUPER, twoPairs),
+    email: "rahul@mydgv.com",
+    body: {
+      designationId: secondId,
+      internalHourlyRate: 3,
+      externalHourlyRate: 4,
+    },
+  });
+  assert.strictEqual(chosen.statusCode, 201);
+  assert.strictEqual(chosen.body.employee.designationId, secondId);
+  assert.strictEqual(chosen.body.employee.externalHourlyRate, 4);
+
+  const clearedChoice = await handlePutEmployee({
+    ...ctx(SUPER, {
+      ...twoPairs,
+      [keyOf(WORK, "USER#rahul@mydgv.com", COST_RATES_SK)]: {
+        PK: "USER#rahul@mydgv.com",
+        SK: COST_RATES_SK,
+        type: TYPE_EMPLOYEE_COST_RATES,
+        email: "rahul@mydgv.com",
+        designationId: secondId,
+        internalHourlyRate: 3,
+        externalHourlyRate: 4,
+        status: "ACTIVE",
+      },
+    }),
+    email: "rahul@mydgv.com",
+    body: { designationId: "" },
+  });
+  assert.strictEqual(clearedChoice.statusCode, 200);
+  assert.strictEqual(clearedChoice.body.employee.designationId, null);
+  assert.strictEqual(clearedChoice.body.employee.internalHourlyRate, 3);
+  assert.strictEqual(clearedChoice.body.employee.externalHourlyRate, 4);
+
+  const legacyPatch = await handlePatchDesignation({
+    ...ctx(SUPER, seedDes),
+    designationId: "legacy-seo",
+    body: { internalHourlyRate: 11 },
+  });
+  assert.strictEqual(legacyPatch.statusCode, 400);
+  assert.strictEqual(
+    legacyPatch.body.error,
+    "Rates can only be edited for designations managed on the Department page."
+  );
+
+  const snapshotEnv = ctx(SUPER, {
+    ...seedDes,
+    [keyOf(WORK, "TASK#t-costed", "COST#rahul@mydgv.com")]: {
+      PK: "TASK#t-costed",
+      SK: "COST#rahul@mydgv.com",
+      status: "COSTED",
+      designationId,
+      hourlyRateUsd: 2.25,
+      amountUsd: 6.75,
+    },
+  });
+  const beforeSnapshot = JSON.stringify(
+    snapshotEnv.ddb.items[keyOf(WORK, "TASK#t-costed", "COST#rahul@mydgv.com")]
+  );
+  const afterSnapshotPut = await handlePutEmployee({
+    ...snapshotEnv,
+    email: "rahul@mydgv.com",
+    body: { designationId, internalHourlyRate: 9 },
+  });
+  assert.strictEqual(afterSnapshotPut.statusCode, 201);
+  assert.strictEqual(
+    JSON.stringify(
+      snapshotEnv.ddb.items[keyOf(WORK, "TASK#t-costed", "COST#rahul@mydgv.com")]
+    ),
+    beforeSnapshot
+  );
 
   const malformedAdmin = await handleMalformedPath(ctx(ADMIN));
   assert.strictEqual(malformedAdmin.statusCode, 403);

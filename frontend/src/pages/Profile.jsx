@@ -4,6 +4,8 @@ import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
 import {
   fetchUserProfile,
+  fetchDepartments,
+  fetchDepartmentDesignations,
   saveUserProfile,
   getProfileImageUploadUrl,
   apiOptional,
@@ -12,6 +14,7 @@ import {
 import { getLoggedInEmail } from "../services/auth";
 import { s3KeyFromFileUrl } from "../utils/documentView";
 import { alertSuccess, alertError } from "../theme";
+import { summarizeDepartments } from "../utils/departmentMembership";
 
 function displayValue(value) {
   const text = String(value ?? "").trim();
@@ -45,6 +48,43 @@ const WORK_FIELDS = [
   { key: "groupLead", label: "Group Lead", editable: false },
   { key: "doj", label: "Date of Joining", editable: false },
 ];
+
+function DepartmentList({ profile, departments, designationsByDepartment }) {
+  const summary = summarizeDepartments(profile, departments);
+  if (!summary.memberships.length && !summary.legacyUnmatched) {
+    return <div className="dgv-profile-value">—</div>;
+  }
+  return (
+    <div className="dgv-profile-value">
+      {summary.memberships.map((row) => {
+        const link = (profile.departmentDesignations || []).find(
+          (item) => item.departmentId === row.departmentId
+        );
+        const designation = (designationsByDepartment?.[row.departmentId] || []).find(
+          (item) => item.designationId === link?.designationId
+        );
+        return (
+          <div key={row.departmentId}>
+            {row.name}
+            {row.departmentId === summary.primaryDepartmentId &&
+            summary.memberships.length > 1
+              ? " · Primary"
+              : ""}
+            {String(row.status).toUpperCase() === "ACTIVE" ? "" : " · Inactive"}
+            {link?.designationId
+              ? ` · ${designation?.track ? `${designation.track} · ` : ""}${
+                  designation?.name || link.designationId
+                }`
+              : ""}
+          </div>
+        );
+      })}
+      {summary.legacyUnmatched ? (
+        <div>Legacy unmatched: {summary.legacyUnmatched}</div>
+      ) : null}
+    </div>
+  );
+}
 
 function ProfileFieldGrid({ fields, editing, profile, draft, onDraftChange }) {
   return (
@@ -150,6 +190,8 @@ export default function Profile() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [assignedShift, setAssignedShift] = useState(null);
+  const [departments, setDepartments] = useState([]);
+  const [designationsByDepartment, setDesignationsByDepartment] = useState({});
   const [shiftLoadError, setShiftLoadError] = useState("");
 
   const email = String(profile.email || getLoggedInEmail() || "")
@@ -160,11 +202,43 @@ export default function Profile() {
     loadProfile();
   }, []);
 
+  const departmentKey = Array.isArray(profile.departmentIds)
+    ? profile.departmentIds.join("|")
+    : "";
+
+  useEffect(() => {
+    const ids = departmentKey ? departmentKey.split("|") : [];
+    if (!ids.length) return undefined;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const res = await fetchDepartmentDesignations(id);
+            return [id, Array.isArray(res?.designations) ? res.designations : []];
+          } catch {
+            return [id, []];
+          }
+        })
+      );
+      if (!cancelled) setDesignationsByDepartment(Object.fromEntries(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [departmentKey]);
+
   const loadProfile = async (keepPreview = false) => {
     try {
       const lookup = getLoggedInEmail() || undefined;
-      const data = await fetchUserProfile(lookup);
+      const [data, departmentRes] = await Promise.all([
+        fetchUserProfile(lookup),
+        fetchDepartments().catch(() => ({ departments: [] })),
+      ]);
       setProfile(data || {});
+      setDepartments(
+        Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+      );
       try {
         const shiftRes = await fetchEmployeeShift(lookup || getLoggedInEmail());
         setAssignedShift(shiftRes?.shift || null);
@@ -273,16 +347,23 @@ export default function Profile() {
     setError("");
     setMessage("");
     try {
+      const nextProfile = persistableProfile(profile, {
+        email,
+        name: String(draft.name || "").trim(),
+        designation: String(draft.designation || "").trim(),
+        skill: String(draft.skill || "").trim(),
+        phone: String(draft.phone || "").trim(),
+      });
+      delete nextProfile.department;
+      delete nextProfile.departmentIds;
+      delete nextProfile.primaryDepartmentId;
+      delete nextProfile.departmentDesignations;
+      delete nextProfile.costingDesignationId;
+      delete nextProfile.departmentMigration;
       await saveUserProfile({
         mode: "EDIT",
         email,
-        profile: persistableProfile(profile, {
-          email,
-          name: String(draft.name || "").trim(),
-          designation: String(draft.designation || "").trim(),
-          skill: String(draft.skill || "").trim(),
-          phone: String(draft.phone || "").trim(),
-        }),
+        profile: nextProfile,
       });
       setEditing(false);
       await loadProfile(true);
@@ -433,6 +514,14 @@ export default function Profile() {
               draft={draft}
               onDraftChange={updateDraft}
             />
+            <div className="dgv-profile-item">
+              <label>Departments</label>
+              <DepartmentList
+                profile={profile}
+                departments={departments}
+                designationsByDepartment={designationsByDepartment}
+              />
+            </div>
           </div>
         </section>
 

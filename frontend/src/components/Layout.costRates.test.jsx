@@ -56,10 +56,11 @@ test("Super Admin sees Cost Rates under People", async () => {
   expect(screen.getByRole("button", { name: "Shifts" })).toBeInTheDocument();
 });
 
-test("Admin does not see Cost Rates", async () => {
+test("Admin sees Departments and does not see Cost Rates", async () => {
   localStorage.setItem("portalRole", "ADMIN");
   render(<Layout>page</Layout>);
   await waitFor(() => expect(fetchLeaveNotifications).toHaveBeenCalled());
   expect(screen.queryByRole("button", { name: "Cost Rates" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Departments" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Employees" })).toBeInTheDocument();
 });

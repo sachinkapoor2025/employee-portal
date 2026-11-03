@@ -715,6 +715,15 @@ Resources:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref UserProfileTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref WorkTasksTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt WorkTasksTable.Arn
         - DynamoDBCrudPolicy:
             TableName: !Ref UserAccessTable
         - Statement:
@@ -735,6 +744,18 @@ Resources:
           Properties:
             Path: /admin/save-user-profile
             Method: POST
+            RestApiId: !Ref ApiGateway
+        EmployeeDepartmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/employees/{email}/departments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        EmployeeDepartmentsPutApi:
+          Type: Api
+          Properties:
+            Path: /admin/employees/{email}/departments
+            Method: PUT
             RestApiId: !Ref ApiGateway
 
   UserProfile:
@@ -1046,6 +1067,66 @@ Resources:
           Properties:
             Path: /employees/{email}/shift
             Method: PUT
+            RestApiId: !Ref ApiGateway
+        DepartmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /departments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentPatchApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/status
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DepartmentDesignationsGetApi:
+          Type: Api
+          Properties:
+            Path: /departments/{departmentId}/designations
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationsGetApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationsPostApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationPatchApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations/{designationId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+        AdminDepartmentDesignationStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/departments/{departmentId}/designations/{designationId}/status
+            Method: POST
             RestApiId: !Ref ApiGateway
         CostRateDesignationsGetApi:
           Type: Api

@@ -303,6 +303,45 @@ export const fetchProjects = (params = {}) => {
 
 /* ================= SHIFTS ================= */
 
+export const fetchDepartments = () => api("/departments", "GET");
+export const fetchAdminDepartments = () => api("/admin/departments", "GET");
+export const createDepartment = (data) => api("/admin/departments", "POST", data);
+export const updateDepartment = (departmentId, data) =>
+  api(`/admin/departments/${encodeURIComponent(departmentId)}`, "PATCH", data);
+export const setDepartmentStatus = (departmentId, status) =>
+  api(`/admin/departments/${encodeURIComponent(departmentId)}/status`, "POST", {
+    status,
+  });
+export const fetchDepartmentDesignations = (departmentId) =>
+  api(`/departments/${encodeURIComponent(departmentId)}/designations`, "GET");
+export const fetchAdminDepartmentDesignations = (departmentId) =>
+  api(
+    `/admin/departments/${encodeURIComponent(departmentId)}/designations`,
+    "GET"
+  );
+export const createDepartmentDesignation = (departmentId, data) =>
+  api(
+    `/admin/departments/${encodeURIComponent(departmentId)}/designations`,
+    "POST",
+    data
+  );
+export const updateDepartmentDesignation = (departmentId, designationId, data) =>
+  api(
+    `/admin/departments/${encodeURIComponent(departmentId)}/designations/${encodeURIComponent(designationId)}`,
+    "PATCH",
+    data
+  );
+export const setDepartmentDesignationStatus = (departmentId, designationId, status) =>
+  api(
+    `/admin/departments/${encodeURIComponent(departmentId)}/designations/${encodeURIComponent(designationId)}/status`,
+    "POST",
+    { status }
+  );
+export const fetchEmployeeDepartments = (email) =>
+  api(`/admin/employees/${encodeURIComponent(email)}/departments`, "GET");
+export const saveEmployeeDepartments = (email, data) =>
+  api(`/admin/employees/${encodeURIComponent(email)}/departments`, "PUT", data);
+
 export const fetchShifts = () => api("/shifts", "GET");
 export const createShift = (data) => api("/shifts", "POST", data);
 export const updateShift = (shiftId, data) =>

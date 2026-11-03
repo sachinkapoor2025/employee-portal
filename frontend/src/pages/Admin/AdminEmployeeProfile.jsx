@@ -6,21 +6,29 @@ import {
   fetchUsers,
   fetchSkills,
   fetchUserProfile,
+  fetchDepartments,
+  fetchDepartmentDesignations,
+  fetchEmployeeDepartments,
   saveUserProfile,
   updateUserRole,
   fetchShifts,
   fetchEmployeeShift,
   assignEmployeeShift,
 } from "../../services/api";
-import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole, resolveActorRoleFromUsers } from "../../constants/roles";
+import { normalizeRole, roleLabel, roleOptionsForActor, canAssignPortalRole, canManageProjectDocuments, resolveActorRoleFromUsers } from "../../constants/roles";
 import { getLoggedInEmail, PORTAL_ROLE_KEY } from "../../services/auth";
 import { alertSuccess, alertError } from "../../theme";
+import { summarizeDepartments } from "../../utils/departmentMembership";
 
 const emptyForm = {
   email: "",
   name: "",
   empId: "",
   department: "",
+  departmentIds: [],
+  primaryDepartmentId: "",
+  departmentDesignations: [],
+  costingDesignationId: "",
   designation: "",
   skill: "",
   manager: "",
@@ -60,6 +68,251 @@ function skillLabel(skills, code) {
   return found?.name || code || "";
 }
 
+function designationChoice(links, departmentId) {
+  const found = (links || []).find((row) => row.departmentId === departmentId);
+  return found?.designationId || "";
+}
+
+function activeAssignedPairs(links, designationsByDepartment) {
+  const pairs = [];
+  const seen = new Set();
+  for (const link of links || []) {
+    const departmentId = String(link?.departmentId || "").trim();
+    const designationId = String(link?.designationId || "").trim();
+    if (!departmentId || !designationId || seen.has(designationId)) continue;
+    const designation = (designationsByDepartment?.[departmentId] || []).find(
+      (row) => row.designationId === designationId
+    );
+    if (!designation || String(designation.status || "").toUpperCase() !== "ACTIVE") continue;
+    if (designation.departmentId && designation.departmentId !== departmentId) continue;
+    seen.add(designationId);
+    pairs.push({ departmentId, designationId, designation });
+  }
+  return pairs;
+}
+
+function DepartmentMembership({
+  editing,
+  draft,
+  profile,
+  departments,
+  designationsByDepartment,
+  departmentError,
+  onToggle,
+  onPrimary,
+  onDesignation,
+  costingDesignationId,
+  onCostingDesignation,
+  canEditCosting,
+}) {
+  const source = editing ? draft : profile;
+  const summary = summarizeDepartments(source, departments);
+  const selected = new Set(summary.memberships.map((row) => row.departmentId));
+  const known = new Map((departments || []).map((row) => [row.departmentId, row]));
+  for (const row of summary.memberships) {
+    if (!known.has(row.departmentId)) known.set(row.departmentId, row);
+  }
+  const choices = [...known.values()].filter(
+    (row) =>
+      String(row.status || "").toUpperCase() === "ACTIVE" ||
+      selected.has(row.departmentId)
+  );
+
+  if (!editing) {
+    if (!summary.memberships.length && !summary.legacyUnmatched) {
+      return <div className="dgv-profile-value">—</div>;
+    }
+    return (
+      <div className="dgv-profile-value">
+        {summary.memberships.map((row) => {
+          const designationId = designationChoice(
+            source.departmentDesignations,
+            row.departmentId
+          );
+          const options = designationsByDepartment?.[row.departmentId] || [];
+          const designation = options.find((item) => item.designationId === designationId);
+          return (
+            <div key={row.departmentId}>
+              {row.name}
+              {row.departmentId === summary.primaryDepartmentId ? " · Primary" : ""}
+              {String(row.status).toUpperCase() === "ACTIVE" ? "" : " · Inactive"}
+              {designationId
+                ? ` · ${designation?.track ? `${designation.track} · ` : ""}${
+                    designation?.name || designationId
+                  }${
+                    designation && String(designation.status).toUpperCase() !== "ACTIVE"
+                      ? " (inactive designation)"
+                      : ""
+                  }`
+                : ""}
+            </div>
+          );
+        })}
+        {summary.legacyUnmatched ? (
+          <div>Legacy unmatched: {summary.legacyUnmatched}</div>
+        ) : null}
+        <div>
+          Costing designation:{" "}
+          {(() => {
+            const pairs = activeAssignedPairs(
+              source.departmentDesignations,
+              designationsByDepartment
+            );
+            const current = pairs.find((row) => row.designationId === costingDesignationId);
+            if (!current) return costingDesignationId ? "Needs a choice" : "—";
+            return `${current.designation.track ? `${current.designation.track} · ` : ""}${
+              current.designation.name
+            }`;
+          })()}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {departmentError ? (
+        <div className="dgv-profile-value">{departmentError}</div>
+      ) : null}
+      {choices.length === 0 ? (
+        <div className="dgv-profile-value">No departments available.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {choices.map((row) => {
+            const checked = selected.has(row.departmentId);
+            const inactive = String(row.status || "").toUpperCase() !== "ACTIVE";
+            return (
+              <div key={row.departmentId}>
+                <label style={{ display: "flex", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggle(row.departmentId)}
+                  />
+                  <span>
+                    {row.name}
+                    {inactive ? " (inactive)" : ""}
+                  </span>
+                </label>
+                {checked ? (
+                  <DesignationSelect
+                    department={row}
+                    options={designationsByDepartment?.[row.departmentId] || []}
+                    value={designationChoice(source.departmentDesignations, row.departmentId)}
+                    onChange={(designationId) => onDesignation(row.departmentId, designationId)}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {summary.memberships.length > 1 ? (
+        <label style={{ display: "grid", gap: 4, marginTop: 8 }} htmlFor="admin-profile-primary-department">
+          Primary department
+          <select
+            id="admin-profile-primary-department"
+            value={summary.primaryDepartmentId}
+            onChange={(event) => onPrimary(event.target.value)}
+          >
+            {summary.memberships.map((row) => (
+              <option key={row.departmentId} value={row.departmentId}>
+                {row.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {summary.legacyUnmatched ? (
+        <div className="dgv-profile-value" style={{ marginTop: 8 }}>
+          Legacy unmatched: {summary.legacyUnmatched}
+        </div>
+      ) : null}
+      {canEditCosting ? (
+        <CostingDesignationSelect
+          links={source.departmentDesignations}
+          designationsByDepartment={designationsByDepartment}
+          departments={departments}
+          value={costingDesignationId}
+          onChange={onCostingDesignation}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CostingDesignationSelect({
+  links,
+  designationsByDepartment,
+  departments,
+  value,
+  onChange,
+}) {
+  const pairs = activeAssignedPairs(links, designationsByDepartment);
+  const names = new Map((departments || []).map((row) => [row.departmentId, row.name]));
+  return (
+    <label style={{ display: "grid", gap: 4, marginTop: 8 }} htmlFor="admin-profile-costing-designation">
+      Costing designation
+      <select
+        id="admin-profile-costing-designation"
+        value={
+          pairs.some((row) => row.designationId === value)
+            ? value
+            : value
+              ? "__needs-choice"
+              : ""
+        }
+        onChange={(event) => {
+          if (event.target.value === "__needs-choice") return;
+          onChange(event.target.value);
+        }}
+      >
+        <option value="">
+          {pairs.length ? "Clear costing designation" : "No assigned designation"}
+        </option>
+        {value && !pairs.some((row) => row.designationId === value) ? (
+          <option value="__needs-choice">Choose an assigned designation</option>
+        ) : null}
+        {pairs.map((row) => (
+          <option key={row.designationId} value={row.designationId}>
+            {`${names.get(row.departmentId) || row.departmentId} · ${
+              row.designation.track ? `${row.designation.track} · ` : ""
+            }${row.designation.name}`}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function DesignationSelect({ department, options, value, onChange }) {
+  const visible = options.filter(
+    (row) => String(row.status || "").toUpperCase() === "ACTIVE" || row.designationId === value
+  );
+  return (
+    <label style={{ display: "grid", gap: 4, margin: "4px 0 8px 24px" }}>
+      Designation for {department.name}
+      <select
+        aria-label={`Designation for ${department.name}`}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">
+          {visible.length ? "No designation selected" : "No designations defined yet"}
+        </option>
+        {visible.map((row) => (
+          <option key={row.designationId} value={row.designationId}>
+            {row.track ? `${row.track} · ` : ""}
+            {row.sortOrder ? `${row.sortOrder}. ` : ""}
+            {row.name}
+            {String(row.status).toUpperCase() === "ACTIVE" ? "" : " (inactive)"}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function Field({ label, htmlFor, children }) {
   return (
     <div className="dgv-profile-item">
@@ -80,6 +333,11 @@ export default function AdminEmployeeProfile() {
 
   const [loading, setLoading] = useState(!isCreate);
   const [skills, setSkills] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [departmentError, setDepartmentError] = useState("");
+  const [membershipKnown, setMembershipKnown] = useState(isCreate);
+  const [costingTouched, setCostingTouched] = useState(false);
+  const [designationsByDepartment, setDesignationsByDepartment] = useState({});
   const [profile, setProfile] = useState(emptyForm);
   const [draft, setDraft] = useState(emptyForm);
   const [editing, setEditing] = useState(isCreate || searchParams.get("edit") === "1");
@@ -108,10 +366,21 @@ export default function AdminEmployeeProfile() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchSkills();
-        if (!cancelled) setSkills(Array.isArray(data) ? data : []);
+        const [data, departmentRes] = await Promise.all([
+          fetchSkills(),
+          fetchDepartments(),
+        ]);
+        if (cancelled) return;
+        setSkills(Array.isArray(data) ? data : []);
+        setDepartments(
+          Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+        );
+        setDepartmentError("");
       } catch (err) {
         console.error(err);
+        if (!cancelled) {
+          setDepartmentError(err?.message || "Unable to load departments.");
+        }
       }
     })();
     return () => {
@@ -146,9 +415,12 @@ export default function AdminEmployeeProfile() {
     setLoading(true);
     setError("");
     try {
-      const [data, users, shiftResult, catalogResult] = await Promise.all([
+      const [data, users, membershipResult, shiftResult, catalogResult] = await Promise.all([
         fetchUserProfile(lookupEmail),
         fetchUsers().catch(() => []),
+        fetchEmployeeDepartments(lookupEmail)
+          .then((res) => ({ ok: true, res }))
+          .catch(() => ({ ok: false })),
         fetchEmployeeShift(lookupEmail)
           .then((res) => ({ ok: true, res }))
           .catch((err) => ({ ok: false, err })),
@@ -171,6 +443,19 @@ export default function AdminEmployeeProfile() {
         name: data?.name || row?.name || "",
         empId: data?.empId || row?.empId || "",
         department: data?.department || row?.department || "",
+        departmentIds: Array.isArray(data?.departmentIds)
+          ? data.departmentIds
+          : Array.isArray(row?.departmentIds)
+            ? row.departmentIds
+            : [],
+        primaryDepartmentId:
+          data?.primaryDepartmentId || row?.primaryDepartmentId || "",
+        departmentDesignations: Array.isArray(data?.departmentDesignations)
+          ? data.departmentDesignations
+          : [],
+        costingDesignationId: membershipResult.ok
+          ? membershipResult.res?.membership?.costingDesignationId || ""
+          : "",
         designation: data?.designation || row?.designation || "",
         skill: data?.skill || row?.skill || "",
         manager: data?.manager || row?.manager || "",
@@ -182,6 +467,8 @@ export default function AdminEmployeeProfile() {
       };
       setProfile(next);
       setDraft(next);
+      setCostingTouched(false);
+      setMembershipKnown(Array.isArray(data?.departmentIds));
       const current = shiftResult.ok ? shiftResult.res?.shift || null : null;
       setAssignedShift(current);
       const catalog = catalogResult.ok
@@ -235,6 +522,27 @@ export default function AdminEmployeeProfile() {
     setDraft((prev) => ({ ...prev, [key]: value }));
   };
 
+  const toggleDepartment = (departmentId) => {
+    setMembershipKnown(true);
+    setDraft((prev) => {
+      const current = Array.isArray(prev.departmentIds) ? prev.departmentIds : [];
+      const next = current.includes(departmentId)
+        ? current.filter((id) => id !== departmentId)
+        : [...current, departmentId];
+      let primary = prev.primaryDepartmentId || "";
+      if (!next.includes(primary)) primary = next[0] || "";
+      const departmentDesignations = (prev.departmentDesignations || []).filter((row) =>
+        next.includes(row.departmentId)
+      );
+      return {
+        ...prev,
+        departmentIds: next,
+        primaryDepartmentId: primary,
+        departmentDesignations,
+      };
+    });
+  };
+
   const startEdit = () => {
     setDraft(profile);
     setEditing(true);
@@ -252,6 +560,55 @@ export default function AdminEmployeeProfile() {
     setError("");
   };
 
+  const setCostingDesignation = (designationId) => {
+    setCostingTouched(true);
+    setDraft((prev) => ({ ...prev, costingDesignationId: designationId }));
+  };
+
+  const setDepartmentDesignation = (departmentId, designationId) => {
+    setMembershipKnown(true);
+    setDraft((prev) => {
+      const rest = (prev.departmentDesignations || []).filter(
+        (row) => row.departmentId !== departmentId
+      );
+      return {
+        ...prev,
+        departmentDesignations: designationId
+          ? [...rest, { departmentId, designationId }]
+          : rest,
+      };
+    });
+  };
+
+  const selectedDepartmentKey = (editing ? draft.departmentIds : profile.departmentIds || [])
+    .join("|");
+
+  useEffect(() => {
+    const ids = selectedDepartmentKey ? selectedDepartmentKey.split("|") : [];
+    if (!ids.length) {
+      setDesignationsByDepartment({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const res = await fetchDepartmentDesignations(id);
+            return [id, Array.isArray(res?.designations) ? res.designations : []];
+          } catch (err) {
+            console.error(err);
+            return [id, []];
+          }
+        })
+      );
+      if (!cancelled) setDesignationsByDepartment(Object.fromEntries(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDepartmentKey]);
+
   const saveEdit = async () => {
     const email = String(draft.email || profile.email || "")
       .trim()
@@ -266,6 +623,26 @@ export default function AdminEmployeeProfile() {
       return;
     }
 
+    const managesAssignments = canManageProjectDocuments(actorRole);
+    const assignmentLinks = (draft.departmentDesignations || []).filter((row) =>
+      (draft.departmentIds || []).includes(row.departmentId)
+    );
+    const assignedPairs = activeAssignedPairs(assignmentLinks, designationsByDepartment);
+    let costingField;
+    if (managesAssignments && (isCreate || membershipKnown)) {
+      const current = String(draft.costingDesignationId || "");
+      const currentIsAssigned = assignedPairs.some((row) => row.designationId === current);
+      if (costingTouched) {
+        costingField = { costingDesignationId: current };
+      } else if (!current && assignedPairs.length > 1) {
+        setError("Select which assigned designation is used for costing, or clear it.");
+        return;
+      } else if (current && !currentIsAssigned) {
+        setError("Choose an assigned costing designation or clear it.");
+        return;
+      }
+    }
+
     setSaving(true);
     setError("");
     setMessage("");
@@ -278,7 +655,16 @@ export default function AdminEmployeeProfile() {
           email,
           name: draft.name || "",
           empId: draft.empId || "",
-          department: draft.department || "",
+          ...(managesAssignments && (isCreate || membershipKnown)
+            ? {
+                departmentIds: Array.isArray(draft.departmentIds)
+                  ? draft.departmentIds
+                  : [],
+                primaryDepartmentId: draft.primaryDepartmentId || "",
+                departmentDesignations: assignmentLinks,
+                ...costingField,
+              }
+            : {}),
           designation: draft.designation || "",
           skill: draft.skill || "",
           manager: draft.manager || "",
@@ -496,8 +882,24 @@ export default function AdminEmployeeProfile() {
           </p>
           <div className="dgv-profile-card">
             <div className="dgv-profile-grid">
-              <Field label="Department" htmlFor={editing ? "admin-profile-department" : undefined}>
-                {editing ? renderInput("department") : renderValue(profile.department)}
+              <Field label="Departments">
+                <DepartmentMembership
+                  editing={editing}
+                  draft={draft}
+                  profile={profile}
+                  departments={departments}
+                  departmentError={departmentError}
+                  designationsByDepartment={designationsByDepartment}
+                  onToggle={toggleDepartment}
+                  onDesignation={setDepartmentDesignation}
+                  costingDesignationId={(editing ? draft : profile).costingDesignationId}
+                  onCostingDesignation={setCostingDesignation}
+                  canEditCosting={canManageProjectDocuments(actorRole)}
+                  onPrimary={(departmentId) => {
+                    setMembershipKnown(true);
+                    updateDraft("primaryDepartmentId", departmentId);
+                  }}
+                />
               </Field>
               <Field label="Designation" htmlFor={editing ? "admin-profile-designation" : undefined}>
                 {editing ? renderInput("designation") : renderValue(profile.designation)}

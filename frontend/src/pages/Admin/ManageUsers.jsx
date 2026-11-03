@@ -7,6 +7,7 @@ import { StatCard } from "../../components/ui/Card";
 import {
   fetchUsers,
   fetchUserProfile,
+  fetchDepartments,
   updateUserStatus,
   updateUserRole,
   deleteUser,
@@ -27,10 +28,16 @@ import {
   formInput,
   formSelect,
 } from "../../theme";
+import {
+  departmentFilterOptions,
+  employeeMatchesDepartmentFilter,
+  formatDepartmentList,
+} from "../../utils/departmentMembership";
 
 export default function ManageUsers() {
   const navigate = useNavigate();
   const [users, setUsers] = useState([]);
+  const [departmentCatalog, setDepartmentCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -54,8 +61,14 @@ export default function ManageUsers() {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchUsers();
+      const [data, departmentRes] = await Promise.all([
+        fetchUsers(),
+        fetchDepartments().catch(() => ({ departments: [] })),
+      ]);
       const list = Array.isArray(data) ? data : [];
+      setDepartmentCatalog(
+        Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+      );
 
       // Live GET /admin/users may only return email/role/status until backend deploy.
       // Merge each employee's saved profile so name, empId, department, etc. show.
@@ -74,6 +87,13 @@ export default function ManageUsers() {
               name: profile.name || u.name || "",
               empId: profile.empId || u.empId || "",
               department: profile.department || u.department || "",
+              departmentIds: Array.isArray(profile.departmentIds)
+                ? profile.departmentIds
+                : Array.isArray(u.departmentIds)
+                  ? u.departmentIds
+                  : [],
+              primaryDepartmentId:
+                profile.primaryDepartmentId || u.primaryDepartmentId || "",
               designation: profile.designation || u.designation || "",
               skill: profile.skill || u.skill || "",
               manager: profile.manager || u.manager || "",
@@ -100,12 +120,10 @@ export default function ManageUsers() {
     }
   };
 
-  const departments = useMemo(() => {
-    const set = new Set(
-      users.map((u) => u.department).filter((d) => d && String(d).trim())
-    );
-    return Array.from(set).sort();
-  }, [users]);
+  const departments = useMemo(
+    () => departmentFilterOptions(users, departmentCatalog),
+    [users, departmentCatalog]
+  );
 
   const designations = useMemo(() => {
     const set = new Set(
@@ -178,7 +196,12 @@ export default function ManageUsers() {
 
   const filteredUsers = users.filter((u) => {
     if (filterStatus && u.status !== filterStatus) return false;
-    if (filterDept && (u.department || "") !== filterDept) return false;
+    if (
+      filterDept &&
+      !employeeMatchesDepartmentFilter(u, filterDept, departmentCatalog)
+    ) {
+      return false;
+    }
     if (filterDesignation && (u.designation || "") !== filterDesignation) {
       return false;
     }
@@ -188,6 +211,7 @@ export default function ManageUsers() {
       u.email,
       u.empId,
       u.department,
+      formatDepartmentList(u, departmentCatalog).join(" "),
       u.designation,
       u.role,
     ]
@@ -337,8 +361,8 @@ export default function ManageUsers() {
               >
                 <option value="">All departments</option>
                 {departments.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
+                  <option key={d.value} value={d.value}>
+                    {d.label}
                   </option>
                 ))}
               </select>
@@ -427,7 +451,10 @@ export default function ManageUsers() {
                         </td>
                         <td style={{ fontWeight: 600 }}>{u.name || "—"}</td>
                         <td>{u.empId || "—"}</td>
-                        <td>{u.department || "—"}</td>
+                        <td>
+                          {formatDepartmentList(u, departmentCatalog).join(", ") ||
+                            "—"}
+                        </td>
                         <td>{u.designation || "—"}</td>
                         <td>
                           <span

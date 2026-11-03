@@ -30,6 +30,7 @@ import {
   FolderKanban,
   Clock,
   Construction,
+  Building2,
 } from "lucide-react";
 import {
   logout,
@@ -83,6 +84,7 @@ const ADMIN_NAV_SECTIONS = [
     title: "People",
     items: [
       { label: "Employees", path: "/admin/employees", icon: Users },
+      { label: "Departments", path: "/admin/departments", icon: Building2 },
       { label: "Shifts", path: "/admin/shifts", icon: Clock },
       {
         label: "Cost Rates",

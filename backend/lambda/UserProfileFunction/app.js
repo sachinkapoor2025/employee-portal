@@ -14,6 +14,10 @@ const {
   canAssignPortalRole,
   isSuperAdminRole,
 } = require("../common/roles");
+const departments = require("../projects/departments");
+const orgDesignations = require("../projects/departmentDesignations");
+const costingDesignation = require("../projects/costingDesignation");
+const { requireEligiblePortalAdmin } = require("../projects/portalAdminAuth");
 
 const cognito = new CognitoIdentityProviderClient({
   region: process.env.AWS_REGION,
@@ -145,6 +149,40 @@ exports.handler = async (event) => {
     return response(200, { ok: true });
   }
 
+  const membershipPath = departments.membershipPathMatch(
+    event.path || "",
+    event.pathParameters
+  );
+  if (membershipPath) {
+    if (!membershipPath.ok) {
+      return response(400, { error: "Invalid path parameter." });
+    }
+    try {
+      const membershipCtx = {
+        user: getUser(event),
+        email: membershipPath.value,
+        body: event.body ? JSON.parse(event.body) : {},
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        accessTable: process.env.USER_ACCESS_TABLE,
+        profileTable: process.env.USER_PROFILE_TABLE,
+      };
+      const method = event.httpMethod;
+      if (method === "GET") {
+        const result = await departments.handleGetMembership(membershipCtx);
+        return response(result.statusCode, result.body);
+      }
+      if (method === "PUT") {
+        const result = await departments.handlePutMembership(membershipCtx);
+        return response(result.statusCode, result.body);
+      }
+      return response(405, { error: "Method not allowed" });
+    } catch (error) {
+      console.error("Department membership error:", error);
+      return response(500, { error: error.message || "Internal server error" });
+    }
+  }
+
   try {
     const body = JSON.parse(event.body || "{}");
     const { mode, email, role, profile } = body;
@@ -266,20 +304,16 @@ exports.handler = async (event) => {
       }
     }
 
-    const profileData = { ...(profile || {}) };
-    delete profileData.PK;
-    delete profileData.SK;
-    delete profileData.profileImageUrl;
-    delete profileData.imageStorageUrl;
-    if (profileData.imageUrl && String(profileData.imageUrl).includes("X-Amz-")) {
-      profileData.imageUrl = String(profileData.imageUrl).split("?")[0];
+    const incomingProfile = { ...(profile || {}) };
+    if (incomingProfile.imageUrl && String(incomingProfile.imageUrl).includes("X-Amz-")) {
+      incomingProfile.imageUrl = String(incomingProfile.imageUrl).split("?")[0];
     }
-    if (isS3ObjectKey(profileData.imageUrl) && !profileData.imageS3Key) {
-      profileData.imageS3Key = String(profileData.imageUrl).trim();
+    if (isS3ObjectKey(incomingProfile.imageUrl) && !incomingProfile.imageS3Key) {
+      incomingProfile.imageS3Key = String(incomingProfile.imageUrl).trim();
     }
-    if (!profileData.imageS3Key && profileData.imageUrl) {
-      const fromUrl = s3KeyFromFileUrl(profileData.imageUrl);
-      if (fromUrl) profileData.imageS3Key = fromUrl;
+    if (!incomingProfile.imageS3Key && incomingProfile.imageUrl) {
+      const fromUrl = s3KeyFromFileUrl(incomingProfile.imageUrl);
+      if (fromUrl) incomingProfile.imageS3Key = fromUrl;
     }
 
     let existingProfile = {};
@@ -294,27 +328,133 @@ exports.handler = async (event) => {
     } catch {
       existingProfile = {};
     }
-    if (profileData.resignations == null && Array.isArray(existingProfile.resignations)) {
-      profileData.resignations = existingProfile.resignations;
+
+    const assignmentTouched =
+      user.isAdmin &&
+      (Object.prototype.hasOwnProperty.call(incomingProfile, "departmentIds") ||
+        Object.prototype.hasOwnProperty.call(incomingProfile, "primaryDepartmentId") ||
+        Object.prototype.hasOwnProperty.call(incomingProfile, "departmentDesignations") ||
+        Object.prototype.hasOwnProperty.call(incomingProfile, "costingDesignationId"));
+    if (assignmentTouched) {
+      const portal = await requireEligiblePortalAdmin({
+        user,
+        ddb,
+        accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      if (!portal.ok) return response(portal.statusCode, portal.body);
+    }
+
+    const profileData = departments.profileFieldsForActor({
+      isAdmin: user.isAdmin,
+      profileData: incomingProfile,
+    });
+    delete profileData.costingDesignationId;
+    let membership;
+    if (
+      user.isAdmin &&
+      (Object.prototype.hasOwnProperty.call(incomingProfile, "departmentIds") ||
+        Object.prototype.hasOwnProperty.call(incomingProfile, "primaryDepartmentId"))
+    ) {
+      if (!Array.isArray(incomingProfile.departmentIds)) {
+        return response(400, { error: "departmentIds must be an array of department IDs." });
+      }
+      const requested = incomingProfile.departmentIds;
+      const knownIds = [
+        ...requested,
+        ...(Array.isArray(existingProfile.departmentIds)
+          ? existingProfile.departmentIds
+          : []),
+      ];
+      const departmentsById = new Map();
+      for (const id of knownIds) {
+        const key = String(id || "").trim();
+        if (!key || departmentsById.has(key)) continue;
+        const item = await departments.getDepartmentItem(
+          ddb,
+          process.env.WORK_TABLE,
+          key
+        );
+        if (item) departmentsById.set(key, item);
+      }
+      const resolved = departments.resolveMembership({
+        departmentIds: requested,
+        primaryDepartmentId: incomingProfile.primaryDepartmentId,
+        existingIds: Array.isArray(existingProfile.departmentIds)
+          ? existingProfile.departmentIds
+          : [],
+        departmentsById,
+      });
+      if (!resolved.ok) {
+        return response(400, { error: resolved.error });
+      }
+      membership = resolved;
+      delete profileData.departmentIds;
+      delete profileData.primaryDepartmentId;
+    }
+
+    if (
+      user.isAdmin &&
+      Object.prototype.hasOwnProperty.call(incomingProfile, "departmentDesignations")
+    ) {
+      const departmentIds = membership
+        ? membership.departmentIds
+        : Array.isArray(existingProfile.departmentIds)
+          ? existingProfile.departmentIds
+          : [];
+      const linked = await orgDesignations.resolveDepartmentDesignations({
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        departmentIds,
+        requested: incomingProfile.departmentDesignations,
+        existingProfile,
+      });
+      if (!linked.ok) return response(400, { error: linked.error });
+      membership = {
+        ...(membership || {
+          departmentIds,
+          primaryDepartmentId: existingProfile.primaryDepartmentId || "",
+        }),
+        departmentDesignations: linked.departmentDesignations,
+      };
+      delete profileData.departmentDesignations;
+    }
+
+    if (assignmentTouched) {
+      const links =
+        membership &&
+        Object.prototype.hasOwnProperty.call(membership, "departmentDesignations")
+          ? membership.departmentDesignations
+          : orgDesignations.existingLinks(existingProfile).filter((row) =>
+              membership
+                ? (membership.departmentIds || []).includes(row.departmentId)
+                : true
+            );
+      const costing = await costingDesignation.syncCostingDesignation({
+        ddb,
+        tableName: process.env.WORK_TABLE,
+        email: normalizedEmail,
+        links,
+        requested: Object.prototype.hasOwnProperty.call(
+          incomingProfile,
+          "costingDesignationId"
+        )
+          ? incomingProfile.costingDesignationId
+          : undefined,
+        actor: user.email,
+      });
+      if (!costing.ok) return response(400, { error: costing.error });
     }
 
     try {
       await ddb.send(
         new PutCommand({
           TableName: process.env.USER_PROFILE_TABLE,
-          Item: {
-            PK: `USER#${normalizedEmail}`,
-            SK: "PROFILE",
-            ...profileData,
+          Item: departments.mergeProfileForSave({
+            existing: existingProfile,
+            profileData,
             email: normalizedEmail,
-            department: profileData?.department
-              ? String(profileData.department).trim()
-              : "",
-            skill: profileData?.skill
-              ? String(profileData.skill).trim().toUpperCase()
-              : profileData?.skill,
-            updatedAt: new Date().toISOString(),
-          },
+            membership,
+          }),
         })
       );
     } catch (err) {

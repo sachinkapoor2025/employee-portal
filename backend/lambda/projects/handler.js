@@ -39,6 +39,8 @@ const workflowAccess = require("./workflowAccess");
 const taskTime = require("./taskTime");
 const shiftCatalog = require("./shiftCatalog");
 const costRates = require("./costRates");
+const departments = require("./departments");
+const orgDesignations = require("./departmentDesignations");
 const taskCosting = require("./taskCosting");
 const costingReports = require("./costingReports");
 const legacyBaseline = require("./legacyBaseline");
@@ -1582,6 +1584,111 @@ exports.handler = async (event) => {
         ddb,
         tableName: process.env.WORK_TABLE,
         accessTable: process.env.USER_ACCESS_TABLE,
+      });
+      return json(result.statusCode, result.body);
+    }
+
+    const departmentCtx = {
+      user,
+      body,
+      ddb,
+      tableName: process.env.WORK_TABLE,
+      accessTable: process.env.USER_ACCESS_TABLE,
+      profileTable: process.env.USER_PROFILE_TABLE,
+    };
+    if (departments.publicDepartmentsPathMatch(path) && method === "GET") {
+      const result = await departments.handleListPublicDepartments(departmentCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (departments.adminDepartmentsPathMatch(path) && method === "GET") {
+      const result = await departments.handleListDepartments(departmentCtx);
+      return json(result.statusCode, result.body);
+    }
+    if (departments.adminDepartmentsPathMatch(path) && method === "POST") {
+      const result = await departments.handleCreateDepartment(departmentCtx);
+      return json(result.statusCode, result.body);
+    }
+    const orgDesignationList = orgDesignations.designationListPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (orgDesignationList && !orgDesignationList.ok) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (orgDesignationList?.value && method === "GET") {
+      const result = await orgDesignations.handleListDesignations({
+        ...departmentCtx,
+        departmentId: orgDesignationList.value,
+        admin: /\/admin\/departments\//.test(path),
+      });
+      return json(result.statusCode, result.body);
+    }
+    if (
+      orgDesignationList?.value &&
+      method === "POST" &&
+      /\/admin\/departments\//.test(path)
+    ) {
+      const result = await orgDesignations.handleCreateDesignation({
+        ...departmentCtx,
+        departmentId: orgDesignationList.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const orgDesignationStatus = orgDesignations.designationStatusPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (orgDesignationStatus && !orgDesignationStatus.ok) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (orgDesignationStatus?.designationId && method === "POST") {
+      const result = await orgDesignations.handleDesignationStatus({
+        ...departmentCtx,
+        departmentId: orgDesignationStatus.departmentId,
+        designationId: orgDesignationStatus.designationId,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const orgDesignationId = orgDesignations.designationIdPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (orgDesignationId && !orgDesignationId.ok) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (orgDesignationId?.designationId && method === "PATCH") {
+      const result = await orgDesignations.handlePatchDesignation({
+        ...departmentCtx,
+        departmentId: orgDesignationId.departmentId,
+        designationId: orgDesignationId.designationId,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const departmentStatusId = departments.departmentStatusPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (departmentStatusId && !departmentStatusId.ok) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (departmentStatusId?.value && method === "POST") {
+      const result = await departments.handleDepartmentStatus({
+        ...departmentCtx,
+        departmentId: departmentStatusId.value,
+      });
+      return json(result.statusCode, result.body);
+    }
+    const departmentId = departments.departmentIdPathMatch(
+      path,
+      event.pathParameters
+    );
+    if (departmentId && !departmentId.ok) {
+      return json(400, { error: "Invalid path parameter." });
+    }
+    if (departmentId?.value && method === "PATCH") {
+      const result = await departments.handlePatchDepartment({
+        ...departmentCtx,
+        departmentId: departmentId.value,
       });
       return json(result.statusCode, result.body);
     }

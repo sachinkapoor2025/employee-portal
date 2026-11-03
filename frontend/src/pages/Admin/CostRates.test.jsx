@@ -11,6 +11,8 @@ jest.mock("../../services/api", () => ({
   setCostRateDesignationStatus: jest.fn(),
   fetchCostRateEmployees: jest.fn(),
   fetchCostRateEmployee: jest.fn(),
+  fetchDepartments: jest.fn(),
+  fetchDepartmentDesignations: jest.fn(),
   saveCostRateEmployee: jest.fn(),
   setCostRateEmployeeStatus: jest.fn(),
   fetchCostingRoster: jest.fn(),
@@ -24,6 +26,8 @@ import {
   fetchCostRateDesignations,
   fetchCostRateEmployee,
   fetchCostRateEmployees,
+  fetchDepartments,
+  fetchDepartmentDesignations,
   saveCostRateEmployee,
   setCostRateDesignationStatus,
   updateCostRateDesignation,
@@ -31,6 +35,10 @@ import {
 
 const DESIGNATION = {
   designationId: "seo",
+  departmentId: "it",
+  track: "SEO",
+  trackSort: 1,
+  sortOrder: 2,
   name: "SEO Executive",
   internalHourlyRate: 2,
   externalHourlyRate: 3,
@@ -43,6 +51,8 @@ const EMPLOYEE = {
   name: "Rahul",
   empId: "E1",
   profileDesignation: "Free text SEO",
+  departmentIds: ["it"],
+  departmentDesignations: [{ departmentId: "it", designationId: "seo" }],
   designationId: "seo",
   designationName: "SEO Executive",
   internalHourlyRate: 2.25,
@@ -64,8 +74,28 @@ async function openRahul() {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  fetchCostRateDesignations.mockResolvedValue({ designations: [DESIGNATION] });
+  fetchCostRateDesignations.mockResolvedValue({
+    designations: [DESIGNATION],
+    legacyReport: {
+      unmatched: [
+        {
+          designationId: "legacy-seo",
+          name: "Legacy Contractor",
+          reason: "No department designation has this exact name.",
+        },
+      ],
+      ambiguous: [],
+      pendingMatches: [],
+    },
+  });
   fetchCostRateEmployees.mockResolvedValue({ employees: [EMPLOYEE] });
+  fetchDepartments.mockResolvedValue({
+    departments: [
+      { departmentId: "it", name: "IT — Software Development", status: "ACTIVE" },
+      { departmentId: "ai", name: "AI & Automation", status: "ACTIVE" },
+    ],
+  });
+  fetchDepartmentDesignations.mockResolvedValue({ designations: [] });
   fetchCostRateEmployee.mockResolvedValue({ employee: EMPLOYEE });
   createCostRateDesignation.mockResolvedValue({ designation: DESIGNATION });
   updateCostRateDesignation.mockResolvedValue({ designation: DESIGNATION });
@@ -75,54 +105,49 @@ beforeEach(() => {
   saveCostRateEmployee.mockResolvedValue({ employee: EMPLOYEE });
 });
 
-test("loads designations and supports create, edit, and deactivate", async () => {
+test("loads costing designations and does not create one from Cost Rates", async () => {
   render(<CostRates />);
+  expect(await screen.findByText(/Legacy Contractor/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "+ New designation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Create designation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
+
+  await userEvent.selectOptions(screen.getByLabelText("Department"), "it");
+  await userEvent.selectOptions(screen.getByLabelText("Track"), "SEO");
   expect(await screen.findByText("SEO Executive")).toBeInTheDocument();
-  expect(screen.queryByText("No configured rate")).not.toBeInTheDocument();
   expect(screen.getAllByText("$2.00").length).toBeGreaterThan(0);
 
-  await userEvent.click(screen.getByRole("button", { name: "+ New designation" }));
-  await userEvent.type(screen.getByLabelText("Designation name"), "QA");
-  await userEvent.type(screen.getByLabelText("Internal hourly rate (USD)"), "4.50");
-  await userEvent.click(screen.getByRole("button", { name: "Create designation" }));
-  await waitFor(() =>
-    expect(createCostRateDesignation).toHaveBeenCalledWith({
-      name: "QA",
-      internalHourlyRate: 4.5,
-      externalHourlyRate: null,
-    })
-  );
-
-  await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-  const name = screen.getByLabelText("Designation name");
-  await userEvent.clear(name);
-  await userEvent.type(name, "SEO Lead");
+  await userEvent.click(screen.getByRole("button", { name: "Edit rate" }));
+  expect(screen.getByLabelText("Designation name")).toHaveAttribute("readonly");
   await userEvent.click(screen.getByRole("button", { name: "Save designation" }));
   await waitFor(() =>
     expect(updateCostRateDesignation).toHaveBeenCalledWith(
       "seo",
-      expect.objectContaining({ name: "SEO Lead" })
+      expect.objectContaining({ internalHourlyRate: 2, externalHourlyRate: 3 })
     )
   );
-
-  await userEvent.click(screen.getByRole("button", { name: "Deactivate" }));
-  await waitFor(() =>
-    expect(setCostRateDesignationStatus).toHaveBeenCalledWith("seo", "INACTIVE")
-  );
+  expect(updateCostRateDesignation.mock.calls[0][1].name).toBeUndefined();
 });
 
-test("shows API errors from designation create", async () => {
-  createCostRateDesignation.mockRejectedValueOnce(
-    new Error("A designation with this name already exists.")
-  );
+test("filters employees by department before search", async () => {
+  fetchCostRateEmployees.mockResolvedValue({
+    employees: [
+      { ...EMPLOYEE, departmentIds: ["it"] },
+      {
+        ...EMPLOYEE,
+        email: "other@mydgv.com",
+        name: "Other Person",
+        departmentIds: ["ai"],
+      },
+    ],
+  });
   render(<CostRates />);
-  await screen.findByText("SEO Executive");
-  await userEvent.click(screen.getByRole("button", { name: "+ New designation" }));
-  await userEvent.type(screen.getByLabelText("Designation name"), "SEO Executive");
-  await userEvent.click(screen.getByRole("button", { name: "Create designation" }));
-  expect(
-    await screen.findByText("A designation with this name already exists.")
-  ).toBeInTheDocument();
+  await screen.findByRole("heading", { name: "Cost Rates" });
+  await userEvent.click(screen.getByRole("tab", { name: "Employees" }));
+  await userEvent.selectOptions(screen.getByLabelText("Department"), "it");
+  await userEvent.click(screen.getByRole("button", { name: "Show employees" }));
+  expect(screen.getByRole("option", { name: /Rahul/ })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /Other Person/ })).not.toBeInTheDocument();
 });
 
 test("employee rates show resolved source and can clear a personal rate", async () => {
@@ -140,7 +165,7 @@ test("employee rates show resolved source and can clear a personal rate", async 
     .mockResolvedValueOnce({ employee: cleared });
 
   render(<CostRates />);
-  await screen.findByText("SEO Executive");
+  await screen.findByRole("heading", { name: "Cost Rates" });
   await openRahul();
   expect(await screen.findByText(/Resolved Internal/)).toHaveTextContent("$2.25");
   expect(screen.getByText(/Resolved Internal/)).toHaveTextContent("(Employee)");
@@ -170,7 +195,7 @@ test("shows API errors when Super Admin load fails", async () => {
 
 test("shows validation error for invalid employee rate", async () => {
   render(<CostRates />);
-  await screen.findByText("SEO Executive");
+  await screen.findByRole("heading", { name: "Cost Rates" });
   await openRahul();
   const internal = await screen.findByLabelText("Internal hourly rate (USD)");
   await userEvent.clear(internal);

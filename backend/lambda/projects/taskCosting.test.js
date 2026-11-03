@@ -28,12 +28,11 @@ const {
   STATUS_SUBMISSION_BASIS,
 } = require("./taskCosting");
 const {
-  handleCreateDesignation,
   handlePatchDesignation,
   handlePutEmployee,
-  handleDesignationStatus,
   resolveHourlyRatesAt,
 } = require("./costRates");
+const { handleDesignationStatus } = require("./departmentDesignations");
   const {
     REASON,
     SOURCE_DESIGNATION,
@@ -165,6 +164,7 @@ function memoryDdb(seed = {}) {
 
 const WORK = "WorkTasks";
 const ACCESS = "UserAccess";
+const PROFILE = "UserProfile";
 const SUPER = { email: "boss@mydgv.com", groups: ["Admin"], isAdmin: true };
 
 function seedAccess() {
@@ -183,6 +183,20 @@ function seedAccess() {
       role: "EMPLOYEE",
       status: "ACTIVE",
     },
+    [keyOf(PROFILE, "USER#rahul@mydgv.com", "PROFILE")]: {
+      PK: "USER#rahul@mydgv.com",
+      SK: "PROFILE",
+      email: "rahul@mydgv.com",
+      name: "Rahul",
+      departmentIds: ["seo-digital-marketing"],
+      primaryDepartmentId: "seo-digital-marketing",
+      departmentDesignations: [
+        { departmentId: "seo-digital-marketing", designationId: "seo" },
+        { departmentId: "seo-digital-marketing", designationId: "ppc" },
+        { departmentId: "seo-digital-marketing", designationId: "analyst" },
+        { departmentId: "seo-digital-marketing", designationId: "writer" },
+      ],
+    },
   };
 }
 
@@ -191,18 +205,52 @@ assert.strictEqual(calculateAmountUsd(2.5, 3), 7.5);
 assert.strictEqual(reportingDateIst("2026-10-13T18:40:00.000Z"), "2026-10-14");
 assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
 
+function orgDesignation({
+  id,
+  name,
+  internalHourlyRate,
+  externalHourlyRate,
+  createdAt,
+  status = "ACTIVE",
+}) {
+  return {
+    PK: "ENTITY#ORG_DESIGNATION",
+    SK: `DESIGNATION#${id}`,
+    type: "ORG_DESIGNATION",
+    designationId: id,
+    departmentId: "seo-digital-marketing",
+    track: "SEO",
+    trackSort: 1,
+    sortOrder: 1,
+    name,
+    nameKey: String(name).toLowerCase(),
+    status,
+    internalHourlyRate,
+    externalHourlyRate,
+    createdAt,
+    createdBy: "boss@mydgv.com",
+    updatedAt: createdAt,
+    updatedBy: "boss@mydgv.com",
+  };
+}
+
+async function putOrgDesignation(ddb, item) {
+  await ddb.send(new PutCommand({ TableName: WORK, Item: item }));
+}
+
 (async () => {
   const ddb = memoryDdb(seedAccess());
-  const created = await handleCreateDesignation({
-    user: SUPER,
+  const designationId = "seo";
+  await putOrgDesignation(
     ddb,
-    tableName: WORK,
-    accessTable: ACCESS,
-    nowIso: "2026-01-01T00:00:00.000Z",
-    body: { name: "SEO", internalHourlyRate: 2, externalHourlyRate: 4 },
-  });
-  assert.strictEqual(created.statusCode, 201);
-  const designationId = created.body.designation.designationId;
+    orgDesignation({
+      id: designationId,
+      name: "SEO",
+      internalHourlyRate: 2,
+      externalHourlyRate: 4,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+  );
 
   const emp = await handlePutEmployee({
     user: SUPER,
@@ -210,6 +258,7 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-01-01T00:00:00.000Z",
     body: {
       designationId,
@@ -225,6 +274,7 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-06-01T00:00:00.000Z",
     body: { internalHourlyRate: 9, externalHourlyRate: 12 },
   });
@@ -235,6 +285,7 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-06-01T00:00:00.000Z",
     body: { internalHourlyRate: 8, externalHourlyRate: 11 },
   });
@@ -312,6 +363,7 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-08-01T00:00:00.000Z",
     body: { designationId, internalHourlyRate: null, externalHourlyRate: null },
   });
@@ -331,24 +383,27 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   const historicalStill = await getAssignmentCost(ddb, WORK, "t-int", "rahul@mydgv.com");
   assert.strictEqual(historicalStill.hourlyRateUsd, 2.25);
 
-  const ppc = await handleCreateDesignation({
-    user: SUPER,
+  const ppcId = "ppc";
+  await putOrgDesignation(
     ddb,
-    tableName: WORK,
-    accessTable: ACCESS,
-    nowIso: "2026-01-01T00:00:00.000Z",
-    body: { name: "PPC", internalHourlyRate: 15, externalHourlyRate: 20 },
-  });
-  assert.strictEqual(ppc.statusCode, 201);
+    orgDesignation({
+      id: ppcId,
+      name: "PPC",
+      internalHourlyRate: 15,
+      externalHourlyRate: 20,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+  );
   await handlePutEmployee({
     user: SUPER,
     email: "rahul@mydgv.com",
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-09-01T00:00:00.000Z",
     body: {
-      designationId: ppc.body.designation.designationId,
+      designationId: ppcId,
       internalHourlyRate: null,
       externalHourlyRate: null,
     },
@@ -399,12 +454,23 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     role: "EMPLOYEE",
     status: "ACTIVE",
   };
+  ddb.items[keyOf(PROFILE, "USER#ghost@mydgv.com", "PROFILE")] = {
+    PK: "USER#ghost@mydgv.com",
+    SK: "PROFILE",
+    email: "ghost@mydgv.com",
+    departmentIds: ["seo-digital-marketing"],
+    departmentDesignations: [
+      { departmentId: "seo-digital-marketing", designationId: "seo" },
+      { departmentId: "seo-digital-marketing", designationId: "ppc" },
+    ],
+  };
   await handlePutEmployee({
     user: SUPER,
     email: "ghost@mydgv.com",
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-03-01T00:00:00.000Z",
     body: { designationId, internalHourlyRate: 6 },
   });
@@ -432,9 +498,10 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-09-01T00:00:00.000Z",
     body: {
-      designationId: ppc.body.designation.designationId,
+      designationId: ppcId,
       internalHourlyRate: null,
       externalHourlyRate: null,
     },
@@ -636,21 +703,24 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   assert.strictEqual(retryAtomic.createdAt, atomicOk.createdAt);
 
   const inactiveDdb = memoryDdb(seedAccess());
-  const inactiveDesignation = await handleCreateDesignation({
-    user: SUPER,
-    ddb: inactiveDdb,
-    tableName: WORK,
-    accessTable: ACCESS,
-    nowIso: "2026-01-01T00:00:00.000Z",
-    body: { name: "Analyst", internalHourlyRate: 5, externalHourlyRate: 5 },
-  });
-  const inactiveDesignationId = inactiveDesignation.body.designation.designationId;
+  const inactiveDesignationId = "analyst";
+  await putOrgDesignation(
+    inactiveDdb,
+    orgDesignation({
+      id: inactiveDesignationId,
+      name: "Analyst",
+      internalHourlyRate: 5,
+      externalHourlyRate: 5,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+  );
   await handlePutEmployee({
     user: SUPER,
     email: "rahul@mydgv.com",
     ddb: inactiveDdb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-01-01T00:00:00.000Z",
     body: {
       designationId: inactiveDesignationId,
@@ -660,10 +730,12 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   });
   await handleDesignationStatus({
     user: SUPER,
+    departmentId: "seo-digital-marketing",
     designationId: inactiveDesignationId,
     ddb: inactiveDdb,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-06-01T00:00:00.000Z",
     body: { status: "INACTIVE" },
   });
@@ -840,22 +912,24 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
   assert.strictEqual(missingBasisErr.code, "SUBMISSION_BASIS_REQUIRED");
 
   const rates = memoryDdb(seedAccess());
-  const writer = await handleCreateDesignation({
-    user: SUPER,
-    ddb: rates,
-    tableName: WORK,
-    accessTable: ACCESS,
-    nowIso: "2026-10-01T00:00:00.000Z",
-    body: { name: "Writer", internalHourlyRate: 1, externalHourlyRate: 3 },
-  });
-  assert.strictEqual(writer.statusCode, 201);
-  const writerId = writer.body.designation.designationId;
+  const writerId = "writer";
+  await putOrgDesignation(
+    rates,
+    orgDesignation({
+      id: writerId,
+      name: "Writer",
+      internalHourlyRate: 1,
+      externalHourlyRate: 3,
+      createdAt: "2026-10-01T00:00:00.000Z",
+    })
+  );
   const hired = await handlePutEmployee({
     user: SUPER,
     email: "rahul@mydgv.com",
     ddb: rates,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-10-01T00:00:00.000Z",
     body: { designationId: writerId, internalHourlyRate: 1, externalHourlyRate: null },
   });
@@ -896,6 +970,7 @@ assert.strictEqual(reportingDateIst("2026-10-13T18:29:00.000Z"), "2026-10-13");
     ddb: rates,
     tableName: WORK,
     accessTable: ACCESS,
+    profileTable: PROFILE,
     nowIso: "2026-10-29T04:00:00.000Z",
     body: { internalHourlyRate: 2, externalHourlyRate: null },
   });

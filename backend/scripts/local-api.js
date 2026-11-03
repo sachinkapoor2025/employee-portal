@@ -139,6 +139,20 @@ function route(event) {
   if (path === "/projects" || path.startsWith("/projects/")) {
     return projects.handler(event);
   }
+  if (
+    path === "/departments" ||
+    path.startsWith("/departments/") ||
+    path === "/admin/departments" ||
+    path.startsWith("/admin/departments/")
+  ) {
+    return projects.handler(event);
+  }
+  if (
+    path === "/admin/save-user-profile" ||
+    /^\/admin\/employees\/[^/]+\/departments$/.test(path)
+  ) {
+    return require("../lambda/UserProfileFunction/app").handler(event);
+  }
   return Promise.resolve({
     statusCode: 404,
     headers: CORS,

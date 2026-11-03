@@ -9,6 +9,9 @@ const {
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { requireSuperAdmin } = require("./portalAdminAuth");
+const orgDesignations = require("./departmentDesignations");
+const designationCatalog = require("./designationCatalog");
+const costingDesignation = require("./costingDesignation");
 const { normalizeEmail } = require("./projectAccess");
 const {
   OWNER_DESIGNATION,
@@ -32,6 +35,16 @@ const RATE_INVALID =
   "Hourly rate must be a finite positive number in USD with at most two decimal places.";
 const NAME_REQUIRED = "Designation name is required.";
 const NAME_DUPLICATE = "A designation with this name already exists.";
+const CREATED_ON_DEPARTMENT_PAGE =
+  "Designations are created on the Department page.";
+const RETIRED_ON_DEPARTMENT_PAGE =
+  "Deactivate designations on the Department page.";
+const RATES_FOR_ACTIVE =
+  "Only active department designations can receive rate changes.";
+const CATALOG_DESIGNATION_REQUIRED =
+  "Select a designation from the Department catalog.";
+const LEGACY_RATE_EDIT =
+  "Rates can only be edited for designations managed on the Department page.";
 const STATUS_INVALID = "Status must be ACTIVE or INACTIVE.";
 const PROJECT_INTERNAL = "INTERNAL";
 const PROJECT_EXTERNAL = "EXTERNAL";
@@ -305,6 +318,8 @@ async function scanAll(ddb, tableName) {
 }
 
 async function getDesignationItem(ddb, tableName, designationId) {
+  const org = await orgDesignations.getDesignation(ddb, tableName, designationId);
+  if (org) return org;
   const id = String(designationId || "").trim();
   if (!id) return null;
   const res = await ddb.send(
@@ -314,6 +329,10 @@ async function getDesignationItem(ddb, tableName, designationId) {
     })
   );
   return res.Item || null;
+}
+
+function isOrgDesignation(item) {
+  return item?.type === "ORG_DESIGNATION";
 }
 
 async function getEmployeeRatesItem(ddb, tableName, email) {
@@ -362,6 +381,10 @@ function publicDesignation(item) {
     : null;
   return {
     designationId: item.designationId,
+    departmentId: item.departmentId || "",
+    track: item.track || "",
+    trackSort: Number(item.trackSort) || 0,
+    sortOrder: Number(item.sortOrder) || 0,
     name: item.name,
     currency: "USD",
     internalHourlyRate,
@@ -651,9 +674,17 @@ function publicEmployeeRates({
     name: profile?.name || accessRow?.name || "",
     empId: profile?.empId || "",
     profileDesignation: profile?.designation || "",
+    department: profile?.department || "",
+    departmentIds: Array.isArray(profile?.departmentIds) ? profile.departmentIds : [],
+    primaryDepartmentId: profile?.primaryDepartmentId || "",
+    departmentDesignations: Array.isArray(profile?.departmentDesignations)
+      ? profile.departmentDesignations
+      : [],
     accessStatus: accessRow?.status || null,
     designationId: ratesItem?.designationId || null,
     designationName: publicDes?.name || null,
+    designationTrack: publicDes?.track || "",
+    designationDepartmentId: publicDes?.departmentId || "",
     designationStatus: publicDes?.status || null,
     currency: "USD",
     internalHourlyRate: isValidPositiveRate(ratesItem?.internalHourlyRate)
@@ -696,12 +727,33 @@ async function listDesignationItems(ddb, tableName) {
 async function handleListDesignations({ user, ddb, tableName, accessTable }) {
   const auth = await requireRatesAdmin({ user, ddb, accessTable });
   if (!auth.ok) return { statusCode: auth.statusCode, body: auth.body };
-  const items = await listDesignationItems(ddb, tableName);
-  const designations = items
+  const [orgItems, legacyItems] = await Promise.all([
+    queryAll(ddb, {
+      TableName: tableName,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+      ExpressionAttributeValues: {
+        ":pk": orgDesignations.ORG_DESIGNATION_PK,
+        ":sk": "DESIGNATION#",
+      },
+    }),
+    listDesignationItems(ddb, tableName),
+  ]);
+  const designations = orgItems
+    .filter((item) => item.type === "ORG_DESIGNATION")
     .map(publicDesignation)
     .filter(Boolean)
-    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return { statusCode: 200, body: { designations } };
+    .sort((a, b) => {
+      const department = String(a.departmentId).localeCompare(String(b.departmentId));
+      if (department) return department;
+      if (a.trackSort !== b.trackSort) return a.trackSort - b.trackSort;
+      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  const legacyReport = designationCatalog.planLegacyCostingMigration({
+    legacyItems,
+    orgItems,
+  });
+  return { statusCode: 200, body: { designations, legacyReport } };
 }
 
 async function handleCreateDesignation({
@@ -714,77 +766,8 @@ async function handleCreateDesignation({
 }) {
   const auth = await requireRatesAdmin({ user, ddb, accessTable });
   if (!auth.ok) return { statusCode: auth.statusCode, body: auth.body };
-  const parsedName = parseDesignationName(body?.name);
-  if (!parsedName.ok) {
-    return { statusCode: 400, body: { error: parsedName.error } };
-  }
-  const internal = parseHourlyRate(body?.internalHourlyRate);
-  if (!internal.ok) return { statusCode: 400, body: { error: internal.error } };
-  const external = parseHourlyRate(body?.externalHourlyRate);
-  if (!external.ok) return { statusCode: 400, body: { error: external.error } };
-  const designationId = randomUUID();
-  const now = nowIso || new Date().toISOString();
-  const item = {
-    PK: DESIGNATION_ENTITY_PK,
-    SK: designationSk(designationId),
-    type: TYPE_DESIGNATION,
-    designationId,
-    name: parsedName.value,
-    nameKey: parsedName.nameKey,
-    internalHourlyRate: internal.value,
-    externalHourlyRate: external.value,
-    status: STATUS_ACTIVE,
-    createdAt: now,
-    createdBy: auth.email,
-    updatedAt: now,
-    updatedBy: auth.email,
-  };
-  const pointer = {
-    PK: DESIGNATION_NAME_PK,
-    SK: designationNameSk(parsedName.nameKey),
-    type: TYPE_DESIGNATION_NAME,
-    designationId,
-    nameKey: parsedName.nameKey,
-  };
-  try {
-    await ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Put: {
-              TableName: tableName,
-              Item: item,
-              ConditionExpression: "attribute_not_exists(PK)",
-            },
-          },
-          {
-            Put: {
-              TableName: tableName,
-              Item: pointer,
-              ConditionExpression: "attribute_not_exists(PK)",
-            },
-          },
-          ...(
-            await versionPutsForMutation({
-              ddb,
-              tableName,
-              ownerType: OWNER_DESIGNATION,
-              ownerId: designationId,
-              existingItem: null,
-              nextSnapshot: item,
-              nowIso: now,
-              actor: auth.email,
-            })
-          ),
-        ],
-      })
-    );
-  } catch (err) {
-    const mapped = mapCreateNameTransactError(err);
-    if (mapped) return mapped;
-    throw err;
-  }
-  return { statusCode: 201, body: { designation: publicDesignation(item) } };
+  return { statusCode: 400, body: { error: CREATED_ON_DEPARTMENT_PAGE } };
+
 }
 
 async function handlePatchDesignation({
@@ -804,15 +787,20 @@ async function handlePatchDesignation({
   if (!existing) {
     return { statusCode: 404, body: { error: "Designation not found." } };
   }
-  const nextName =
-    body?.name !== undefined
-      ? parseDesignationName(body.name)
-      : {
-          ok: true,
-          value: existing.name,
-          nameKey: existing.nameKey || normalizeDesignationNameKey(existing.name),
-        };
-  if (!nextName.ok) return { statusCode: 400, body: { error: nextName.error } };
+  if (!isOrgDesignation(existing)) {
+    return { statusCode: 400, body: { error: LEGACY_RATE_EDIT } };
+  }
+  if (body?.name !== undefined) {
+    const parsedName = parseDesignationName(body.name);
+    if (!parsedName.ok) return { statusCode: 400, body: { error: parsedName.error } };
+    const currentKey = existing.nameKey || normalizeDesignationNameKey(existing.name);
+    if (parsedName.nameKey !== currentKey) {
+      return { statusCode: 400, body: { error: "Rename designations on the Department page." } };
+    }
+  }
+  if (String(existing.status || "").toUpperCase() !== STATUS_ACTIVE) {
+    return { statusCode: 400, body: { error: RATES_FOR_ACTIVE } };
+  }
   const internal =
     body?.internalHourlyRate !== undefined
       ? parseHourlyRate(body.internalHourlyRate)
@@ -832,16 +820,12 @@ async function handlePatchDesignation({
   const now = nowIso || new Date().toISOString();
   const item = {
     ...existing,
-    name: nextName.value,
-    nameKey: nextName.nameKey,
     internalHourlyRate: internal.value,
     externalHourlyRate: external.value,
     status: existing.status || STATUS_ACTIVE,
     updatedAt: now,
     updatedBy: auth.email,
   };
-  const oldKey = existing.nameKey || normalizeDesignationNameKey(existing.name);
-  const renamed = oldKey !== nextName.nameKey;
   const versionPuts = await versionPutsForMutation({
     ddb,
     tableName,
@@ -853,68 +837,27 @@ async function handlePatchDesignation({
     actor: auth.email,
   });
   try {
-    if (!renamed) {
-      await ddb.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: tableName,
-                Item: item,
-                ConditionExpression: "attribute_exists(PK)",
-              },
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: tableName,
+              Item: item,
+              ConditionExpression: "attribute_exists(PK)",
             },
-            ...versionPuts,
-          ],
-        })
-      );
-    } else {
-      await ddb.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: tableName,
-                Item: {
-                  PK: DESIGNATION_NAME_PK,
-                  SK: designationNameSk(nextName.nameKey),
-                  type: TYPE_DESIGNATION_NAME,
-                  designationId: id,
-                  nameKey: nextName.nameKey,
-                },
-                ConditionExpression: "attribute_not_exists(PK)",
-              },
-            },
-            {
-              Delete: {
-                TableName: tableName,
-                Key: {
-                  PK: DESIGNATION_NAME_PK,
-                  SK: designationNameSk(oldKey),
-                },
-                ConditionExpression:
-                  "attribute_exists(PK) AND designationId = :designationId",
-                ExpressionAttributeValues: { ":designationId": id },
-              },
-            },
-            {
-              Put: {
-                TableName: tableName,
-                Item: item,
-                ConditionExpression: "attribute_exists(PK)",
-              },
-            },
-            ...versionPuts,
-          ],
-        })
-      );
-    }
+          },
+          ...versionPuts,
+        ],
+      })
+    );
   } catch (err) {
-    if (!renamed && isSingleConditionalCheckFailed(err)) {
+    if (isSingleConditionalCheckFailed(err)) {
       return { statusCode: 404, body: { error: "Designation not found." } };
     }
-    const mapped = mapRenameTransactError(err);
-    if (mapped) return mapped;
+    if (err?.name === "TransactionCanceledException") {
+      return { statusCode: 500, body: { error: "Unable to save designation rates." } };
+    }
     throw err;
   }
   return { statusCode: 200, body: { designation: publicDesignation(item) } };
@@ -931,6 +874,7 @@ async function handleDesignationStatus({
 }) {
   const auth = await requireRatesAdmin({ user, ddb, accessTable });
   if (!auth.ok) return { statusCode: auth.statusCode, body: auth.body };
+  return { statusCode: 400, body: { error: RETIRED_ON_DEPARTMENT_PAGE } };
   const id = String(designationId || "").trim();
   if (!id) return { statusCode: 400, body: { error: "designationId required" } };
   const parsed = parseStatus(body?.status);
@@ -1074,6 +1018,18 @@ async function handleGetEmployee({
   return { statusCode: 200, body: { employee } };
 }
 
+async function designationsForLinks(ddb, tableName, links, currentId) {
+  const map = new Map();
+  const ids = [...(links || []).map((row) => row.designationId), currentId];
+  for (const id of ids) {
+    const key = String(id || "").trim();
+    if (!key || map.has(key)) continue;
+    const item = await getDesignationItem(ddb, tableName, key);
+    if (item) map.set(key, item);
+  }
+  return map;
+}
+
 async function handlePutEmployee({
   user,
   email,
@@ -1093,29 +1049,19 @@ async function handlePutEmployee({
     return { statusCode: 404, body: { error: "Employee not found." } };
   }
   const existing = await getEmployeeRatesItem(ddb, tableName, target);
-  let designationId = existing?.designationId || null;
-  if (body?.designationId !== undefined) {
-    const raw = body.designationId;
-    if (raw == null || String(raw).trim() === "") {
-      designationId = null;
-    } else {
-      designationId = String(raw).trim();
-      const designation = await getDesignationItem(ddb, tableName, designationId);
-      if (!designation) {
-        return { statusCode: 404, body: { error: "Designation not found." } };
-      }
-    }
-  }
-  if (!designationId) {
-    return {
-      statusCode: 400,
-      body: { error: "Select a managed designation." },
-    };
-  }
-  const designation = await getDesignationItem(ddb, tableName, designationId);
-  if (!designation) {
-    return { statusCode: 404, body: { error: "Designation not found." } };
-  }
+  const profile = await getProfileRow(ddb, profileTable, target);
+  const links = orgDesignations.existingLinks(profile);
+  const plan = costingDesignation.planCostingDesignation({
+    links,
+    designationById: await designationsForLinks(ddb, tableName, links, existing?.designationId),
+    currentDesignationId: existing?.designationId,
+    requested: body?.designationId,
+  });
+  if (!plan.ok) return { statusCode: 400, body: { error: plan.error } };
+  const designationId = plan.designationId || null;
+  const designation = designationId
+    ? await getDesignationItem(ddb, tableName, designationId)
+    : null;
   const internal =
     body?.internalHourlyRate !== undefined
       ? parseHourlyRate(body.internalHourlyRate)
@@ -1264,6 +1210,9 @@ module.exports = {
   TYPE_EMPLOYEE_COST_RATES,
   COST_RATES_SK,
   RATE_INVALID,
+  CREATED_ON_DEPARTMENT_PAGE,
+  RETIRED_ON_DEPARTMENT_PAGE,
+  RATES_FOR_ACTIVE,
   NAME_DUPLICATE,
   NAME_POINTER_CONFLICT,
   PATH_INVALID,

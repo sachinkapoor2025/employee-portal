@@ -262,6 +262,10 @@ exports.handler = async (event) => {
             name: profile.name || "",
             empId: profile.empId || "",
             department: profile.department || "",
+            departmentIds: Array.isArray(profile.departmentIds)
+              ? profile.departmentIds
+              : [],
+            primaryDepartmentId: profile.primaryDepartmentId || "",
             designation: profile.designation || "",
             skill: profile.skill || "",
             manager: profile.manager || "",

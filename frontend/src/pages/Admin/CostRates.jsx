@@ -5,15 +5,15 @@ import CostRatesCosting from "./CostRatesCosting";
 import Button from "../../components/ui/Button";
 import Modal, { confirmDiscardIfDirty } from "../../components/ui/Modal";
 import {
-  createCostRateDesignation,
   fetchCostRateDesignations,
   fetchCostRateEmployee,
   fetchCostRateEmployees,
+  fetchDepartments,
   saveCostRateEmployee,
-  setCostRateDesignationStatus,
   setCostRateEmployeeStatus,
   updateCostRateDesignation,
 } from "../../services/api";
+import { normalizeDepartmentNameKey } from "../../utils/departmentMembership";
 import {
   displayRateOrUnset,
   formatUsdRate,
@@ -46,6 +46,23 @@ const EMPTY_EMP_FORM = {
 
 function rateFieldValue(value) {
   return value == null ? "" : String(value);
+}
+
+function assignedCostingOptions(employee, designations) {
+  const byId = new Map((designations || []).map((row) => [row.designationId, row]));
+  const options = [];
+  const seen = new Set();
+  for (const link of employee?.departmentDesignations || []) {
+    const designationId = String(link?.designationId || "").trim();
+    const departmentId = String(link?.departmentId || "").trim();
+    if (!designationId || !departmentId || seen.has(designationId)) continue;
+    const designation = byId.get(designationId);
+    if (!designation || designation.departmentId !== departmentId) continue;
+    if (String(designation.status || "").toUpperCase() !== "ACTIVE") continue;
+    seen.add(designationId);
+    options.push(designation);
+  }
+  return options;
 }
 
 function ResolvedCell({ side }) {
@@ -82,6 +99,15 @@ function fallbackHint(designation, side) {
 export default function CostRates() {
   const [tab, setTab] = useState("designations");
   const [designations, setDesignations] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [orgDepartmentId, setOrgDepartmentId] = useState("");
+  const [orgTrack, setOrgTrack] = useState("");
+  const [legacyReport, setLegacyReport] = useState({
+    unmatched: [],
+    ambiguous: [],
+    pendingMatches: [],
+  });
+  const [employeeDepartmentId, setEmployeeDepartmentId] = useState("");
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -94,6 +120,7 @@ export default function CostRates() {
   const [desDirty, setDesDirty] = useState(false);
   const [editingDesId, setEditingDesId] = useState("");
   const [empForm, setEmpForm] = useState(EMPTY_EMP_FORM);
+  const [costingTouched, setCostingTouched] = useState(false);
   const [empModalOpen, setEmpModalOpen] = useState(false);
   const [empDirty, setEmpDirty] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -106,12 +133,21 @@ export default function CostRates() {
     if (!silent) setLoading(true);
     setError("");
     try {
-      const [desRes, empRes] = await Promise.all([
+      const [desRes, empRes, departmentRes] = await Promise.all([
         fetchCostRateDesignations(),
         fetchCostRateEmployees(),
+        fetchDepartments().catch(() => ({ departments: [] })),
       ]);
       setDesignations(Array.isArray(desRes?.designations) ? desRes.designations : []);
+      setLegacyReport({
+        unmatched: desRes?.legacyReport?.unmatched || [],
+        ambiguous: desRes?.legacyReport?.ambiguous || [],
+        pendingMatches: desRes?.legacyReport?.pendingMatches || [],
+      });
       setEmployees(Array.isArray(empRes?.employees) ? empRes.employees : []);
+      setDepartments(
+        Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+      );
     } catch (err) {
       setDesignations([]);
       setEmployees([]);
@@ -127,12 +163,47 @@ export default function CostRates() {
 
   const filteredEmployees = useMemo(() => {
     const q = employeeQuery.trim().toLowerCase();
-    if (!q) return employees;
     return employees.filter((row) => {
+      if (employeeDepartmentId) {
+        const ids = Array.isArray(row.departmentIds) ? row.departmentIds : [];
+        const department = departments.find(
+          (item) => item.departmentId === employeeDepartmentId
+        );
+        const legacyMatch =
+          !ids.length &&
+          department &&
+          normalizeDepartmentNameKey(row.department) ===
+            normalizeDepartmentNameKey(department.name);
+        if (!ids.includes(employeeDepartmentId) && !legacyMatch) return false;
+      }
+      if (!q) return true;
       const hay = `${row.email} ${row.name || ""} ${row.empId || ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [employees, employeeQuery]);
+  }, [employees, employeeQuery, employeeDepartmentId, departments]);
+
+  const departmentDesignations = useMemo(
+    () =>
+      designations.filter((row) => row.departmentId === orgDepartmentId),
+    [designations, orgDepartmentId]
+  );
+  const trackOptions = useMemo(() => {
+    const seen = new Map();
+    departmentDesignations.forEach((row) => {
+      const track = row.track || "Ungrouped";
+      if (!seen.has(track)) seen.set(track, row.trackSort || 0);
+    });
+    return [...seen.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+      .map(([track]) => track);
+  }, [departmentDesignations]);
+  const visibleDesignations = useMemo(
+    () =>
+      departmentDesignations
+        .filter((row) => (row.track || "Ungrouped") === orgTrack)
+        .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)),
+    [departmentDesignations, orgTrack]
+  );
 
   useEffect(() => {
     if (!pickerOpen) return undefined;
@@ -159,15 +230,6 @@ export default function CostRates() {
   const closeEmpModal = () => {
     setEmpModalOpen(false);
     setEmpDirty(false);
-  };
-
-  const startCreateDes = () => {
-    setEditingDesId("");
-    setDesForm(EMPTY_DES_FORM);
-    setDesDirty(false);
-    setDesModalOpen(true);
-    setMessage("");
-    setError("");
   };
 
   const startEditDes = (row) => {
@@ -203,18 +265,16 @@ export default function CostRates() {
     }
     setSavingDes(true);
     const payload = {
-      name: desForm.name,
       internalHourlyRate: internal.value,
       externalHourlyRate: external.value,
     };
     try {
-      if (editingDesId) {
-        await updateCostRateDesignation(editingDesId, payload);
-        setMessage("Designation updated.");
-      } else {
-        await createCostRateDesignation(payload);
-        setMessage("Designation created.");
+      if (!editingDesId) {
+        setError("Designations are created on the Department page.");
+        return;
       }
+      await updateCostRateDesignation(editingDesId, payload);
+      setMessage("Designation updated.");
       closeDesModal();
       await load({ silent: true });
     } catch (err) {
@@ -224,32 +284,12 @@ export default function CostRates() {
     }
   };
 
-  const toggleDesStatus = async (row) => {
-    const next =
-      String(row.status).toUpperCase() === "ACTIVE" ? "INACTIVE" : "ACTIVE";
-    setError("");
-    setMessage("");
-    setStatusBusy(`des:${row.designationId}`);
-    try {
-      await setCostRateDesignationStatus(row.designationId, next);
-      setMessage(
-        next === "INACTIVE"
-          ? "Designation deactivated."
-          : "Designation activated."
-      );
-      await load({ silent: true });
-    } catch (err) {
-      setError(err?.message || "Unable to update designation status.");
-    } finally {
-      setStatusBusy("");
-    }
-  };
-
   const selectEmployee = async (row) => {
     setError("");
     setMessage("");
     setPickerOpen(false);
     setEmpDirty(false);
+    setCostingTouched(false);
     setEmpModalOpen(true);
     setSelectedEmployee(row);
     setEmpForm({
@@ -262,6 +302,7 @@ export default function CostRates() {
       const res = await fetchCostRateEmployee(row.email);
       const employee = res?.employee || row;
       setSelectedEmployee(employee);
+      setCostingTouched(false);
       setEmpForm({
         email: employee.email,
         designationId: employee.designationId || "",
@@ -311,8 +352,25 @@ export default function CostRates() {
       setError("Select an employee.");
       return;
     }
-    if (!empForm.designationId) {
-      setError("Select a managed designation.");
+    const assigned = assignedCostingOptions(selectedEmployee, designations);
+    const storedId = String(selectedEmployee?.designationId || "");
+    let designationId = empForm.designationId;
+    if (!costingTouched && !designationId && assigned.length === 1 && !storedId) {
+      designationId = assigned[0].designationId;
+    }
+    if (!designationId && !costingTouched) {
+      setError(
+        storedId
+          ? "Choose an assigned costing designation or clear it."
+          : "Select which assigned designation is used for costing, or clear it."
+      );
+      return;
+    }
+    if (
+      designationId &&
+      !assigned.some((row) => row.designationId === designationId)
+    ) {
+      setError("Costing designation must be an active designation assigned to this employee.");
       return;
     }
     const internal = parseUsdRateInput(empForm.internalHourlyRate);
@@ -328,12 +386,13 @@ export default function CostRates() {
     setSavingEmp(true);
     try {
       await saveCostRateEmployee(empForm.email, {
-        designationId: empForm.designationId,
+        designationId,
         internalHourlyRate: internal.value,
         externalHourlyRate: external.value,
       });
       setMessage("Employee rates saved.");
       setEmpDirty(false);
+      setCostingTouched(false);
       await load({ silent: true });
       const res = await fetchCostRateEmployee(empForm.email);
       if (res?.employee) {
@@ -378,9 +437,13 @@ export default function CostRates() {
     }
   };
 
-  const linkedDesignation = designations.find(
-    (row) => row.designationId === empForm.designationId
-  );
+  const assignedOptions = assignedCostingOptions(selectedEmployee, designations);
+  const linkedDesignation =
+    assignedOptions.find((row) => row.designationId === empForm.designationId) ||
+    designations.find((row) => row.designationId === empForm.designationId);
+  const storedCostingMissing =
+    Boolean(selectedEmployee?.designationId) &&
+    !assignedOptions.some((row) => row.designationId === selectedEmployee.designationId);
   const pageAlert = !desModalOpen && !empModalOpen;
   const activeOptionId =
     activeIndex >= 0 ? `emp-suggestion-${activeIndex}` : undefined;
@@ -443,17 +506,57 @@ export default function CostRates() {
         <div style={pageCard}>
           <div className="dgv-cost-rates-head">
             <div>
-              <h2>Designations</h2>
+              <h2>Department designations</h2>
               <p className="dgv-cost-rates-note">
-                Leave a rate blank to leave it unset. Do not enter 0.
+                Choose a department, then a track. Rates can be entered only for
+                designations that already exist on the Department page.
               </p>
             </div>
-            <Button type="button" onClick={startCreateDes}>
-              + New designation
-            </Button>
           </div>
-          {designations.length === 0 ? (
-            <p style={pageSubtitle}>No designations yet.</p>
+          <label style={formLabel} htmlFor="org-department">
+            Department
+            <select
+              id="org-department"
+              style={formInput}
+              value={orgDepartmentId}
+              onChange={(event) => {
+                setOrgDepartmentId(event.target.value);
+                setOrgTrack("");
+              }}
+            >
+              <option value="">Select a department</option>
+              {departments.map((row) => (
+                <option key={row.departmentId} value={row.departmentId}>
+                  {row.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={formLabel} htmlFor="org-track">
+            Track
+            <select
+              id="org-track"
+              style={formInput}
+              value={orgTrack}
+              onChange={(event) => setOrgTrack(event.target.value)}
+              disabled={!orgDepartmentId}
+            >
+              <option value="">Select a track</option>
+              {trackOptions.map((track) => (
+                <option key={track} value={track}>
+                  {track}
+                </option>
+              ))}
+            </select>
+          </label>
+          {!orgDepartmentId || !orgTrack ? (
+            <p style={pageSubtitle}>
+              Select a department and track to see its designations.
+            </p>
+          ) : visibleDesignations.length === 0 ? (
+            <p style={pageSubtitle}>
+              This track has no designations. Add them on the Department page.
+            </p>
           ) : (
             <div className="dgv-cost-rates-table-wrap">
               <table className="dgv-cost-rates-table">
@@ -467,7 +570,7 @@ export default function CostRates() {
                   </tr>
                 </thead>
                 <tbody>
-                  {designations.map((row) => (
+                  {visibleDesignations.map((row) => (
                     <tr key={row.designationId}>
                       <td data-label="Designation name">
                         {row.name}
@@ -483,26 +586,19 @@ export default function CostRates() {
                       </td>
                       <td data-label="Status">{row.status}</td>
                       <td data-label="Actions">
-                        <div className="dgv-cost-rates-actions">
+                        {String(row.status).toUpperCase() === "ACTIVE" ? (
                           <Button
                             type="button"
                             variant="secondary"
                             onClick={() => startEditDes(row)}
                           >
-                            Edit
+                            Edit rate
                           </Button>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            loading={statusBusy === `des:${row.designationId}`}
-                            disabled={Boolean(statusBusy)}
-                            onClick={() => toggleDesStatus(row)}
-                          >
-                            {String(row.status).toUpperCase() === "ACTIVE"
-                              ? "Deactivate"
-                              : "Activate"}
-                          </Button>
-                        </div>
+                        ) : (
+                          <span className="dgv-cost-rates-note">
+                            Retired on the Department page
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -510,6 +606,35 @@ export default function CostRates() {
               </table>
             </div>
           )}
+          {legacyReport.unmatched.length ||
+          legacyReport.ambiguous.length ||
+          legacyReport.pendingMatches.length ? (
+            <div style={{ marginTop: 16 }}>
+              <h3>Legacy costing rows</h3>
+              <p className="dgv-cost-rates-note">
+                These older costing designations are not edited here. A shared
+                name is not treated as the same designation. Review each row
+                and choose the employee’s assigned designation manually.
+              </p>
+              <ul>
+                {legacyReport.pendingMatches.map((row) => (
+                  <li key={row.designationId}>
+                    {row.name}: {row.reason || row.action}
+                  </li>
+                ))}
+                {legacyReport.ambiguous.map((row) => (
+                  <li key={row.designationId}>
+                    {row.name}: {row.reason}
+                  </li>
+                ))}
+                {legacyReport.unmatched.map((row) => (
+                  <li key={row.designationId}>
+                    {row.name}: {row.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -523,9 +648,25 @@ export default function CostRates() {
         <div style={pageCard}>
           <h2 style={{ marginTop: 0, fontSize: 18 }}>Employees</h2>
           <p style={{ ...pageSubtitle, marginTop: 0 }}>
-            Search for an employee, then set personal rates. A blank rate stays
-            unset and falls back to the linked designation.
+            Choose a department, then search employees in that department.
+            Personal rates still override the linked costing designation.
           </p>
+          <label style={formLabel} htmlFor="employee-department">
+            Department
+            <select
+              id="employee-department"
+              style={formInput}
+              value={employeeDepartmentId}
+              onChange={(event) => setEmployeeDepartmentId(event.target.value)}
+            >
+              <option value="">All departments</option>
+              {departments.map((row) => (
+                <option key={row.departmentId} value={row.departmentId}>
+                  {row.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <label style={formLabel} htmlFor="emp-search">
             Search employees
           </label>
@@ -604,7 +745,7 @@ export default function CostRates() {
         onClose={closeDesModal}
         dirty={desDirty}
         closeDisabled={savingDes}
-        title={editingDesId ? "Edit designation" : "New designation"}
+        title="Edit designation"
         footer={
           <div className="dgv-cost-rates-actions">
             <Button
@@ -613,7 +754,7 @@ export default function CostRates() {
               loading={savingDes}
               disabled={savingDes}
             >
-              {editingDesId ? "Save designation" : "Create designation"}
+              Save designation
             </Button>
             <Button
               type="button"
@@ -645,11 +786,7 @@ export default function CostRates() {
               id="des-name"
               style={formInput}
               value={desForm.name}
-              onChange={(event) => {
-                setDesDirty(true);
-                setDesForm((form) => ({ ...form, name: event.target.value }));
-              }}
-              required
+              readOnly
             />
           </label>
           <label style={formLabel} htmlFor="des-internal">
@@ -746,33 +883,79 @@ export default function CostRates() {
               Profile designation (not used for costing):{" "}
               {selectedEmployee.profileDesignation || "—"}
             </p>
+            <p style={pageSubtitle}>
+              Departments:{" "}
+              {(selectedEmployee.departmentIds || [])
+                .map(
+                  (id) =>
+                    departments.find((row) => row.departmentId === id)?.name || id
+                )
+                .join(", ") || selectedEmployee.department || "—"}
+              {(selectedEmployee.departmentDesignations || []).length
+                ? ` · Assigned: ${selectedEmployee.departmentDesignations
+                    .map((row) => {
+                      const match = designations.find(
+                        (item) => item.designationId === row.designationId
+                      );
+                      const departmentName =
+                        departments.find((item) => item.departmentId === row.departmentId)
+                          ?.name || row.departmentId;
+                      return `${departmentName} · ${match?.track || "Track not set"} · ${
+                        match?.name || row.designationId
+                      }`;
+                    })
+                    .join("; ")}`
+                : ""}
+            </p>
             <form
               id="employee-rate-form"
               className="dgv-cost-rates-form"
               onSubmit={saveEmployee}
             >
+              {storedCostingMissing && !costingTouched ? (
+                <p className="dgv-cost-rates-hint">
+                  The current costing designation is no longer an active assignment.
+                  Choose an assigned designation or clear it.
+                </p>
+              ) : null}
               <label style={formLabel} htmlFor="emp-des">
-                Linked designation
+                Costing designation
                 <select
                   id="emp-des"
                   style={formInput}
-                  value={empForm.designationId}
+                  value={
+                    assignedOptions.some((row) => row.designationId === empForm.designationId)
+                      ? empForm.designationId
+                      : empForm.designationId
+                        ? "__needs-choice"
+                        : ""
+                  }
                   onChange={(event) => {
+                    if (event.target.value === "__needs-choice") return;
                     setEmpDirty(true);
+                    setCostingTouched(true);
                     setEmpForm((form) => ({
                       ...form,
                       designationId: event.target.value,
                     }));
                   }}
-                  required
                 >
-                  <option value="">Select designation</option>
-                  {designations.map((row) => (
+                  <option value="">
+                    {assignedOptions.length
+                      ? "Clear costing designation"
+                      : "No assigned designation"}
+                  </option>
+                  {empForm.designationId &&
+                  !assignedOptions.some((row) => row.designationId === empForm.designationId) ? (
+                    <option value="__needs-choice">Choose an assigned designation</option>
+                  ) : null}
+                  {assignedOptions.map((row) => (
                     <option key={row.designationId} value={row.designationId}>
+                      {departments.find((item) => item.departmentId === row.departmentId)?.name ||
+                        row.departmentId}
+                      {" · "}
+                      {row.track ? `${row.track} · ` : ""}
                       {row.name}
-                      {String(row.status).toUpperCase() === "INACTIVE"
-                        ? " (inactive)"
-                        : ""}
                     </option>
                   ))}
                 </select>

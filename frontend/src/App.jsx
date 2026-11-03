@@ -42,6 +42,8 @@ import EmployeeTracking from "./pages/Admin/EmployeeTracking";
 import EmployeeTrackingHub from "./pages/Admin/EmployeeTrackingHub";
 import ComingSoon from "./pages/Admin/ComingSoon";
 import ManageShifts from "./pages/Admin/ManageShifts";
+import ManageDepartments from "./pages/Admin/ManageDepartments";
+import DepartmentDetail from "./pages/Admin/DepartmentDetail";
 import CostRates from "./pages/Admin/CostRates";
 import ProjectCosting from "./pages/Admin/ProjectCosting";
 import { canManageCostRates } from "./constants/roles";
@@ -290,6 +292,22 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <ManageUsers />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/departments"
+          element={
+            <RequireAuth adminOnly>
+              <ManageDepartments />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/departments/:departmentId"
+          element={
+            <RequireAuth adminOnly>
+              <DepartmentDetail />
             </RequireAuth>
           }
         />
