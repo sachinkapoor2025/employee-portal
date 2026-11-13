@@ -4,6 +4,7 @@ const { loadCurrentAssignedShift } = require("../attendance/assignedShift");
 const escalation = require("./escalation");
 const { isPendingScheduledTask } = require("./shiftCatalog");
 const taskReadAccess = require("./taskReadAccess");
+const profileOrg = require("./profileOrg");
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TASK_LIMIT = 50;
@@ -208,16 +209,23 @@ function publicPresenceEvent(item) {
   };
 }
 
-async function loadEmployee(ddb, profileTable, email) {
+async function loadEmployee(ddb, profileTable, workTable, email) {
   const profile = await getItem(ddb, profileTable, {
     PK: `USER#${email}`,
     SK: "PROFILE",
   });
+  let department = "";
+  try {
+    const labels = await profileOrg.labelsForProfile(ddb, workTable, profile || {});
+    department = labels.department;
+  } catch (err) {
+    console.error("MY_ACTIVITY_DEPARTMENT_ERROR", err?.name);
+  }
   return {
     email,
     name: profile?.name || "",
     empId: profile?.empId || "",
-    department: profile?.department || "",
+    department,
   };
 }
 
@@ -370,7 +378,7 @@ async function handleGetMyActivity({
       : await loadCurrentAssignedShift(ddb, workTable, email);
     const shift = snapshotShift || shiftFromCurrent(current);
     const [employee, tasks, presence] = await Promise.all([
-      loadEmployee(ddb, profileTable, email),
+      loadEmployee(ddb, profileTable, workTable, email),
       loadTasks(ddb, workTable, email, date, nowMs),
       loadPresence(ddb, activityTable, email, date),
     ]);

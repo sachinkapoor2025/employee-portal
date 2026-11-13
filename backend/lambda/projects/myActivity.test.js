@@ -76,13 +76,27 @@ function createMemoryDdb() {
 }
 
 function seedProfile(ddb, email, extra = {}) {
+  const departmentName = extra.department || "Engineering";
+  const departmentId =
+    extra.departmentId ||
+    `dept-${departmentName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   ddb.seed(PROFILE, {
     PK: `USER#${email}`,
     SK: "PROFILE",
     email,
     name: extra.name || "Priya",
     empId: extra.empId || "DGV-101",
-    department: extra.department || "Engineering",
+    department: `legacy-${departmentName}`,
+    departmentIds: extra.departmentIds || [departmentId],
+    primaryDepartmentId: extra.primaryDepartmentId || departmentId,
+  });
+  ddb.seed(WORK, {
+    PK: "ENTITY#DEPARTMENT",
+    SK: `DEPARTMENT#${departmentId}`,
+    type: "DEPARTMENT",
+    departmentId,
+    name: departmentName,
+    status: "ACTIVE",
   });
 }
 
@@ -491,6 +505,7 @@ function authEvent(email, query = {}) {
     assert.strictEqual(res.body.employee.name, "Priya");
     assert.strictEqual(res.body.employee.empId, "DGV-101");
     assert.strictEqual(res.body.employee.department, "Engineering");
+    assert.notStrictEqual(res.body.employee.department, "legacy-Engineering");
     assert.ok(Array.isArray(res.body.tasks));
     assert.strictEqual(res.body.shift.source, "current");
     assert.strictEqual(res.body.shift.startTime, "11:00");

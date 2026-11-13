@@ -6,6 +6,8 @@ import { StatCard } from "../../components/ui/Card";
 import {
   fetchUserProfile,
   fetchUsers,
+  fetchDepartments,
+  fetchDepartmentDesignations,
   fetchAttendance,
   fetchTasks,
   fetchAllLeave,
@@ -48,6 +50,7 @@ import {
   trendPercentHint,
   trendRangeForSelectedWeek,
 } from "../../utils/adminEmployeeActivity";
+import { structuredOrgLabels } from "../../utils/departmentMembership";
 
 const BASE_TABS = [
   "Overview",
@@ -130,6 +133,8 @@ export default function EmployeeTracking() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [profile, setProfile] = useState(null);
+  const [departments, setDepartments] = useState([]);
+  const [designationsByDepartment, setDesignationsByDepartment] = useState({});
   const [access, setAccess] = useState(null);
   const [attendance, setAttendance] = useState(null);
   const [tasks, setTasks] = useState(null);
@@ -148,13 +153,33 @@ export default function EmployeeTracking() {
       setLoading(true);
       setError("");
       try {
-        const [p, users, shiftResult] = await Promise.all([
+        const [p, users, shiftResult, departmentRes] = await Promise.all([
           fetchUserProfile(email),
           fetchUsers(),
           fetchEmployeeShift(email).catch(() => ({ shift: null })),
+          fetchDepartments().catch(() => ({ departments: [] })),
         ]);
         if (cancelled) return;
-        setProfile(p || {});
+        const loadedProfile = p || {};
+        const ids = Array.isArray(loadedProfile.departmentIds)
+          ? loadedProfile.departmentIds.map((id) => String(id || "").trim()).filter(Boolean)
+          : [];
+        const designationEntries = await Promise.all(
+          ids.map(async (id) => {
+            try {
+              const res = await fetchDepartmentDesignations(id);
+              return [id, Array.isArray(res?.designations) ? res.designations : []];
+            } catch {
+              return [id, []];
+            }
+          })
+        );
+        if (cancelled) return;
+        setProfile(loadedProfile);
+        setDepartments(
+          Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+        );
+        setDesignationsByDepartment(Object.fromEntries(designationEntries));
         setAccess(
           (Array.isArray(users) ? users : []).find(
             (u) => u.email?.toLowerCase() === email
@@ -245,6 +270,8 @@ export default function EmployeeTracking() {
     };
   }, [tab, email, leaveRows]);
 
+  const org = structuredOrgLabels(profile, departments, designationsByDepartment);
+
   return (
     <Layout>
       <div style={pageCard}>
@@ -265,7 +292,7 @@ export default function EmployeeTracking() {
           <>
             <h2 style={pageTitle}>{profile?.name || email}</h2>
             <p style={pageSubtitle}>
-              {[profile?.empId, email, profile?.department, profile?.designation]
+              {[profile?.empId, email, org.department, org.designation]
                 .filter(Boolean)
                 .join(" · ") || "Employee tracking"}
             </p>
@@ -280,8 +307,8 @@ export default function EmployeeTracking() {
             >
               <Meta label="Employee ID" value={profile?.empId} />
               <Meta label="Email" value={email} />
-              <Meta label="Department" value={profile?.department} />
-              <Meta label="Designation" value={profile?.designation} />
+              <Meta label="Department" value={org.department} />
+              <Meta label="Designation" value={org.designation} />
               <Meta label="Account Status" value={access?.status} />
               <Meta label="Role" value={roleLabel(access?.role)} />
             </div>
@@ -332,7 +359,7 @@ export default function EmployeeTracking() {
                   leaveRows={leaveRows}
                   assignedShift={assignedShift}
                   skill={profile?.skill}
-                  designation={profile?.designation}
+                  designation={org.designation}
                   onOpenTab={selectTab}
                 />
               ) : tab === "Attendance" ? (
@@ -359,10 +386,10 @@ export default function EmployeeTracking() {
               ) : tab === "Performance" ? (
                 <PerformancePanel
                   skill={profile?.skill}
-                  designation={profile?.designation}
+                  designation={org.designation}
                 />
               ) : (
-                <ActivityPanel email={email} profile={profile} />
+                <ActivityPanel email={email} profile={profile} department={org.department} />
               )}
             </div>
           </>
@@ -1208,7 +1235,7 @@ function trendComparison(trend, key, current) {
   return trendPercentHint(current, trend.averages?.[key]) || "—";
 }
 
-function ActivityPanel({ email, profile }) {
+function ActivityPanel({ email, profile, department = "" }) {
   const [weekStart, setWeekStart] = useState(() => currentWeekStartKey());
   const [attendanceMetrics, setAttendanceMetrics] = useState(
     EMPTY_ATTENDANCE_METRICS
@@ -1283,7 +1310,7 @@ function ActivityPanel({ email, profile }) {
   }, [weekStart, load]);
 
   const weekRange = formatWeekRange(weekStart);
-  const employeeLine = [profile?.name, profile?.empId, profile?.department]
+  const employeeLine = [profile?.name, profile?.empId, department]
     .filter(Boolean)
     .join(" · ");
   const present = metricNumber(attendanceMetrics, "present");

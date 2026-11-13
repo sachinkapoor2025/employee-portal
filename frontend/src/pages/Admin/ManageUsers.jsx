@@ -8,6 +8,7 @@ import {
   fetchUsers,
   fetchUserProfile,
   fetchDepartments,
+  fetchDepartmentDesignations,
   updateUserStatus,
   updateUserRole,
   deleteUser,
@@ -30,14 +31,37 @@ import {
 } from "../../theme";
 import {
   departmentFilterOptions,
+  designationFilterOptions,
+  employeeListDepartments,
+  employeeListDesignation,
   employeeMatchesDepartmentFilter,
-  formatDepartmentList,
+  employeeMatchesDesignationFilter,
+  employeeMatchesSearch,
 } from "../../utils/departmentMembership";
+
+function DepartmentAssignments({ user, catalog }) {
+  const rows = employeeListDepartments(user, catalog);
+  if (!rows.length) return "—";
+  if (rows.length === 1 && rows[0].kind === "legacy") return rows[0].name;
+  return (
+    <div className="dgv-employees-assignments">
+      {rows.map((row) => (
+        <div key={`${row.kind}-${row.label}-${row.name}`}>
+          <div className="dgv-employees-assignment__label">{row.label}</div>
+          <div className="dgv-employees-assignment__value">
+            {row.note ? `${row.name} (${row.note})` : row.name}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function ManageUsers() {
   const navigate = useNavigate();
   const [users, setUsers] = useState([]);
   const [departmentCatalog, setDepartmentCatalog] = useState([]);
+  const [designationsByDepartment, setDesignationsByDepartment] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -65,49 +89,58 @@ export default function ManageUsers() {
         fetchUsers(),
         fetchDepartments().catch(() => ({ departments: [] })),
       ]);
-      const list = Array.isArray(data) ? data : [];
-      setDepartmentCatalog(
-        Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
+      const catalog = Array.isArray(departmentRes?.departments)
+        ? departmentRes.departments
+        : [];
+      setDepartmentCatalog(catalog);
+      const listed = (Array.isArray(data) ? data : []).map((user) => ({
+        ...user,
+        email: String(user.email || "").trim().toLowerCase(),
+        departmentIds: Array.isArray(user.departmentIds) ? user.departmentIds : [],
+      }));
+      const listSuppliesLinks = listed.some((user) =>
+        Array.isArray(user.departmentDesignations)
       );
-
-      // Live GET /admin/users may only return email/role/status until backend deploy.
-      // Merge each employee's saved profile so name, empId, department, etc. show.
       const enriched = await Promise.all(
-        list.map(async (u) => {
-          const email = String(u.email || "").trim().toLowerCase();
-          if (!email) return u;
+        listed.map(async (user) => {
+          if (Array.isArray(user.departmentDesignations)) return user;
+          if (listSuppliesLinks || !user.email) {
+            return { ...user, departmentDesignations: [] };
+          }
           try {
-            const profile = await fetchUserProfile(email);
-            if (!profile || (!profile.name && !profile.empId && !profile.PK)) {
-              return { ...u, email };
-            }
+            const profile = await fetchUserProfile(user.email);
             return {
-              ...u,
-              email,
-              name: profile.name || u.name || "",
-              empId: profile.empId || u.empId || "",
-              department: profile.department || u.department || "",
-              departmentIds: Array.isArray(profile.departmentIds)
-                ? profile.departmentIds
-                : Array.isArray(u.departmentIds)
-                  ? u.departmentIds
-                  : [],
-              primaryDepartmentId:
-                profile.primaryDepartmentId || u.primaryDepartmentId || "",
-              designation: profile.designation || u.designation || "",
-              skill: profile.skill || u.skill || "",
-              manager: profile.manager || u.manager || "",
-              groupLead: profile.groupLead || u.groupLead || "",
-              phone: profile.phone || u.phone || "",
-              doj: profile.doj || u.doj || "",
+              ...user,
+              departmentDesignations: Array.isArray(profile?.departmentDesignations)
+                ? profile.departmentDesignations
+                : [],
             };
           } catch (err) {
-            console.warn("Profile enrich failed for", email, err);
-            return { ...u, email };
+            console.warn("Assignment links unavailable for", user.email, err);
+            return { ...user, departmentDesignations: [] };
           }
         })
       );
 
+      const departmentIds = [
+        ...new Set(
+          enriched.flatMap((user) =>
+            Array.isArray(user.departmentIds) ? user.departmentIds : []
+          )
+        ),
+      ];
+      const designationEntries = await Promise.all(
+        departmentIds.map(async (id) => {
+          try {
+            const res = await fetchDepartmentDesignations(id);
+            return [id, Array.isArray(res?.designations) ? res.designations : []];
+          } catch (err) {
+            console.warn("Designation catalog failed for", id, err);
+            return [id, []];
+          }
+        })
+      );
+      setDesignationsByDepartment(Object.fromEntries(designationEntries));
       setUsers(enriched);
     } catch (err) {
       console.error(err);
@@ -125,12 +158,20 @@ export default function ManageUsers() {
     [users, departmentCatalog]
   );
 
-  const designations = useMemo(() => {
-    const set = new Set(
-      users.map((u) => u.designation).filter((d) => d && String(d).trim())
-    );
-    return Array.from(set).sort();
-  }, [users]);
+  const designations = useMemo(
+    () =>
+      designationFilterOptions(users, designationsByDepartment, {
+        departmentId: filterDept,
+        departments: departmentCatalog,
+      }),
+    [users, designationsByDepartment, filterDept, departmentCatalog]
+  );
+
+  useEffect(() => {
+    if (filterDesignation && !designations.includes(filterDesignation)) {
+      setFilterDesignation("");
+    }
+  }, [filterDesignation, designations]);
 
   const openProfileView = (email) => {
     navigate(`/admin/employees/${encodeURIComponent(email)}`);
@@ -202,22 +243,23 @@ export default function ManageUsers() {
     ) {
       return false;
     }
-    if (filterDesignation && (u.designation || "") !== filterDesignation) {
+    if (
+      filterDesignation &&
+      !employeeMatchesDesignationFilter(
+        u,
+        filterDesignation,
+        designationsByDepartment,
+        filterDept
+      )
+    ) {
       return false;
     }
-    if (!query) return true;
-    const hay = [
-      u.name,
-      u.email,
-      u.empId,
-      u.department,
-      formatDepartmentList(u, departmentCatalog).join(" "),
-      u.designation,
-      u.role,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(query);
+    return employeeMatchesSearch(
+      u,
+      query,
+      departmentCatalog,
+      designationsByDepartment
+    );
   });
 
   const summaryCards = useMemo(() => {
@@ -452,10 +494,14 @@ export default function ManageUsers() {
                         <td style={{ fontWeight: 600 }}>{u.name || "—"}</td>
                         <td>{u.empId || "—"}</td>
                         <td>
-                          {formatDepartmentList(u, departmentCatalog).join(", ") ||
-                            "—"}
+                          <DepartmentAssignments
+                            user={u}
+                            catalog={departmentCatalog}
+                          />
                         </td>
-                        <td>{u.designation || "—"}</td>
+                        <td>
+                          {employeeListDesignation(u, designationsByDepartment)}
+                        </td>
                         <td>
                           <span
                             className={`dgv-badge ${

@@ -24,26 +24,15 @@ export function summarizeDepartments(user, catalog) {
     };
   });
   const primary = String(user?.primaryDepartmentId || "").trim();
-  const legacy = String(user?.department || "").trim();
-  const legacyKey = normalizeDepartmentNameKey(legacy);
-  const represented =
-    memberships.some((row) => normalizeDepartmentNameKey(row.name) === legacyKey) ||
-    (catalog || []).some(
-      (row) => normalizeDepartmentNameKey(row.name) === legacyKey
-    );
   return {
     memberships,
     primaryDepartmentId: ids.includes(primary) ? primary : ids[0] || "",
-    legacyUnmatched: legacy && !represented ? legacy : "",
   };
 }
 
 export function formatDepartmentList(user, catalog) {
   const summary = summarizeDepartments(user, catalog);
-  if (!summary.memberships.length) {
-    const legacy = String(user?.department || "").trim();
-    return legacy ? [legacy] : [];
-  }
+  if (!summary.memberships.length) return [];
   const names = summary.memberships.map((row) => {
     const primary =
       summary.memberships.length > 1 &&
@@ -54,45 +43,157 @@ export function formatDepartmentList(user, catalog) {
       String(row.status).toUpperCase() === "ACTIVE" ? "" : " (inactive)";
     return `${row.name}${primary}${inactive}`;
   });
-  if (summary.legacyUnmatched) {
-    names.push(`${summary.legacyUnmatched} (unmatched)`);
-  }
   return names;
 }
 
 export function departmentFilterOptions(users, catalog) {
-  const options = (catalog || [])
-    .map((row) => ({ value: row.departmentId, label: row.name }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-  const extras = new Set();
-  for (const user of users || []) {
-    const summary = summarizeDepartments(user, catalog);
-    if (summary.legacyUnmatched && departmentIdsOf(user).length === 0) {
-      extras.add(summary.legacyUnmatched);
-    }
+  const byId = new Map((catalog || []).map((row) => [row.departmentId, row]));
+  const assignedIds = new Set(
+    (users || []).flatMap((user) => departmentIdsOf(user))
+  );
+  const options = [];
+  for (const row of catalog || []) {
+    const active = String(row.status || "").toUpperCase() === "ACTIVE";
+    if (!active && !assignedIds.has(row.departmentId)) continue;
+    options.push({
+      value: row.departmentId,
+      label: active ? row.name : `${row.name} (inactive)`,
+    });
   }
-  for (const text of [...extras].sort()) {
-    options.push({ value: `legacy:${text}`, label: `${text} (unmatched)` });
+  for (const id of assignedIds) {
+    if (byId.has(id)) continue;
+    options.push({ value: id, label: `${id} (missing from catalog)` });
   }
-  return options;
+  return options.sort((a, b) => a.label.localeCompare(b.label));
 }
 
-export function employeeMatchesDepartmentFilter(user, filter, catalog) {
-  if (!filter) return true;
-  if (String(filter).startsWith("legacy:")) {
-    const text = String(filter).slice("legacy:".length);
-    const summary = summarizeDepartments(user, catalog);
-    return (
-      summary.legacyUnmatched === text && departmentIdsOf(user).length === 0
-    );
-  }
+function designationCatalogIds(designationsByDepartment, departmentId) {
+  const selected = String(departmentId || "").trim();
+  if (selected) return [selected];
+  return Object.keys(designationsByDepartment || {});
+}
+
+export function designationForDepartment(user, departmentId, designationsByDepartment) {
   const ids = departmentIdsOf(user);
-  if (ids.includes(filter)) return true;
-  if (ids.length) return false;
-  const department = (catalog || []).find((row) => row.departmentId === filter);
-  if (!department) return false;
-  return (
-    normalizeDepartmentNameKey(user?.department) ===
-    normalizeDepartmentNameKey(department.name)
+  if (!ids.length) return "—";
+  const target =
+    String(departmentId || "").trim() || summarizeDepartments(user, []).primaryDepartmentId;
+  if (!target || !ids.includes(target)) return "No designation";
+  const link = (user?.departmentDesignations || []).find(
+    (row) => String(row?.departmentId || "").trim() === target
   );
+  const designationId = String(link?.designationId || "").trim();
+  if (!designationId) return "No designation";
+  const designation = (designationsByDepartment?.[target] || []).find(
+    (row) => row?.designationId === designationId
+  );
+  const name = String(designation?.name || "").trim();
+  const owner = String(designation?.departmentId || "").trim();
+  if (!designation || !name || (owner && owner !== target)) return "Designation unavailable";
+  return String(designation.status || "").toUpperCase() === "ACTIVE"
+    ? name
+    : "Designation inactive";
+}
+
+export function designationFilterOptions(
+  users,
+  designationsByDepartment,
+  { departmentId = "", departments = [] } = {}
+) {
+  const selected = String(departmentId || "").trim();
+  const labels = new Set();
+  for (const id of designationCatalogIds(designationsByDepartment, selected)) {
+    for (const row of designationsByDepartment?.[id] || []) {
+      const name = String(row?.name || "").trim();
+      if (name && String(row?.status || "").toUpperCase() === "ACTIVE") {
+        labels.add(name);
+      }
+    }
+  }
+  for (const user of users || []) {
+    if (selected && !employeeMatchesDepartmentFilter(user, selected, departments)) continue;
+    const label = designationForDepartment(user, selected, designationsByDepartment);
+    if (label && label !== "—") labels.add(label);
+  }
+  return [...labels].sort((a, b) => a.localeCompare(b));
+}
+
+export function employeeMatchesDesignationFilter(
+  user,
+  filter,
+  designationsByDepartment,
+  departmentId = ""
+) {
+  if (!filter) return true;
+  return designationForDepartment(user, departmentId, designationsByDepartment) === filter;
+}
+
+export function employeeMatchesSearch(user, query, catalog, designationsByDepartment) {
+  const text = String(query || "").trim().toLowerCase();
+  if (!text) return true;
+  const departments = employeeListDepartments(user, catalog)
+    .map((row) => [row.name, row.note].filter(Boolean).join(" "))
+    .join(" ");
+  const designation = employeeListDesignation(user, designationsByDepartment);
+  const hay = [
+    user?.name,
+    user?.email,
+    user?.empId,
+    departments,
+    designation === "—" ? "" : designation,
+    user?.role,
+  ]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(text);
+}
+
+function describedMembership(row) {
+  const missing = row.status === "MISSING";
+  const inactive = !missing && String(row.status || "").toUpperCase() !== "ACTIVE";
+  return {
+    name: missing ? row.departmentId : row.name,
+    note: missing ? "missing from catalog" : inactive ? "inactive" : "",
+  };
+}
+
+export function structuredOrgLabels(user, catalog, designationsByDepartment) {
+  const department = employeeListDepartments(user, catalog)
+    .map((row) => [row.name, row.note].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(", ");
+  const raw = employeeListDesignation(user, designationsByDepartment);
+  const designation = !raw || raw === "—" || raw === "No designation" ? "" : raw;
+  return { department, designation };
+}
+
+export function employeeListDepartments(user, catalog) {
+  const summary = summarizeDepartments(user, catalog);
+  if (!summary.memberships.length) return [];
+  const main =
+    summary.memberships.find((row) => row.departmentId === summary.primaryDepartmentId) ||
+    summary.memberships[0];
+  const subsidiaries = summary.memberships.filter(
+    (row) => row.departmentId !== main.departmentId
+  );
+  return [
+    { kind: "main", label: "Main Department", ...describedMembership(main) },
+    ...subsidiaries.map((row, index) => ({
+      kind: "subsidiary",
+      label:
+        subsidiaries.length > 1
+          ? `Subsidiary Department ${index + 1}`
+          : "Subsidiary Department",
+      ...describedMembership(row),
+    })),
+  ];
+}
+
+export function employeeListDesignation(user, designationsByDepartment) {
+  return designationForDepartment(user, "", designationsByDepartment);
+}
+
+export function employeeMatchesDepartmentFilter(user, filter) {
+  if (!filter) return true;
+  return departmentIdsOf(user).includes(filter);
 }

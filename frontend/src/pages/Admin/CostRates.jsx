@@ -13,7 +13,6 @@ import {
   setCostRateEmployeeStatus,
   updateCostRateDesignation,
 } from "../../services/api";
-import { normalizeDepartmentNameKey } from "../../utils/departmentMembership";
 import {
   displayRateOrUnset,
   formatUsdRate,
@@ -166,21 +165,13 @@ export default function CostRates() {
     return employees.filter((row) => {
       if (employeeDepartmentId) {
         const ids = Array.isArray(row.departmentIds) ? row.departmentIds : [];
-        const department = departments.find(
-          (item) => item.departmentId === employeeDepartmentId
-        );
-        const legacyMatch =
-          !ids.length &&
-          department &&
-          normalizeDepartmentNameKey(row.department) ===
-            normalizeDepartmentNameKey(department.name);
-        if (!ids.includes(employeeDepartmentId) && !legacyMatch) return false;
+        if (!ids.includes(employeeDepartmentId)) return false;
       }
       if (!q) return true;
       const hay = `${row.email} ${row.name || ""} ${row.empId || ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [employees, employeeQuery, employeeDepartmentId, departments]);
+  }, [employees, employeeQuery, employeeDepartmentId]);
 
   const departmentDesignations = useMemo(
     () =>
@@ -890,7 +881,7 @@ export default function CostRates() {
                   (id) =>
                     departments.find((row) => row.departmentId === id)?.name || id
                 )
-                .join(", ") || selectedEmployee.department || "—"}
+                .join(", ") || "—"}
               {(selectedEmployee.departmentDesignations || []).length
                 ? ` · Assigned: ${selectedEmployee.departmentDesignations
                     .map((row) => {

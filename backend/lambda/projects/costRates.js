@@ -12,6 +12,7 @@ const { requireSuperAdmin } = require("./portalAdminAuth");
 const orgDesignations = require("./departmentDesignations");
 const designationCatalog = require("./designationCatalog");
 const costingDesignation = require("./costingDesignation");
+const profileOrg = require("./profileOrg");
 const { normalizeEmail } = require("./projectAccess");
 const {
   OWNER_DESIGNATION,
@@ -662,6 +663,8 @@ function publicEmployeeRates({
   ratesItem,
   designation,
   projectType,
+  departments,
+  designations,
 }) {
   const resolved = resolveHourlyRates({
     projectType,
@@ -669,12 +672,13 @@ function publicEmployeeRates({
     designation,
   });
   const publicDes = publicDesignation(designation);
+  const labels = profileOrg.resolveProfileOrg(profile, departments, designations);
   return {
     email,
     name: profile?.name || accessRow?.name || "",
     empId: profile?.empId || "",
-    profileDesignation: profile?.designation || "",
-    department: profile?.department || "",
+    profileDesignation: labels.designation,
+    department: labels.department,
     departmentIds: Array.isArray(profile?.departmentIds) ? profile.departmentIds : [],
     primaryDepartmentId: profile?.primaryDepartmentId || "",
     departmentDesignations: Array.isArray(profile?.departmentDesignations)
@@ -932,6 +936,7 @@ async function buildEmployeePayload({
   email,
   projectType,
   designationCache,
+  orgCatalogs: orgCatalogsArg,
 }) {
   const ratesItem = await getEmployeeRatesItem(ddb, tableName, email);
   let designation = null;
@@ -945,6 +950,8 @@ async function buildEmployeePayload({
     }
   }
   const profile = await getProfileRow(ddb, profileTable, email);
+  const orgCatalogs =
+    orgCatalogsArg || (await profileOrg.loadOrgCatalogs(ddb, tableName));
   return publicEmployeeRates({
     email,
     accessRow,
@@ -952,6 +959,8 @@ async function buildEmployeePayload({
     ratesItem,
     designation,
     projectType,
+    departments: orgCatalogs.departments,
+    designations: orgCatalogs.designations,
   });
 }
 
@@ -970,6 +979,7 @@ async function handleListEmployees({
   const employees = [];
   const designationCache = new Map();
   const projectType = query?.projectType;
+  const orgCatalogs = await profileOrg.loadOrgCatalogs(ddb, tableName);
   for (const row of rows) {
     const email = normalizeEmail(row.email || row.PK);
     if (!email || !email.includes("@") || seen.has(email)) continue;
@@ -983,6 +993,7 @@ async function handleListEmployees({
         email,
         projectType,
         designationCache,
+        orgCatalogs,
       })
     );
   }
@@ -1059,9 +1070,6 @@ async function handlePutEmployee({
   });
   if (!plan.ok) return { statusCode: 400, body: { error: plan.error } };
   const designationId = plan.designationId || null;
-  const designation = designationId
-    ? await getDesignationItem(ddb, tableName, designationId)
-    : null;
   const internal =
     body?.internalHourlyRate !== undefined
       ? parseHourlyRate(body.internalHourlyRate)
@@ -1118,12 +1126,12 @@ async function handlePutEmployee({
       ],
     })
   );
-  const employee = publicEmployeeRates({
-    email: target,
+  const employee = await buildEmployeePayload({
+    ddb,
+    tableName,
+    profileTable,
     accessRow,
-    profile: await getProfileRow(ddb, profileTable, target),
-    ratesItem: item,
-    designation,
+    email: target,
   });
   return { statusCode: existing ? 200 : 201, body: { employee } };
 }
@@ -1190,15 +1198,12 @@ async function handleEmployeeStatus({
     }
     throw err;
   }
-  const designation = ratesItem.designationId
-    ? await getDesignationItem(ddb, tableName, ratesItem.designationId)
-    : null;
-  const employee = publicEmployeeRates({
-    email: target,
+  const employee = await buildEmployeePayload({
+    ddb,
+    tableName,
+    profileTable,
     accessRow,
-    profile: await getProfileRow(ddb, profileTable, target),
-    ratesItem,
-    designation,
+    email: target,
   });
   return { statusCode: 200, body: { employee } };
 }

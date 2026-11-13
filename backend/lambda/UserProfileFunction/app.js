@@ -6,13 +6,12 @@ const {
   AdminRemoveUserFromGroupCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, PutCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
 const {
   normalizeRole,
   cognitoGroupForRole,
   isValidAssignableRole,
   canAssignPortalRole,
-  isSuperAdminRole,
 } = require("../common/roles");
 const departments = require("../projects/departments");
 const orgDesignations = require("../projects/departmentDesignations");
@@ -233,24 +232,15 @@ exports.handler = async (event) => {
       }
     }
 
-    const actorRole = await loadUserAccessRole(user.email);
-    if (user.isAdmin && role && isValidAssignableRole(role)) {
-      if (!canAssignPortalRole(actorRole, userRole)) {
-        if (mode === "CREATE") {
-          return response(403, {
-            error: "Only Super Admin can assign the Super Admin role.",
-          });
-        }
-        const existingRole = await loadUserAccessRole(normalizedEmail);
-        if (!isSuperAdminRole(existingRole) || !isSuperAdminRole(userRole)) {
+    if (mode === "CREATE") {
+      const actorRole = await loadUserAccessRole(user.email);
+      if (user.isAdmin && role && isValidAssignableRole(role)) {
+        if (!canAssignPortalRole(actorRole, userRole)) {
           return response(403, {
             error: "Only Super Admin can assign the Super Admin role.",
           });
         }
       }
-    }
-
-    if (mode === "CREATE") {
       try {
         createMeta = await createCognitoUser(
           normalizedEmail,
@@ -291,31 +281,8 @@ exports.handler = async (event) => {
       );
     }
 
-    if (mode === "EDIT" && user.isAdmin && role && isValidAssignableRole(role)) {
-      if (canAssignPortalRole(actorRole, userRole)) {
-        const existingRole = normalizeRole(await loadUserAccessRole(normalizedEmail));
-        // Designation saves resend the current portal role. Group sync looks
-        // the user up in Cognito by email and must not block the profile write
-        // when that login does not exist and the role is not changing.
-        if (existingRole !== userRole) {
-          await syncCognitoGroup(normalizedEmail, userRole);
-          await ddb.send(
-            new UpdateCommand({
-              TableName: process.env.USER_ACCESS_TABLE,
-              Key: { PK: normalizedEmail, SK: normalizedEmail },
-              UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
-              ExpressionAttributeNames: { "#role": "role" },
-              ExpressionAttributeValues: {
-                ":role": userRole,
-                ":updatedAt": new Date().toISOString(),
-              },
-            })
-          );
-        }
-      }
-    }
-
     const incomingProfile = { ...(profile || {}) };
+    delete incomingProfile.loginEmail;
     if (incomingProfile.imageUrl && String(incomingProfile.imageUrl).includes("X-Amz-")) {
       incomingProfile.imageUrl = String(incomingProfile.imageUrl).split("?")[0];
     }
@@ -359,6 +326,7 @@ exports.handler = async (event) => {
       isAdmin: user.isAdmin,
       profileData: incomingProfile,
     });
+    delete profileData.loginEmail;
     delete profileData.costingDesignationId;
     let membership;
     if (

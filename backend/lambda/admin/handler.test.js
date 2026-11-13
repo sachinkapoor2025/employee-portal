@@ -110,6 +110,204 @@ function employeeGetUsersEvent() {
   }
 
   {
+    const links = [{ departmentId: "ai", designationId: "ai-eng" }];
+    setClientsForTests({
+      ddb: {
+        send: async (cmd) => {
+          const table = cmd.input?.TableName;
+          if (table === process.env.USER_ACCESS_TABLE) {
+            return {
+              Items: [
+                {
+                  PK: "aisha@mydgv.com",
+                  email: "aisha@mydgv.com",
+                  role: "EMPLOYEE",
+                  status: "ACTIVE",
+                },
+              ],
+            };
+          }
+          if (table === process.env.USER_PROFILE_TABLE) {
+            return {
+              Items: [
+                {
+                  PK: "USER#aisha@mydgv.com",
+                  email: "aisha@mydgv.com",
+                  name: "Aisha",
+                  empId: "DGV014",
+                  department: "Engineering",
+                  departmentIds: ["it", "ai"],
+                  primaryDepartmentId: "ai",
+                  departmentDesignations: links,
+                  designation: "Old Title",
+                  skill: "SKILL#X",
+                },
+              ],
+            };
+          }
+          if (table === process.env.WORK_TABLE) {
+            const pk = cmd.input?.ExpressionAttributeValues?.[":pk"];
+            if (pk === "ENTITY#DEPARTMENT") {
+              return {
+                Items: [
+                  {
+                    type: "DEPARTMENT",
+                    departmentId: "it",
+                    name: "IT — Software Development",
+                    status: "ACTIVE",
+                  },
+                  {
+                    type: "DEPARTMENT",
+                    departmentId: "ai",
+                    name: "AI & Automation",
+                    status: "ACTIVE",
+                  },
+                ],
+              };
+            }
+            if (pk === "ENTITY#ORG_DESIGNATION") {
+              return {
+                Items: [
+                  {
+                    type: "ORG_DESIGNATION",
+                    designationId: "ai-eng",
+                    departmentId: "ai",
+                    name: "AI Engineer",
+                    status: "ACTIVE",
+                  },
+                ],
+              };
+            }
+          }
+          return { Items: [] };
+        },
+      },
+      cognitoClient: { send: async () => ({}) },
+    });
+    const res = parse(
+      await handler({
+        httpMethod: "GET",
+        requestContext: {
+          authorizer: {
+            claims: {
+              email: "boss@mydgv.com",
+              "cognito:groups": ["Admin"],
+            },
+          },
+        },
+      })
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.length, 1);
+    assert.strictEqual(res.body[0].email, "aisha@mydgv.com");
+    assert.strictEqual(res.body[0].name, "Aisha");
+    assert.strictEqual(res.body[0].empId, "DGV014");
+    assert.deepStrictEqual(res.body[0].departmentIds, ["it", "ai"]);
+    assert.strictEqual(res.body[0].primaryDepartmentId, "ai");
+    assert.deepStrictEqual(res.body[0].departmentDesignations, links);
+    assert.strictEqual(res.body[0].department, "AI & Automation, IT — Software Development");
+    assert.strictEqual(res.body[0].designation, "AI Engineer");
+    assert.notStrictEqual(res.body[0].department, "Engineering");
+    assert.notStrictEqual(res.body[0].designation, "Old Title");
+    assert.strictEqual(res.body[0].skill, "SKILL#X");
+  }
+
+  {
+    setClientsForTests({
+      ddb: {
+        send: async (cmd) => {
+          const table = cmd.input?.TableName;
+          if (table === process.env.USER_ACCESS_TABLE) {
+            return {
+              Items: [
+                {
+                  PK: "akash.yadav@mydgv.com",
+                  SK: "akash.yadav@mydgv.com",
+                  email: "akash.yadav@mydgv.com",
+                  role: "EMPLOYEE",
+                  status: "ACTIVE",
+                },
+                {
+                  PK: "EMAIL#akash.yadav@mydgv.com",
+                  SK: "EMAIL#akash.yadav@mydgv.com",
+                  loginEmail: "akash.yadav@mydgv.com",
+                },
+                {
+                  PK: "ankit.verma@mydgv.com",
+                  SK: "ankit.verma@mydgv.com",
+                  email: "ankit.verma@mydgv.com",
+                  role: "ADMIN",
+                  status: "BLOCKED",
+                },
+                {
+                  PK: "EMAIL#ankit.verma@mydgv.com",
+                  SK: "EMAIL#ankit.verma@mydgv.com",
+                  loginEmail: "ankit.verma@mydgv.com",
+                },
+              ],
+            };
+          }
+          if (table === process.env.USER_PROFILE_TABLE) {
+            return {
+              Items: [
+                {
+                  PK: "USER#akash.yadav@mydgv.com",
+                  SK: "PROFILE",
+                  email: "akash.yadav@mydgv.com",
+                  name: "Akash",
+                  empId: "DGV010",
+                  designation: "Engineer",
+                },
+                {
+                  PK: "USER#ankit.verma@mydgv.com",
+                  SK: "PROFILE",
+                  email: "ankit.verma@mydgv.com",
+                  name: "Ankit",
+                  empId: "DGV011",
+                  designation: "Lead",
+                },
+              ],
+            };
+          }
+          return { Items: [] };
+        },
+      },
+      cognitoClient: { send: async () => ({}) },
+    });
+    const res = parse(
+      await handler({
+        httpMethod: "GET",
+        requestContext: {
+          authorizer: {
+            claims: {
+              email: "boss@mydgv.com",
+              "cognito:groups": ["Admin"],
+            },
+          },
+        },
+      })
+    );
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.body.map((user) => user.email),
+      ["akash.yadav@mydgv.com", "ankit.verma@mydgv.com"]
+    );
+    assert.strictEqual(res.body.some((user) => user.email.startsWith("email#")), false);
+    const akash = res.body.find((user) => user.email === "akash.yadav@mydgv.com");
+    const ankit = res.body.find((user) => user.email === "ankit.verma@mydgv.com");
+    assert.strictEqual(akash.role, "EMPLOYEE");
+    assert.strictEqual(akash.status, "ACTIVE");
+    assert.strictEqual(akash.name, "Akash");
+    assert.strictEqual(akash.empId, "DGV010");
+    assert.strictEqual(akash.designation, "");
+    assert.strictEqual(ankit.role, "ADMIN");
+    assert.strictEqual(ankit.status, "BLOCKED");
+    assert.strictEqual(ankit.name, "Ankit");
+    assert.strictEqual(ankit.empId, "DGV011");
+    assert.strictEqual(ankit.designation, "");
+  }
+
+  {
     const fake = useFake(adminAccess);
     const res = parse(
       await handler(

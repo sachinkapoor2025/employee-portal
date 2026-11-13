@@ -57,6 +57,7 @@ const taskReviewReassign = require("./taskReviewReassign");
 const { materializeTodaysConfirmedLeave } = require("../leave/materialize");
 const { canViewTask } = taskReadAccess;
 const { requireEligiblePortalAdmin } = require("./portalAdminAuth");
+const profileOrg = require("./profileOrg");
 
 const ddbClient = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -1137,15 +1138,15 @@ async function attachProjectNames(tasks) {
 }
 
 async function getAssigneeProfile(email) {
-  if (!email || !process.env.USER_PROFILE_TABLE) {
-    return {
-      email: email || "",
-      name: "",
-      empId: "",
-      department: "",
-      designation: "",
-    };
-  }
+  const empty = {
+    email: email || "",
+    name: "",
+    empId: "",
+    department: "",
+    designation: "",
+  };
+  if (!email || !process.env.USER_PROFILE_TABLE) return empty;
+  let profile = {};
   try {
     const res = await ddb.send(
       new GetCommand({
@@ -1156,23 +1157,23 @@ async function getAssigneeProfile(email) {
         },
       })
     );
-    const p = res.Item || {};
-    return {
-      email: email,
-      name: p.name || "",
-      empId: p.empId || "",
-      department: p.department || "",
-      designation: p.designation || "",
-    };
+    profile = res.Item || {};
   } catch {
-    return {
-      email,
-      name: "",
-      empId: "",
-      department: "",
-      designation: "",
-    };
+    return { ...empty, email };
   }
+  let labels = { department: "", designation: "" };
+  try {
+    labels = await profileOrg.labelsForProfile(ddb, process.env.WORK_TABLE, profile);
+  } catch (err) {
+    console.error("ASSIGNEE_ORG_LABEL_ERROR", err?.name);
+  }
+  return {
+    email,
+    name: profile.name || "",
+    empId: profile.empId || "",
+    department: labels.department,
+    designation: labels.designation,
+  };
 }
 
 function nameFromClaims(event) {

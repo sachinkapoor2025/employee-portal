@@ -591,6 +591,14 @@ assert.strictEqual(classified.project.rate, 2.25);
   assert.strictEqual(listDenied.statusCode, 403);
 
   const seedDes = {
+    [keyOf(WORK, "ENTITY#DEPARTMENT", "DEPARTMENT#seo-digital-marketing")]: {
+      PK: "ENTITY#DEPARTMENT",
+      SK: "DEPARTMENT#seo-digital-marketing",
+      type: "DEPARTMENT",
+      departmentId: "seo-digital-marketing",
+      name: "SEO & Digital Marketing",
+      status: "ACTIVE",
+    },
     [keyOf(WORK, "ENTITY#ORG_DESIGNATION", `DESIGNATION#${designationId}`)]: {
       PK: "ENTITY#ORG_DESIGNATION",
       SK: `DESIGNATION#${designationId}`,
@@ -697,7 +705,9 @@ assert.strictEqual(classified.project.rate, 2.25);
   assert.strictEqual(createdEmp.body.employee.email, "rahul@mydgv.com");
   assert.strictEqual(createdEmp.body.employee.internalHourlyRate, 2.25);
   assert.strictEqual(createdEmp.body.employee.externalHourlyRate, null);
-  assert.strictEqual(createdEmp.body.employee.profileDesignation, "Free text SEO");
+  assert.strictEqual(createdEmp.body.employee.profileDesignation, "SEO Specialist");
+  assert.strictEqual(createdEmp.body.employee.department, "SEO & Digital Marketing");
+  assert.notStrictEqual(createdEmp.body.employee.profileDesignation, "Free text SEO");
   assert.strictEqual(createdEmp.body.employee.resolved.internal.source, SOURCE_EMPLOYEE);
   assert.strictEqual(createdEmp.body.employee.resolved.external.source, SOURCE_DESIGNATION);
   assert.strictEqual(createdEmp.body.employee.status, "ACTIVE");
@@ -842,7 +852,7 @@ assert.strictEqual(classified.project.rate, 2.25);
     },
     designation: des,
   });
-  assert.strictEqual(preview.profileDesignation, "Free text");
+  assert.strictEqual(preview.profileDesignation, "");
   assert.notStrictEqual(preview.designationId, preview.profileDesignation);
 
   function snapshotWork(items) {

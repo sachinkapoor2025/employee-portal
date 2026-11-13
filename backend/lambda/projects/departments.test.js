@@ -315,7 +315,7 @@ async function test(name, fn) {
     assert.strictEqual(saved.statusCode, 200);
     assert.deepStrictEqual(saved.body.membership.departmentIds, ["old", "active"]);
     assert.strictEqual(saved.body.membership.primaryDepartmentId, "active");
-    assert.strictEqual(saved.body.membership.legacyDepartment, "Legacy IT");
+    assert.strictEqual(saved.body.membership.legacyDepartment, "");
     const stored = await ddb.send(
       new GetCommand({
         TableName: PROFILE,
@@ -393,7 +393,7 @@ async function test(name, fn) {
     assert.strictEqual(saved.imageS3Key, "profiles/a.jpg");
     assert.strictEqual(saved.hrDocuments[0].documentId, "pan");
     assert.strictEqual(saved.resignations[0].id, "exit");
-    assert.strictEqual(saved.designation, "Lead");
+    assert.strictEqual(saved.designation, "Analyst");
     assert.strictEqual(saved.name, "New");
     const adminSaved = mergeProfileForSave({
       existing,

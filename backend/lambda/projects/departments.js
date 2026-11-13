@@ -700,7 +700,7 @@ function membershipBody(profile, departmentsById) {
     email: profile?.email || "",
     departmentIds,
     primaryDepartmentId: departmentIds.includes(primary) ? primary : departmentIds[0] || "",
-    legacyDepartment: String(profile?.department || "").trim(),
+    legacyDepartment: "",
     departmentDesignations: orgDesignations.existingLinks(profile),
     departments: departmentIds.map((id) => {
       const item = departmentsById.get(id);
@@ -903,6 +903,8 @@ function mergeProfileForSave({
   nowIso,
 }) {
   const data = { ...(profileData || {}) };
+  delete data.department;
+  delete data.designation;
   if (data.resignations == null && Array.isArray(existing?.resignations)) {
     delete data.resignations;
   }
@@ -914,9 +916,6 @@ function mergeProfileForSave({
     email,
     updatedAt: nowIso || new Date().toISOString(),
   };
-  if (Object.prototype.hasOwnProperty.call(data, "department")) {
-    item.department = data.department ? String(data.department).trim() : "";
-  }
   if (Object.prototype.hasOwnProperty.call(data, "skill")) {
     item.skill = data.skill ? String(data.skill).trim().toUpperCase() : data.skill;
   }

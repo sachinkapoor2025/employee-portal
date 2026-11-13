@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import Button from "../components/ui/Button";
@@ -14,7 +14,10 @@ import {
 import { getLoggedInEmail } from "../services/auth";
 import { s3KeyFromFileUrl } from "../utils/documentView";
 import { alertSuccess, alertError } from "../theme";
-import { summarizeDepartments } from "../utils/departmentMembership";
+import {
+  buildEmployeeWorkView,
+  employmentFieldGroups,
+} from "../utils/employeeWorkProfile";
 
 function displayValue(value) {
   const text = String(value ?? "").trim();
@@ -40,51 +43,6 @@ const PERSONAL_FIELDS = [
   { key: "email", label: "Email", editable: false },
   { key: "phone", label: "Phone", editable: true },
 ];
-
-const WORK_FIELDS = [
-  { key: "designation", label: "Designation", editable: true },
-  { key: "skill", label: "Skill", editable: true },
-  { key: "manager", label: "Manager", editable: false },
-  { key: "groupLead", label: "Group Lead", editable: false },
-  { key: "doj", label: "Date of Joining", editable: false },
-];
-
-function DepartmentList({ profile, departments, designationsByDepartment }) {
-  const summary = summarizeDepartments(profile, departments);
-  if (!summary.memberships.length && !summary.legacyUnmatched) {
-    return <div className="dgv-profile-value">—</div>;
-  }
-  return (
-    <div className="dgv-profile-value">
-      {summary.memberships.map((row) => {
-        const link = (profile.departmentDesignations || []).find(
-          (item) => item.departmentId === row.departmentId
-        );
-        const designation = (designationsByDepartment?.[row.departmentId] || []).find(
-          (item) => item.designationId === link?.designationId
-        );
-        return (
-          <div key={row.departmentId}>
-            {row.name}
-            {row.departmentId === summary.primaryDepartmentId &&
-            summary.memberships.length > 1
-              ? " · Primary"
-              : ""}
-            {String(row.status).toUpperCase() === "ACTIVE" ? "" : " · Inactive"}
-            {link?.designationId
-              ? ` · ${designation?.track ? `${designation.track} · ` : ""}${
-                  designation?.name || link.designationId
-                }`
-              : ""}
-          </div>
-        );
-      })}
-      {summary.legacyUnmatched ? (
-        <div>Legacy unmatched: {summary.legacyUnmatched}</div>
-      ) : null}
-    </div>
-  );
-}
 
 function ProfileFieldGrid({ fields, editing, profile, draft, onDraftChange }) {
   return (
@@ -112,6 +70,71 @@ function ProfileFieldGrid({ fields, editing, profile, draft, onDraftChange }) {
   );
 }
 
+function WorkField({ field, editing, onDraftChange }) {
+  const canEdit = Boolean(editing && field.editable);
+  return (
+    <div className="dgv-profile-item">
+      <label htmlFor={canEdit ? "profile-designation" : undefined}>{field.label}</label>
+      {canEdit ? (
+        <input
+          id="profile-designation"
+          value={field.value || ""}
+          onChange={(e) => onDraftChange("designation", e.target.value)}
+        />
+      ) : (
+        <div className="dgv-profile-value">{displayValue(field.value)}</div>
+      )}
+    </div>
+  );
+}
+
+function WorkInformation({ profile, employment, editing, onDraftChange }) {
+  const groups = employmentFieldGroups(employment);
+
+  return (
+    <section className="dgv-profile-block">
+      <h2>Work Information</h2>
+      <p className="dgv-profile-section-desc">
+        Employment details and reporting structure
+      </p>
+      <div className="dgv-profile-card">
+        <div className="dgv-profile-subsection">
+          <h3 className="dgv-profile-subtitle">Employment Details</h3>
+          {groups.map((fields, index) => (
+            <div
+              className="dgv-profile-grid"
+              key={fields.map((field) => field.key).join("-") || index}
+            >
+              {fields.map((field) => (
+                <WorkField
+                  key={field.key}
+                  field={field}
+                  editing={editing}
+                  onDraftChange={onDraftChange}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="dgv-profile-subsection">
+          <h3 className="dgv-profile-subtitle">Reporting Structure</h3>
+          <div className="dgv-profile-grid">
+            <div className="dgv-profile-item">
+              <label>Manager</label>
+              <div className="dgv-profile-value">{displayValue(profile.manager)}</div>
+            </div>
+            <div className="dgv-profile-item">
+              <label>Group Lead</label>
+              <div className="dgv-profile-value">{displayValue(profile.groupLead)}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function imageContentType(file) {
   const t = String(file?.type || "").trim();
   if (t && t !== "application/octet-stream") return t;
@@ -130,6 +153,13 @@ function isUsableImageSrc(url) {
     return true;
   }
   return false;
+}
+
+function personalProfilePayload(profile, extra = {}) {
+  const next = persistableProfile(profile, extra);
+  delete next.department;
+  delete next.designation;
+  return next;
 }
 
 function persistableProfile(profile, extra = {}) {
@@ -194,6 +224,12 @@ export default function Profile() {
   const [designationsByDepartment, setDesignationsByDepartment] = useState({});
   const [shiftLoadError, setShiftLoadError] = useState("");
 
+  const workView = useMemo(
+    () =>
+      buildEmployeeWorkView(profile, departments, designationsByDepartment),
+    [profile, departments, designationsByDepartment]
+  );
+
   const email = String(profile.email || getLoggedInEmail() || "")
     .trim()
     .toLowerCase();
@@ -202,17 +238,18 @@ export default function Profile() {
     loadProfile();
   }, []);
 
-  const departmentKey = Array.isArray(profile.departmentIds)
-    ? profile.departmentIds.join("|")
-    : "";
-
-  useEffect(() => {
-    const ids = departmentKey ? departmentKey.split("|") : [];
-    if (!ids.length) return undefined;
-    let cancelled = false;
-    (async () => {
-      const entries = await Promise.all(
-        ids.map(async (id) => {
+  const loadProfile = async (keepPreview = false) => {
+    try {
+      const lookup = getLoggedInEmail() || undefined;
+      const [data, departmentRes] = await Promise.all([
+        fetchUserProfile(lookup),
+        fetchDepartments().catch(() => ({ departments: [] })),
+      ]);
+      const departmentIds = Array.isArray(data?.departmentIds)
+        ? data.departmentIds.map((id) => String(id || "").trim()).filter(Boolean)
+        : [];
+      const designationEntries = await Promise.all(
+        departmentIds.map(async (id) => {
           try {
             const res = await fetchDepartmentDesignations(id);
             return [id, Array.isArray(res?.designations) ? res.designations : []];
@@ -221,24 +258,11 @@ export default function Profile() {
           }
         })
       );
-      if (!cancelled) setDesignationsByDepartment(Object.fromEntries(entries));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [departmentKey]);
-
-  const loadProfile = async (keepPreview = false) => {
-    try {
-      const lookup = getLoggedInEmail() || undefined;
-      const [data, departmentRes] = await Promise.all([
-        fetchUserProfile(lookup),
-        fetchDepartments().catch(() => ({ departments: [] })),
-      ]);
       setProfile(data || {});
       setDepartments(
         Array.isArray(departmentRes?.departments) ? departmentRes.departments : []
       );
+      setDesignationsByDepartment(Object.fromEntries(designationEntries));
       try {
         const shiftRes = await fetchEmployeeShift(lookup || getLoggedInEmail());
         setAssignedShift(shiftRes?.shift || null);
@@ -303,11 +327,12 @@ export default function Profile() {
       await saveUserProfile({
         mode: "EDIT",
         email,
-        profile: persistableProfile(profile, {
+        profile: personalProfilePayload(profile, {
           ...draft,
           email,
           imageUrl: storedUrl,
           imageS3Key: objectKey,
+          skill: profile.skill,
         }),
       });
 
@@ -326,8 +351,6 @@ export default function Profile() {
   const startEdit = () => {
     setDraft({
       name: profile.name || "",
-      designation: profile.designation || "",
-      skill: profile.skill || "",
       phone: profile.phone || "",
     });
     setEditing(true);
@@ -347,19 +370,12 @@ export default function Profile() {
     setError("");
     setMessage("");
     try {
-      const nextProfile = persistableProfile(profile, {
+      const nextProfile = personalProfilePayload(profile, {
         email,
         name: String(draft.name || "").trim(),
-        designation: String(draft.designation || "").trim(),
-        skill: String(draft.skill || "").trim(),
+        skill: profile.skill,
         phone: String(draft.phone || "").trim(),
       });
-      delete nextProfile.department;
-      delete nextProfile.departmentIds;
-      delete nextProfile.primaryDepartmentId;
-      delete nextProfile.departmentDesignations;
-      delete nextProfile.costingDesignationId;
-      delete nextProfile.departmentMigration;
       await saveUserProfile({
         mode: "EDIT",
         email,
@@ -474,7 +490,7 @@ export default function Profile() {
           <div className="dgv-profile-identity__body">
             <h2>{displayValue(profile.name)}</h2>
             <p className="dgv-profile-role">
-              {displayValue(profile.designation)} · Employee ID:{" "}
+              {displayValue(workView.roleDesignation)} · Employee ID:{" "}
               {displayValue(profile.empId)}
             </p>
             <p className="dgv-profile-email">{displayValue(profile.email || email)}</p>
@@ -501,29 +517,12 @@ export default function Profile() {
           </div>
         </section>
 
-        <section className="dgv-profile-block">
-          <h2>Work Information</h2>
-          <p className="dgv-profile-section-desc">
-            Role, skills and reporting structure
-          </p>
-          <div className="dgv-profile-card">
-            <ProfileFieldGrid
-              fields={WORK_FIELDS}
-              editing={editing}
-              profile={profile}
-              draft={draft}
-              onDraftChange={updateDraft}
-            />
-            <div className="dgv-profile-item">
-              <label>Departments</label>
-              <DepartmentList
-                profile={profile}
-                departments={departments}
-                designationsByDepartment={designationsByDepartment}
-              />
-            </div>
-          </div>
-        </section>
+        <WorkInformation
+          profile={profile}
+          employment={workView}
+          editing={editing}
+          onDraftChange={updateDraft}
+        />
 
         <section className="dgv-profile-block">
           <h2>Assigned Shift</h2>

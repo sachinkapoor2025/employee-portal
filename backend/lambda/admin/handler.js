@@ -29,6 +29,7 @@ const {
   AdminRemoveUserFromGroupCommand,
   AdminSetUserPasswordCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
+const profileOrg = require("../projects/profileOrg");
 
 let client = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
@@ -232,6 +233,7 @@ exports.handler = async (event) => {
       const accessItems = await scanAll(tableName);
       let profileByEmail = {};
 
+      let orgCatalogs = { departments: [], designations: [] };
       if (profileTable) {
         const profiles = await scanAll(profileTable);
         profileByEmail = Object.fromEntries(
@@ -245,13 +247,26 @@ exports.handler = async (event) => {
             })
         );
       }
+      if (process.env.WORK_TABLE) {
+        try {
+          orgCatalogs = await profileOrg.loadOrgCatalogs(client, process.env.WORK_TABLE);
+        } catch (err) {
+          console.error("ADMIN_ORG_CATALOG_ERROR", err?.name);
+        }
+      }
 
       const users = accessItems
+        .filter((item) => !String(item?.PK || "").startsWith("EMAIL#"))
         .map((item) => {
           const email = (item.email || item.PK || "").toLowerCase();
           if (!email || !email.includes("@")) return null;
           const profile = profileByEmail[email] || {};
           const role = normalizeRole(item.role);
+          const labels = profileOrg.resolveProfileOrg(
+            profile,
+            orgCatalogs.departments,
+            orgCatalogs.designations
+          );
 
           return {
             email,
@@ -261,12 +276,15 @@ exports.handler = async (event) => {
             updatedAt: item.updatedAt || "",
             name: profile.name || "",
             empId: profile.empId || "",
-            department: profile.department || "",
+            department: labels.department,
             departmentIds: Array.isArray(profile.departmentIds)
               ? profile.departmentIds
               : [],
             primaryDepartmentId: profile.primaryDepartmentId || "",
-            designation: profile.designation || "",
+            departmentDesignations: Array.isArray(profile.departmentDesignations)
+              ? profile.departmentDesignations
+              : [],
+            designation: labels.designation,
             skill: profile.skill || "",
             manager: profile.manager || "",
             groupLead: profile.groupLead || "",

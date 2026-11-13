@@ -48,6 +48,8 @@ jest.mock("../../services/api", () => ({
   fetchTaskActivity: jest.fn(),
   fetchWeekOffState: jest.fn(),
   fetchEmployeeCosting: jest.fn(),
+  fetchDepartments: jest.fn(),
+  fetchDepartmentDesignations: jest.fn(),
 }));
 
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -64,6 +66,8 @@ import {
   fetchTaskActivity,
   fetchWeekOffState,
   fetchEmployeeCosting,
+  fetchDepartments,
+  fetchDepartmentDesignations,
 } from "../../services/api";
 import {
   addDaysToKey,
@@ -312,7 +316,24 @@ beforeEach(() => {
   fetchUserProfile.mockResolvedValue({
     name: "Priya",
     empId: "DGV-101",
-    department: "Engineering",
+    department: "Legacy Desk",
+    designation: "Legacy Title",
+    departmentIds: ["eng"],
+    primaryDepartmentId: "eng",
+    departmentDesignations: [{ departmentId: "eng", designationId: "eng-role" }],
+  });
+  fetchDepartments.mockResolvedValue({
+    departments: [{ departmentId: "eng", name: "Engineering", status: "ACTIVE" }],
+  });
+  fetchDepartmentDesignations.mockResolvedValue({
+    designations: [
+      {
+        designationId: "eng-role",
+        departmentId: "eng",
+        name: "Engineer",
+        status: "ACTIVE",
+      },
+    ],
   });
   fetchUsers.mockResolvedValue([
     { email: PRIYA, role: "EMPLOYEE", status: "ACTIVE" },
@@ -1282,6 +1303,8 @@ test("Overview employee snapshot renders", async () => {
   expect(screen.getByText("DGV-101")).toBeInTheDocument();
   expect(screen.getByText(PRIYA)).toBeInTheDocument();
   expect(screen.getByText("Engineering")).toBeInTheDocument();
+  expect(screen.queryByText("Legacy Desk")).not.toBeInTheDocument();
+  expect(screen.queryByText("Legacy Title")).not.toBeInTheDocument();
   expect(screen.getByText("Current assigned shift")).toBeInTheDocument();
   expect(screen.getByText("Morning Shift")).toBeInTheDocument();
 });
@@ -1290,8 +1313,11 @@ test("Overview Attendance Tasks Documents Leave Training Performance and Activit
   fetchUserProfile.mockResolvedValue({
     name: "Priya",
     empId: "DGV-101",
-    department: "Engineering",
-    designation: "Engineer",
+    department: "Legacy Desk",
+    designation: "Legacy Title",
+    departmentIds: ["eng"],
+    primaryDepartmentId: "eng",
+    departmentDesignations: [{ departmentId: "eng", designationId: "eng-role" }],
     skill: "React",
   });
   await renderOverviewLoaded();

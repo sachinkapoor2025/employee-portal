@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Layout from "../../components/Layout";
 import Button from "../../components/ui/Button";
-import { fetchUsers, fetchUserProfile } from "../../services/api";
+import { fetchUsers, fetchUserProfile, fetchDepartments } from "../../services/api";
+import { formatDepartmentList } from "../../utils/departmentMembership";
 import { colors, pageCard, pageTitle, pageSubtitle } from "../../theme";
 
 /** Overview entry — pick an employee to open Phase 1 tracking shell. */
@@ -17,22 +18,42 @@ export default function EmployeeTrackingHub() {
     (async () => {
       setLoading(true);
       try {
-        const data = await fetchUsers();
+        const [data, departmentRes] = await Promise.all([
+          fetchUsers(),
+          fetchDepartments().catch(() => ({ departments: [] })),
+        ]);
         const list = Array.isArray(data) ? data : [];
+        const catalog = Array.isArray(departmentRes?.departments)
+          ? departmentRes.departments
+          : [];
         const enriched = await Promise.all(
           list.map(async (u) => {
             const email = String(u.email || "").toLowerCase();
             try {
               const profile = await fetchUserProfile(email);
+              const department = formatDepartmentList(
+                {
+                  departmentIds: Array.isArray(profile?.departmentIds)
+                    ? profile.departmentIds
+                    : u.departmentIds,
+                  primaryDepartmentId:
+                    profile?.primaryDepartmentId || u.primaryDepartmentId || "",
+                },
+                catalog
+              ).join(", ");
               return {
                 ...u,
                 email,
                 name: profile?.name || u.name || "",
                 empId: profile?.empId || u.empId || "",
-                department: profile?.department || u.department || "",
+                department,
               };
             } catch {
-              return { ...u, email };
+              return {
+                ...u,
+                email,
+                department: formatDepartmentList(u, catalog).join(", "),
+              };
             }
           })
         );
