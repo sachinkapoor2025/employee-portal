@@ -322,21 +322,21 @@ function AssignmentModal({
     return undefined;
   }, [open, initialMain, initialSubsidiaries]);
 
-  const trackFor = (slot) => {
+  const trackFor = useCallback((slot) => {
     if (!slot?.designationId || slot.track) return slot;
     const designation = (designationsByDepartment?.[slot.departmentId] || []).find(
       (row) => row.designationId === slot.designationId
     );
     const track = String(designation?.track || "").trim();
     return track ? { ...slot, track } : slot;
-  };
+  }, [designationsByDepartment]);
 
   useEffect(() => {
     if (!open) return undefined;
     setMain((current) => trackFor(current));
     setSubsidiaries((current) => current.map((row) => trackFor(row)));
     return undefined;
-  }, [open, designationsByDepartment]);
+  }, [open, trackFor]);
 
   const watchedIds = [main.departmentId, ...subsidiaries.map((row) => row.departmentId)]
     .map((id) => String(id || "").trim())
