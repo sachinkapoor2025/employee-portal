@@ -19,12 +19,17 @@ const orgDesignations = require("../projects/departmentDesignations");
 const costingDesignation = require("../projects/costingDesignation");
 const { requireEligiblePortalAdmin } = require("../projects/portalAdminAuth");
 
-const cognito = new CognitoIdentityProviderClient({
+let cognito = new CognitoIdentityProviderClient({
   region: process.env.AWS_REGION,
 });
-const ddb = DynamoDBDocumentClient.from(
+let ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION })
 );
+
+function setClientsForTests({ ddb: nextDdb, cognitoClient } = {}) {
+  if (nextDdb) ddb = nextDdb;
+  if (cognitoClient) cognito = cognitoClient;
+}
 
 const ALLOWED_DOMAIN = "@mydgv.com";
 
@@ -288,19 +293,25 @@ exports.handler = async (event) => {
 
     if (mode === "EDIT" && user.isAdmin && role && isValidAssignableRole(role)) {
       if (canAssignPortalRole(actorRole, userRole)) {
-        await syncCognitoGroup(normalizedEmail, userRole);
-        await ddb.send(
-          new UpdateCommand({
-            TableName: process.env.USER_ACCESS_TABLE,
-            Key: { PK: normalizedEmail, SK: normalizedEmail },
-            UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
-            ExpressionAttributeNames: { "#role": "role" },
-            ExpressionAttributeValues: {
-              ":role": userRole,
-              ":updatedAt": new Date().toISOString(),
-            },
-          })
-        );
+        const existingRole = normalizeRole(await loadUserAccessRole(normalizedEmail));
+        // Designation saves resend the current portal role. Group sync looks
+        // the user up in Cognito by email and must not block the profile write
+        // when that login does not exist and the role is not changing.
+        if (existingRole !== userRole) {
+          await syncCognitoGroup(normalizedEmail, userRole);
+          await ddb.send(
+            new UpdateCommand({
+              TableName: process.env.USER_ACCESS_TABLE,
+              Key: { PK: normalizedEmail, SK: normalizedEmail },
+              UpdateExpression: "SET #role = :role, updatedAt = :updatedAt",
+              ExpressionAttributeNames: { "#role": "role" },
+              ExpressionAttributeValues: {
+                ":role": userRole,
+                ":updatedAt": new Date().toISOString(),
+              },
+            })
+          );
+        }
       }
     }
 
@@ -481,6 +492,8 @@ exports.handler = async (event) => {
     });
   }
 };
+
+exports.setClientsForTests = setClientsForTests;
 
 const response = (statusCode, body) => ({
   statusCode,
