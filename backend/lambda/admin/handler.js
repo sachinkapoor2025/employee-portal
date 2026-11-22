@@ -228,6 +228,60 @@ exports.handler = async (event) => {
     return respond(403, { error: "Admin access required" });
   }
 
+  const requestPath = event.path || event.resource || "";
+
+  if (
+    event.httpMethod === "GET" &&
+    String(requestPath).includes("/admin/dgv-os/status")
+  ) {
+    try {
+      const configured = Boolean(String(process.env.DGV_OS_API_KEY || "").trim());
+      let aiTasks = [];
+      const workTable = process.env.WORK_TABLE;
+      if (workTable) {
+        const res = await client.send(
+          new QueryCommand({
+            TableName: workTable,
+            KeyConditionExpression: "PK = :pk",
+            ExpressionAttributeValues: { ":pk": "ENTITY#TASK" },
+          })
+        );
+        aiTasks = (res.Items || [])
+          .filter((t) => t.source === "DGV_AI_OS" || (Array.isArray(t.labels) && t.labels.includes("ai-os")))
+          .map((t) => ({
+            taskId: t.taskId || "",
+            title: t.title || "",
+            status: t.status || "",
+            assignee: t.assignee || "",
+            projectId: t.projectId || "",
+            createdAt: t.createdAt || "",
+          }))
+          .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+          .slice(0, 25);
+      }
+      return respond(200, {
+        ok: true,
+        integrationConfigured: configured,
+        service: "mydgv-dgv-os",
+        endpoints: [
+          "GET /integrations/dgv-os/health",
+          "GET /integrations/dgv-os/employees",
+          "GET /integrations/dgv-os/capacity",
+          "GET /integrations/dgv-os/tasks",
+          "POST /integrations/dgv-os/tasks",
+          "PATCH /integrations/dgv-os/tasks/{taskId}",
+        ],
+        authHeader: "x-dgv-os-key",
+        aiTaskCount: aiTasks.length,
+        aiTasks,
+        note: "Server-to-server key is never shown in this UI. Run COO/growth agents from DGV AI OS.",
+      });
+    } catch (error) {
+      console.error("DGV OS status error:", error);
+      return respond(500, { error: "Internal server error" });
+    }
+  }
+
   if (event.httpMethod === "GET") {
     try {
       const accessItems = await scanAll(tableName);

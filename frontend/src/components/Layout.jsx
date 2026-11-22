@@ -31,6 +31,7 @@ import {
   Clock,
   Construction,
   Building2,
+  Bot,
 } from "lucide-react";
 import {
   logout,
@@ -123,6 +124,7 @@ const ADMIN_NAV_SECTIONS = [
     items: [
       { label: "Activity", path: "/admin/activity", icon: Activity },
       { label: "Resignations", path: "/admin/resignations", icon: FileWarning },
+      { label: "DGV AI OS", path: "/admin/dgv-ai-os", icon: Bot },
     ],
   },
 ];

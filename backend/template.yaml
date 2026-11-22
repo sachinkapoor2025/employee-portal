@@ -28,6 +28,11 @@ Parameters:
     MinValue: 1
     MaxValue: 30
     Description: Safety-net expiry for abandoned task-imports/tmp/ uploads that never reach confirm
+  DgvOsApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Server-to-server API key for DGV AI Business OS (x-dgv-os-key). Leave empty to disable until configured.
 
 Globals:
   Function:
@@ -573,6 +578,7 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref CognitoUserPool
           USER_PROFILE_TABLE: !Ref UserProfileTable
+          DGV_OS_API_KEY: !Ref DgvOsApiKey
       Events:
         AdminUsersGetApi:
           Type: Api
@@ -585,6 +591,12 @@ Resources:
           Properties:
             Path: /admin/users
             Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDgvOsStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/dgv-os/status
+            Method: GET
             RestApiId: !Ref ApiGateway
 
   AccessFunction:
@@ -908,6 +920,74 @@ Resources:
             Path: /resignation
             Method: PUT
             RestApiId: !Ref ApiGateway
+
+  DgvOsIntegrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-dgv-os-integration"
+      Handler: lambda/integrations/dgvOs.handler
+      Timeout: 15
+      Environment:
+        Variables:
+          DGV_OS_API_KEY: !Ref DgvOsApiKey
+          USER_PROFILE_TABLE: !Ref UserProfileTable
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WorkTasksTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UserProfileTable
+      Events:
+        DgvOsHealth:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/health
+            Method: GET
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+        DgvOsEmployees:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/employees
+            Method: GET
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+        DgvOsCapacity:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/capacity
+            Method: GET
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+        DgvOsTasksGet:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/tasks
+            Method: GET
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+        DgvOsTasksPost:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/tasks
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
+        DgvOsTasksPatch:
+          Type: Api
+          Properties:
+            Path: /integrations/dgv-os/tasks/{taskId}
+            Method: PATCH
+            RestApiId: !Ref ApiGateway
+            Auth:
+              Authorizer: NONE
 
   addTraining:
     Type: AWS::Serverless::Function

@@ -242,6 +242,7 @@ export const addTrainingMaterial = (data) =>
 /* ================= USERS (ADMIN) ================= */
 
 export const fetchUsers = () => api("/admin/users", "GET");
+export const fetchDgvOsStatus = () => api("/admin/dgv-os/status", "GET");
 export const fetchUserProfile = (email) =>
   api(
     email

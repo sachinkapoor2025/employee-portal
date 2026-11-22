@@ -46,6 +46,7 @@ import ManageDepartments from "./pages/Admin/ManageDepartments";
 import DepartmentDetail from "./pages/Admin/DepartmentDetail";
 import CostRates from "./pages/Admin/CostRates";
 import ProjectCosting from "./pages/Admin/ProjectCosting";
+import DgvAiOs from "./pages/Admin/DgvAiOs";
 import { canManageCostRates } from "./constants/roles";
 import { PORTAL_ROLE_KEY } from "./services/auth";
 import Leave from "./pages/Leave";
@@ -256,6 +257,14 @@ export default function App() {
           element={
             <RequireAuth adminOnly>
               <TeamActivity />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/admin/dgv-ai-os"
+          element={
+            <RequireAuth adminOnly>
+              <DgvAiOs />
             </RequireAuth>
           }
         />
