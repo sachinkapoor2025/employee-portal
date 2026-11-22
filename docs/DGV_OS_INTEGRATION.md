@@ -1,8 +1,17 @@
 # DGV AI OS ↔ MyDGV integration
 
-Branch: `feature/dgv-ai-os-integration` (from `main`)
+Branch: `feature/dgv-ai-os-integration`
 
-## New endpoints (API key auth)
+Live API base: `https://z0nrgtv865.execute-api.ap-south-1.amazonaws.com/prod`
+
+## Portal UI
+
+Admin → **DGV AI OS** (`/admin/dgv-ai-os`) — status + API docs (Cognito admin session).
+Does **not** expose the S2S key.
+
+Admin API: `GET /admin/dgv-os/status` (Bearer Cognito JWT, admin only).
+
+## Server-to-server endpoints (API key auth)
 
 Header: `x-dgv-os-key: <DgvOsApiKey>`
 

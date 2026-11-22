@@ -578,6 +578,7 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref CognitoUserPool
           USER_PROFILE_TABLE: !Ref UserProfileTable
+          DGV_OS_API_KEY: !Ref DgvOsApiKey
       Events:
         AdminUsersGetApi:
           Type: Api
@@ -590,6 +591,12 @@ Resources:
           Properties:
             Path: /admin/users
             Method: POST
+            RestApiId: !Ref ApiGateway
+        AdminDgvOsStatusApi:
+          Type: Api
+          Properties:
+            Path: /admin/dgv-os/status
+            Method: GET
             RestApiId: !Ref ApiGateway
 
   AccessFunction:
